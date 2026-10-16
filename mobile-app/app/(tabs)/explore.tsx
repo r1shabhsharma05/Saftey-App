@@ -8,12 +8,17 @@ import {
   ActivityIndicator,
   Alert,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { BlurView } from 'expo-blur';
+import Reanimated, { FadeInUp } from 'react-native-reanimated';
+import { Image } from 'expo-image';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../../utils/supabase';
 import { useRouter } from 'expo-router';
 import { Theme } from '../../constants/theme';
+import ScreenBackground from '../../components/premium/ScreenBackground';
+import GlassCard from '../../components/premium/GlassCard';
+import StatusPill from '../../components/premium/StatusPill';
+import SectionHeader from '../../components/premium/SectionHeader';
 
 export default function PremiumProfileScreen() {
   const router = useRouter();
@@ -31,13 +36,7 @@ export default function PremiumProfileScreen() {
         router.replace('/login');
         return;
       }
-
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', user.id)
-        .single();
-
+      const { data, error } = await supabase.from('profiles').select('*').eq('id', user.id).single();
       if (error) throw error;
       setProfile(data);
     } catch (error: any) {
@@ -49,151 +48,182 @@ export default function PremiumProfileScreen() {
 
   const handleSignOut = async () => {
     try {
-      console.log('🔐 Tactical De-authorization Initiated...');
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
-      console.log('✅ Mission Complete: Session Closed');
-      // RootLayout listener handles redirection
     } catch (err: any) {
-      console.error('❌ Error shutting down session:', err.message);
       Alert.alert('System Error', 'Failed to close session: ' + err.message);
     }
   };
 
   if (loading) {
     return (
-      <View style={styles.loaderContainer}>
-        <ActivityIndicator size="large" color={Theme.colors.primary} />
-      </View>
+      <ScreenBackground>
+        <View style={styles.loaderContainer}>
+          <ActivityIndicator size="large" color={Theme.colors.primary} />
+          <Text style={styles.loaderText}>LOADING GUARDIAN…</Text>
+        </View>
+      </ScreenBackground>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <LinearGradient colors={[Theme.colors.surfaceDim, Theme.colors.surface]} style={StyleSheet.absoluteFillObject} />
-      
-      {/* Fixed Logout Button for maximum touch reliability */}
-      <TouchableOpacity 
-        onPress={handleSignOut} 
+    <ScreenBackground>
+      <TouchableOpacity
+        onPress={handleSignOut}
         style={styles.fixedLogoutBtn}
         activeOpacity={0.7}
-        hitSlop={{ top: 25, bottom: 25, left: 25, right: 25 }}
+        hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
       >
-        <LinearGradient
-          colors={['rgba(245, 51, 53, 0.2)', 'rgba(245, 51, 53, 0.05)']}
-          style={styles.logoutBtnGrad}
-        >
-          <MaterialCommunityIcons name="logout-variant" size={24} color={Theme.colors.tertiary} />
+        <LinearGradient colors={['rgba(245, 51, 53, 0.22)', 'rgba(245, 51, 53, 0.06)']} style={styles.logoutBtnGrad}>
+          <MaterialCommunityIcons name="logout-variant" size={22} color={Theme.colors.tertiary} />
         </LinearGradient>
       </TouchableOpacity>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <View style={styles.header}>
+        <Reanimated.View entering={FadeInUp.duration(500)} style={styles.header}>
           <Text style={styles.headerTitle}>Guardian Profile</Text>
-        </View>
+        </Reanimated.View>
 
-        {/* Profile Card */}
-        <View style={styles.profileHero}>
+        {/* Profile hero */}
+        <Reanimated.View entering={FadeInUp.delay(80).duration(500)} style={styles.profileHero}>
           <View style={styles.avatarGlow}>
-            <View style={styles.avatarContainer}>
-              <MaterialCommunityIcons name="shield-account" size={40} color={Theme.colors.primary} />
-            </View>
+            <Image source={require('../../assets/images/icon.png')} style={styles.avatar} contentFit="cover" />
           </View>
-          <Text style={styles.userName}>{profile?.first_name} {profile?.last_name}</Text>
-          <View style={styles.idBadge}>
-            <Text style={styles.idLabel}>TACTICAL ID:</Text>
-            <Text style={styles.idValue}>{profile?.unique_id}</Text>
+          <Text style={styles.userName}>
+            {profile?.first_name} {profile?.last_name}
+          </Text>
+          <View style={styles.idRow}>
+            <StatusPill label={`TACTICAL ID · ${profile?.unique_id ?? '—'}`} color={Theme.colors.primaryContainer} />
           </View>
-        </View>
+        </Reanimated.View>
 
-        {/* Info Grid */}
-        <View style={styles.infoGrid}>
-          <BlurView intensity={20} tint="dark" style={styles.infoCard}>
+        {/* Info grid */}
+        <Reanimated.View entering={FadeInUp.delay(140).duration(500)} style={styles.infoGrid}>
+          <GlassCard style={styles.infoCard}>
             <View style={styles.cardHeader}>
-              <Ionicons name="mail-outline" size={16} color={Theme.colors.primary} />
+              <Ionicons name="mail-outline" size={15} color={Theme.colors.primary} />
               <Text style={styles.cardLabel}>Verified Email</Text>
             </View>
-            <Text style={styles.cardValue}>{profile?.email}</Text>
-          </BlurView>
-
-          <BlurView intensity={20} tint="dark" style={styles.infoCard}>
+            <Text style={styles.cardValue} numberOfLines={1}>
+              {profile?.email ?? '—'}
+            </Text>
+          </GlassCard>
+          <GlassCard style={styles.infoCard}>
             <View style={styles.cardHeader}>
-              <Ionicons name="call-outline" size={16} color={Theme.colors.primary} />
+              <Ionicons name="call-outline" size={15} color={Theme.colors.primary} />
               <Text style={styles.cardLabel}>Emergency Comms</Text>
             </View>
-            <Text style={styles.cardValue}>{profile?.phone}</Text>
-          </BlurView>
-        </View>
+            <Text style={styles.cardValue} numberOfLines={1}>
+              {profile?.phone ?? '—'}
+            </Text>
+          </GlassCard>
+        </Reanimated.View>
 
-        <BlurView intensity={20} tint="dark" style={[styles.infoCard, { marginTop: 16 }]}>
-          <View style={styles.cardHeader}>
-            <Ionicons name="map-outline" size={16} color={Theme.colors.primary} />
-            <Text style={styles.cardLabel}>Deployment Base (Address)</Text>
+        <Reanimated.View entering={FadeInUp.delay(200).duration(500)}>
+          <GlassCard style={[styles.infoCard, { marginTop: 14 }]}>
+            <View style={styles.cardHeader}>
+              <Ionicons name="map-outline" size={15} color={Theme.colors.primary} />
+              <Text style={styles.cardLabel}>Deployment Base</Text>
+            </View>
+            <Text style={[styles.cardValue, styles.addressValue]}>{profile?.address ?? '—'}</Text>
+          </GlassCard>
+        </Reanimated.View>
+
+        {/* Security protocol */}
+        <Reanimated.View entering={FadeInUp.delay(260).duration(500)}>
+          <View style={styles.sectionWrap}>
+            <SectionHeader
+              icon={<Ionicons name="shield-checkmark-outline" size={18} color={Theme.colors.primary} />}
+              title="Security Protocol"
+            />
           </View>
-          <Text style={[styles.cardValue, { fontSize: 13, lineHeight: 20 }]}>{profile?.address}</Text>
-        </BlurView>
+          <GlassCard style={styles.menuItem}>
+            <View style={styles.menuIconBox}>
+              <Ionicons name="finger-print-outline" size={20} color={Theme.colors.onSurface} />
+            </View>
+            <Text style={styles.menuLabel}>Biometric Lockdown</Text>
+            <StatusPill label="READY" color={Theme.colors.primaryContainer} />
+          </GlassCard>
+          <GlassCard style={styles.menuItem}>
+            <View style={styles.menuIconBox}>
+              <Ionicons name="shield-half-outline" size={20} color={Theme.colors.onSurface} />
+            </View>
+            <Text style={styles.menuLabel}>Vault Protection</Text>
+            <StatusPill label="ACTIVE" color={Theme.colors.success} pulse />
+          </GlassCard>
+          <GlassCard style={styles.menuItem}>
+            <View style={styles.menuIconBox}>
+              <Ionicons name="notifications-outline" size={20} color={Theme.colors.onSurface} />
+            </View>
+            <Text style={styles.menuLabel}>SOS Broadcast Channel</Text>
+            <StatusPill label="ARMED" color={Theme.colors.warning} />
+          </GlassCard>
+        </Reanimated.View>
 
-        {/* Security Summary */}
-        <Text style={styles.sectionTitle}>Security Protocol</Text>
-        <TouchableOpacity style={styles.menuItem}>
-          <View style={styles.menuIconBox}>
-            <Ionicons name="finger-print-outline" size={20} color={Theme.colors.onSurface} />
-          </View>
-          <Text style={styles.menuLabel}>Biometric Lockdown</Text>
-          <Ionicons name="chevron-forward" size={18} color={Theme.colors.outline} />
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.menuItem}>
-          <View style={styles.menuIconBox}>
-            <Ionicons name="shield-half-outline" size={20} color={Theme.colors.onSurface} />
-          </View>
-          <Text style={styles.menuLabel}>Vault Protection</Text>
-          <Text style={styles.badgeText}>ACTIVE</Text>
-        </TouchableOpacity>
-
-        <View style={{ height: 100 }} />
+        <View style={{ height: 110 }} />
       </ScrollView>
-    </View>
+    </ScreenBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Theme.colors.surface },
-  loaderContainer: { flex: 1, backgroundColor: Theme.colors.surface, alignItems: 'center', justifyContent: 'center' },
-  scrollContent: { padding: 24, paddingTop: 60 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 },
-  headerTitle: { fontFamily: Theme.fonts.headline, fontSize: 24, color: Theme.colors.onSurface, letterSpacing: -1 },
-  fixedLogoutBtn: { 
-    position: 'absolute', 
-    right: 24, 
-    top: 60, 
-    zIndex: 999, 
-    elevation: 10 
+  loaderContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14 },
+  loaderText: { fontFamily: Theme.fonts.label, fontSize: 11, color: Theme.colors.primary, letterSpacing: 3 },
+  scrollContent: { padding: 20, paddingTop: 64 },
+  header: { marginBottom: 26 },
+  headerTitle: { fontFamily: Theme.fonts.headline, fontSize: 26, color: Theme.colors.onSurface, letterSpacing: -0.5 },
+  fixedLogoutBtn: { position: 'absolute', right: 20, top: 62, zIndex: 999, elevation: 10 },
+  logoutBtnGrad: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 51, 53, 0.25)',
   },
-  logoutBtnGrad: { 
-    width: 44, 
-    height: 44, 
-    borderRadius: 22, 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    borderWidth: 1, 
-    borderColor: 'rgba(245, 51, 53, 0.2)' 
+  profileHero: { alignItems: 'center', marginBottom: 30 },
+  avatarGlow: {
+    width: 112,
+    height: 112,
+    borderRadius: 34,
+    padding: 3,
+    backgroundColor: 'rgba(0, 227, 253, 0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 227, 253, 0.30)',
+    shadowColor: Theme.colors.primaryContainer,
+    shadowOpacity: 0.55,
+    shadowRadius: 30,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 12,
+    overflow: 'hidden',
   },
-  profileHero: { alignItems: 'center', marginBottom: 40 },
-  avatarGlow: { width: 100, height: 100, borderRadius: 50, backgroundColor: Theme.colors.primary + '11', alignItems: 'center', justifyContent: 'center', shadowColor: Theme.colors.primary, shadowRadius: 30, shadowOpacity: 0.2 },
-  avatarContainer: { width: 80, height: 80, borderRadius: 40, backgroundColor: Theme.colors.surfaceContainerHigh, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: Theme.colors.primary + '33' },
+  avatar: { width: '100%', height: '100%', borderRadius: 31 },
   userName: { fontFamily: Theme.fonts.headline, fontSize: 24, color: Theme.colors.onSurface, marginTop: 16 },
-  idBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: Theme.colors.surfaceContainer, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, marginTop: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
-  idLabel: { fontFamily: Theme.fonts.label, fontSize: 9, color: Theme.colors.onSurfaceVariant, marginRight: 6, opacity: 0.6 },
-  idValue: { fontFamily: Theme.fonts.headline, fontSize: 11, color: Theme.colors.primary, letterSpacing: 1 },
-  infoGrid: { flexDirection: 'row', gap: 16 },
-  infoCard: { flex: 1, padding: 16, borderRadius: 24, backgroundColor: 'rgba(255,255,255,0.03)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
-  cardLabel: { fontFamily: Theme.fonts.label, fontSize: 9, color: Theme.colors.onSurfaceVariant, textTransform: 'uppercase' },
-  cardValue: { fontFamily: Theme.fonts.bodyBold, fontSize: 14, color: Theme.colors.onSurface },
-  sectionTitle: { fontFamily: Theme.fonts.headline, fontSize: 18, color: Theme.colors.onSurface, marginTop: 32, marginBottom: 16 },
-  menuItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.03)', padding: 12, borderRadius: 20, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
-  menuIconBox: { width: 44, height: 44, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center', marginRight: 16 },
+  idRow: { marginTop: 10 },
+  infoGrid: { flexDirection: 'row', gap: 12 },
+  infoCard: { flex: 1, padding: 16 },
+  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 9 },
+  cardLabel: { fontFamily: Theme.fonts.label, fontSize: 9, color: Theme.colors.onSurfaceVariant, letterSpacing: 1.5 },
+  cardValue: { fontFamily: Theme.fonts.bodyBold, fontSize: 13.5, color: Theme.colors.onSurface },
+  addressValue: { fontSize: 13, lineHeight: 20 },
+  sectionWrap: { marginTop: 28 },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    marginBottom: 12,
+    gap: 14,
+  },
+  menuIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   menuLabel: { flex: 1, fontFamily: Theme.fonts.bodyBold, fontSize: 14, color: Theme.colors.onSurface },
-  badgeText: { fontFamily: Theme.fonts.label, fontSize: 10, color: '#00FF88', fontWeight: '900', letterSpacing: 1 },
 });
