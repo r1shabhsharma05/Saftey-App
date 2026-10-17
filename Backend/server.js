@@ -110,6 +110,21 @@ app.post("/location-update", async (req, res) => {
   }
 });
 
+// 🏠 ROOT — friendly status page (so the URL doesn't look broken)
+app.get("/", (req, res) => {
+  res.json({
+    service: "SafeLife AI — Emergency Backend",
+    status: "online",
+    time: new Date().toISOString(),
+    endpoints: {
+      health: "GET /health",
+      alert: "POST /alert",
+      locationUpdate: "POST /location-update",
+      testAlert: "POST /test-alert",
+    },
+  });
+});
+
 // ❤️ HEALTH CHECK
 app.get("/health", (req, res) => {
   res.json({
