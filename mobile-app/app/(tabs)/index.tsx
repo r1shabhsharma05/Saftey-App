@@ -20,15 +20,15 @@ import * as Battery from 'expo-battery';
 import { supabase } from '../../utils/supabase';
 import { Theme } from '../../constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import AlertActiveView from '../../components/tactical/AlertActiveView';
+import AlertActiveView from '../../components/AlertActiveView';
 import { rankSafePlaces, calculateBearing, getCardinalDirection } from '../../utils/escapeLogic';
-import ScreenBackground from '../../components/premium/ScreenBackground';
-import GlassCard from '../../components/premium/GlassCard';
-import TiltCard from '../../components/premium/TiltCard';
-import StatusPill from '../../components/premium/StatusPill';
-import SectionHeader from '../../components/premium/SectionHeader';
-import SafeHubCard from '../../components/premium/SafeHubCard';
-import PoliceStationCard from '../../components/premium/PoliceStationCard';
+import ScreenBackground from '../../components/ui/ScreenBackground';
+import GlassCard from '../../components/ui/GlassCard';
+import TiltCard from '../../components/ui/TiltCard';
+import StatusPill from '../../components/ui/StatusPill';
+import SectionHeader from '../../components/ui/SectionHeader';
+import SafeHubCard from '../../components/ui/SafeHubCard';
+import PoliceStationCard from '../../components/ui/PoliceStationCard';
 
 // Backend URL is configurable via EXPO_PUBLIC_BACKEND_URL (see .env.example).
 // Falls back to the last-known dev address for local runs.

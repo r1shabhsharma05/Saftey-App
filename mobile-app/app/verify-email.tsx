@@ -4,10 +4,10 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { resendConfirmation } from '../utils/auth';
-import FloxlyBackground from '../components/floxly/FloxlyBackground';
-import FloxlyBrand from '../components/floxly/FloxlyBrand';
-import FloxlyButton from '../components/floxly/FloxlyButton';
-import { Floxly } from '../constants/floxly';
+import AuthBackground from '../components/auth/Background';
+import AuthBrand from '../components/auth/Brand';
+import AuthButton from '../components/auth/Button';
+import { AuthTheme } from '../constants/auth-theme';
 
 /**
  * Shown after signup when Supabase requires email confirmation.
@@ -26,10 +26,10 @@ export default function VerifyEmailScreen() {
   };
 
   return (
-    <FloxlyBackground>
+    <AuthBackground>
       <View style={styles.root}>
         <Animated.View entering={FadeIn.duration(500)} style={styles.brand}>
-          <FloxlyBrand compact />
+          <AuthBrand compact />
         </Animated.View>
 
         <Animated.View entering={FadeInUp.delay(120).duration(500)} style={styles.card}>
@@ -43,7 +43,7 @@ export default function VerifyEmailScreen() {
             {'\n'}Tap the link to activate your guardian account.
           </Text>
 
-          <FloxlyButton
+          <AuthButton
             title="Resend Link"
             onPress={handleResend}
             loading={sending}
@@ -58,7 +58,7 @@ export default function VerifyEmailScreen() {
           </View>
         </Animated.View>
       </View>
-    </FloxlyBackground>
+    </AuthBackground>
   );
 }
 
@@ -70,9 +70,9 @@ const styles = StyleSheet.create({
     width: 110,
     height: 110,
     borderRadius: 55,
-    backgroundColor: Floxly.colors.pill,
+    backgroundColor: AuthTheme.colors.pill,
     borderWidth: 1,
-    borderColor: Floxly.colors.pillBorder,
+    borderColor: AuthTheme.colors.pillBorder,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 26,
@@ -82,26 +82,26 @@ const styles = StyleSheet.create({
     elevation: 10,
   },
   headline: {
-    color: Floxly.colors.heading,
-    fontFamily: Floxly.fonts.headline,
+    color: AuthTheme.colors.heading,
+    fontFamily: AuthTheme.fonts.headline,
     fontSize: 30,
     textAlign: 'center',
   },
   sub: {
-    color: Floxly.colors.subtext,
-    fontFamily: Floxly.fonts.body,
+    color: AuthTheme.colors.subtext,
+    fontFamily: AuthTheme.fonts.body,
     fontSize: 14,
     textAlign: 'center',
     marginTop: 12,
     lineHeight: 21,
   },
-  email: { color: '#fff', fontFamily: Floxly.fonts.bodyBold },
+  email: { color: '#fff', fontFamily: AuthTheme.fonts.bodyBold },
   cta: { width: '100%', marginTop: 30, marginBottom: 20 },
   switchRow: { flexDirection: 'row', alignItems: 'center' },
-  switchText: { color: Floxly.colors.subtext, fontFamily: Floxly.fonts.body, fontSize: 14 },
+  switchText: { color: AuthTheme.colors.subtext, fontFamily: AuthTheme.fonts.body, fontSize: 14 },
   switchLink: {
     color: '#fff',
-    fontFamily: Floxly.fonts.bodyBold,
+    fontFamily: AuthTheme.fonts.bodyBold,
     fontSize: 14,
     textDecorationLine: 'underline',
   },

@@ -13,12 +13,12 @@ import { useRouter } from 'expo-router';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
 import { supabase } from '../utils/supabase';
 import { ensureProfile, friendlyAuthError, resendConfirmation } from '../utils/auth';
-import FloxlyBackground from '../components/floxly/FloxlyBackground';
-import FloxlyBrand from '../components/floxly/FloxlyBrand';
-import FloxlyInput from '../components/floxly/FloxlyInput';
-import FloxlyButton from '../components/floxly/FloxlyButton';
-import SocialButton, { OrDivider } from '../components/floxly/SocialButton';
-import { Floxly } from '../constants/floxly';
+import AuthBackground from '../components/auth/Background';
+import AuthBrand from '../components/auth/Brand';
+import AuthInput from '../components/auth/Input';
+import AuthButton from '../components/auth/Button';
+import SocialButton, { OrDivider } from '../components/auth/SocialButton';
+import { AuthTheme } from '../constants/auth-theme';
 
 /**
  * Login — Floxly reference screen 2, adapted for SafeLife AI:
@@ -103,7 +103,7 @@ export default function LoginScreen() {
   };
 
   return (
-    <FloxlyBackground>
+    <AuthBackground>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.flex}
@@ -114,7 +114,7 @@ export default function LoginScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <Animated.View entering={FadeIn.duration(500)} style={styles.brand}>
-            <FloxlyBrand />
+            <AuthBrand />
           </Animated.View>
 
           <Animated.View entering={FadeInUp.delay(100).duration(500)}>
@@ -130,7 +130,7 @@ export default function LoginScreen() {
 
           <Animated.View entering={FadeInUp.delay(240).duration(500)}>
             <OrDivider />
-            <FloxlyInput
+            <AuthInput
               icon="email-outline"
               placeholder="Email address"
               value={email}
@@ -139,7 +139,7 @@ export default function LoginScreen() {
               autoCapitalize="none"
               autoCorrect={false}
             />
-            <FloxlyInput
+            <AuthInput
               icon="lock-outline"
               placeholder="Password"
               value={password}
@@ -177,7 +177,7 @@ export default function LoginScreen() {
               <Text style={styles.forgot}>Forgot Password?</Text>
             </Pressable>
 
-            <FloxlyButton
+            <AuthButton
               title="Log In"
               onPress={handleLogin}
               loading={loading}
@@ -195,7 +195,7 @@ export default function LoginScreen() {
           <Text style={styles.terms}>Terms of Service | Privacy Policy</Text>
         </ScrollView>
       </KeyboardAvoidingView>
-    </FloxlyBackground>
+    </AuthBackground>
   );
 }
 
@@ -210,14 +210,14 @@ const styles = StyleSheet.create({
   },
   brand: { alignItems: 'center', marginBottom: 34 },
   headline: {
-    color: Floxly.colors.heading,
-    fontFamily: Floxly.fonts.headline,
+    color: AuthTheme.colors.heading,
+    fontFamily: AuthTheme.fonts.headline,
     fontSize: 32,
     textAlign: 'center',
   },
   sub: {
-    color: Floxly.colors.subtext,
-    fontFamily: Floxly.fonts.body,
+    color: AuthTheme.colors.subtext,
+    fontFamily: AuthTheme.fonts.body,
     fontSize: 14,
     textAlign: 'center',
     marginTop: 8,
@@ -228,7 +228,7 @@ const styles = StyleSheet.create({
   fieldGap: { marginTop: 14 },
   forgot: {
     color: '#fff',
-    fontFamily: Floxly.fonts.label,
+    fontFamily: AuthTheme.fonts.label,
     fontSize: 13,
     textAlign: 'right',
     marginTop: 14,
@@ -236,16 +236,16 @@ const styles = StyleSheet.create({
   },
   cta: { marginBottom: 22 },
   switchRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
-  switchText: { color: Floxly.colors.subtext, fontFamily: Floxly.fonts.body, fontSize: 14 },
+  switchText: { color: AuthTheme.colors.subtext, fontFamily: AuthTheme.fonts.body, fontSize: 14 },
   switchLink: {
     color: '#fff',
-    fontFamily: Floxly.fonts.bodyBold,
+    fontFamily: AuthTheme.fonts.bodyBold,
     fontSize: 14,
     textDecorationLine: 'underline',
   },
   terms: {
-    color: Floxly.colors.faint,
-    fontFamily: Floxly.fonts.body,
+    color: AuthTheme.colors.faint,
+    fontFamily: AuthTheme.fonts.body,
     fontSize: 12,
     textAlign: 'center',
     marginTop: 34,

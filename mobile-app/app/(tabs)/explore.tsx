@@ -14,10 +14,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../../utils/supabase';
 import { useRouter } from 'expo-router';
 import { Theme } from '../../constants/theme';
-import ScreenBackground from '../../components/premium/ScreenBackground';
-import GlassCard from '../../components/premium/GlassCard';
-import StatusPill from '../../components/premium/StatusPill';
-import SectionHeader from '../../components/premium/SectionHeader';
+import ScreenBackground from '../../components/ui/ScreenBackground';
+import GlassCard from '../../components/ui/GlassCard';
+import StatusPill from '../../components/ui/StatusPill';
+import SectionHeader from '../../components/ui/SectionHeader';
 
 export default function PremiumProfileScreen() {
   const router = useRouter();

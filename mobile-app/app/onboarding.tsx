@@ -4,8 +4,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
-import FloxlyBackground from '../components/floxly/FloxlyBackground';
-import { Floxly } from '../constants/floxly';
+import AuthBackground from '../components/auth/Background';
+import { AuthTheme } from '../constants/auth-theme';
 
 const { width } = Dimensions.get('window');
 
@@ -18,7 +18,7 @@ export default function OnboardingScreen() {
   const goLogin = () => router.replace('/login');
 
   return (
-    <FloxlyBackground>
+    <AuthBackground>
       <View style={styles.root}>
         {/* Top-left brand */}
         <Animated.View entering={FadeIn.duration(500)} style={styles.brandRow}>
@@ -76,13 +76,13 @@ export default function OnboardingScreen() {
             <Text style={styles.skip}>Skip</Text>
           </Pressable>
           <Pressable onPress={goLogin} style={({ pressed }) => [pressed && styles.pressed]}>
-            <LinearGradient colors={Floxly.gradients.cta} style={styles.arrowBtn}>
+            <LinearGradient colors={AuthTheme.gradients.cta} style={styles.arrowBtn}>
               <Ionicons name="arrow-forward" size={26} color="#fff" />
             </LinearGradient>
           </Pressable>
         </Animated.View>
       </View>
-    </FloxlyBackground>
+    </AuthBackground>
   );
 }
 
@@ -93,7 +93,7 @@ const styles = StyleSheet.create({
   brandRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   brandText: {
     color: '#fff',
-    fontFamily: Floxly.fonts.headline,
+    fontFamily: AuthTheme.fonts.headline,
     fontSize: 22,
   },
   orbWrap: {
@@ -142,19 +142,19 @@ const styles = StyleSheet.create({
   orbit3: { top: '52%', left: width * 0.08, width: 8, height: 8, borderRadius: 4 },
   copy: { marginTop: 12 },
   kicker: {
-    color: Floxly.colors.subtext,
-    fontFamily: Floxly.fonts.label,
+    color: AuthTheme.colors.subtext,
+    fontFamily: AuthTheme.fonts.label,
     fontSize: 12,
     letterSpacing: 3,
     marginBottom: 12,
   },
   headline: {
     color: '#fff',
-    fontFamily: Floxly.fonts.headline,
+    fontFamily: AuthTheme.fonts.headline,
     fontSize: 40,
     lineHeight: 46,
   },
-  headlineAccent: { color: Floxly.colors.accent },
+  headlineAccent: { color: AuthTheme.colors.accent },
   metaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 22, gap: 14 },
   avatarStack: { flexDirection: 'row' },
   miniAvatar: {
@@ -167,8 +167,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   metaText: {
-    color: Floxly.colors.subtext,
-    fontFamily: Floxly.fonts.body,
+    color: AuthTheme.colors.subtext,
+    fontFamily: AuthTheme.fonts.body,
     fontSize: 13,
     lineHeight: 17,
   },
@@ -179,8 +179,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   skip: {
-    color: Floxly.colors.subtext,
-    fontFamily: Floxly.fonts.body,
+    color: AuthTheme.colors.subtext,
+    fontFamily: AuthTheme.fonts.body,
     fontSize: 16,
     paddingBottom: 14,
   },
