@@ -1,7 +1,7 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from '../utils/supabase';
 import * as SplashScreen from 'expo-splash-screen';
 import { 
@@ -95,11 +95,16 @@ export default function RootLayout() {
     if (!initialized || !fontsLoaded) return;
 
     const inTabsGroup = segments[0] === '(tabs)';
+    const inAuthGroup = ['login', 'register', 'onboarding', 'verify-email'].includes(
+      segments[0] as string
+    );
 
     if (!session && inTabsGroup) {
-      router.replace('/register');
+      router.replace('/onboarding');
     } else if (session && !inTabsGroup) {
       router.replace('/(tabs)');
+    } else if (!session && !inTabsGroup && !inAuthGroup) {
+      router.replace('/onboarding');
     }
   }, [session, initialized, segments, fontsLoaded]);
 
@@ -110,8 +115,10 @@ export default function RootLayout() {
   return (
     <ThemeProvider value={colorScheme === 'dark' ? CustomDarkTheme : DefaultTheme}>
       <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="onboarding" />
         <Stack.Screen name="login" />
         <Stack.Screen name="register" />
+        <Stack.Screen name="verify-email" />
         <Stack.Screen name="(tabs)" />
       </Stack>
       <StatusBar style="auto" />

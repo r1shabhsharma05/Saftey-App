@@ -1,176 +1,273 @@
-import React, { useState, useCallback } from 'react';
-import { View, StyleSheet, Alert } from 'react-native';
+import React, { useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Pressable,
+  Alert,
+  ScrollView,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
+import { useRouter } from 'expo-router';
+import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
 import { supabase } from '../utils/supabase';
-import { useRouter, useFocusEffect } from 'expo-router';
-import AuthLayout from '../components/premium/AuthLayout';
-import AuthInput from '../components/premium/AuthInput';
-import GlowButton from '../components/premium/GlowButton';
+import { ensureProfile, friendlyAuthError } from '../utils/auth';
+import FloxlyBackground from '../components/floxly/FloxlyBackground';
+import FloxlyBrand from '../components/floxly/FloxlyBrand';
+import FloxlyInput from '../components/floxly/FloxlyInput';
+import FloxlyButton from '../components/floxly/FloxlyButton';
+import SocialButton, { OrDivider } from '../components/floxly/SocialButton';
+import { Floxly } from '../constants/floxly';
 
-const EMPTY = { firstName: '', lastName: '', email: '', password: '', phone: '', address: '' };
-
-export default function PremiumRegisterScreen() {
+/**
+ * Register — Floxly reference screen 3, adapted for SafeLife AI:
+ * "Create an Account", social row, guardian detail fields,
+ * gradient Continue CTA. Handles email-verification flow properly.
+ */
+export default function RegisterScreen() {
   const router = useRouter();
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [formData, setFormData] = useState(EMPTY);
-  const set = (key: keyof typeof EMPTY) => (val: string) =>
-    setFormData((f) => ({ ...f, [key]: val }));
 
-  useFocusEffect(
-    useCallback(() => {
-      setFormData(EMPTY);
-    }, [])
-  );
-
-  const showAlreadyRegisteredAlert = () => {
-    Alert.alert('Already Registered', 'You are already registered. Redirecting to login…', [
-      { text: 'OK', onPress: () => router.replace('/login') },
-    ]);
+  const handleOAuth = async (provider: 'google' | 'apple') => {
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: {
+          redirectTo:
+            Platform.OS === 'web' && typeof window !== 'undefined'
+              ? window.location.origin
+              : undefined,
+        },
+      });
+      if (error) {
+        Alert.alert(
+          'Social Sign-Up Unavailable',
+          'Enable the ' +
+            provider +
+            ' provider in your Supabase dashboard (Authentication → Providers), then try again.'
+        );
+      }
+    } catch (e: any) {
+      Alert.alert('Social Sign-Up Unavailable', friendlyAuthError(e));
+    }
   };
 
   const handleRegister = async () => {
-    const { email, password, firstName, lastName, phone, address } = formData;
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanFirst = firstName.trim();
+    const cleanPhone = phone.trim();
 
-    if (!email || !password || !firstName || !phone) {
-      Alert.alert('Incomplete', 'First name, email, password and phone are required.');
+    if (!cleanFirst || !cleanEmail || !password || !cleanPhone) {
+      Alert.alert(
+        'Missing Details',
+        'Please fill in your name, phone, email and password.'
+      );
       return;
     }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    const nameRegex = /^[a-zA-Z\s]+$/;
-    const digitsOnly = phone.replace(/\D/g, '');
-    if (!emailRegex.test(email)) {
-      Alert.alert('Invalid Format', 'Please enter a valid email address.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      Alert.alert('Invalid Email', 'Please enter a valid email address.');
       return;
     }
-    if (!nameRegex.test(firstName) || (lastName && !nameRegex.test(lastName))) {
-      Alert.alert('Invalid Format', 'Names can only contain letters and spaces.');
+    if (!/^[a-zA-Z\s]+$/.test(cleanFirst)) {
+      Alert.alert('Invalid Name', 'Name can only contain letters and spaces.');
       return;
     }
-    if (digitsOnly.length < 10) {
-      Alert.alert('Invalid Format', 'Please enter a valid phone number (min 10 digits).');
+    if (cleanPhone.replace(/\D/g, '').length < 10) {
+      Alert.alert('Invalid Phone', 'Please enter a valid phone number (min 10 digits).');
+      return;
+    }
+    if (password.length < 6) {
+      Alert.alert('Weak Password', 'Password must be at least 6 characters long.');
       return;
     }
 
     setLoading(true);
     try {
-      const { data: existingUser } = await supabase
-        .from('profiles')
-        .select('id')
-        .or(`phone.eq.${phone},email.eq.${email}`)
-        .maybeSingle();
-
-      if (existingUser) {
-        showAlreadyRegisteredAlert();
-        return;
-      }
-
-      const { data: authData, error: authError } = await supabase.auth.signUp({ email, password });
-
-      if (authError) {
-        const msg = authError.message.toLowerCase();
-        if (msg.includes('already registered') || msg.includes('already been taken') || msg.includes('exists')) {
-          showAlreadyRegisteredAlert();
-          return;
-        }
-        throw authError;
-      }
-
-      if (authData?.user?.identities && authData.user.identities.length === 0) {
-        showAlreadyRegisteredAlert();
-        return;
-      }
-
-      if (authData?.user) {
-        const uniqueId = `SL-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-        const { error: profileError } = await supabase.from('profiles').insert([
-          {
-            id: authData.user.id,
-            first_name: firstName,
-            last_name: lastName,
-            email,
-            phone,
-            address,
-            unique_id: uniqueId,
+      const { data, error } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password,
+        options: {
+          data: {
+            first_name: cleanFirst,
+            last_name: lastName.trim(),
+            phone: cleanPhone,
           },
-        ]);
+        },
+      });
 
-        if (profileError) {
-          if (profileError.code === '23505') {
-            showAlreadyRegisteredAlert();
-            return;
-          }
-          throw profileError;
-        }
-        Alert.alert('System Initialized', `Welcome, Guardian. Your Unique ID is ${uniqueId}`);
+      if (error) {
+        Alert.alert('Sign Up Failed', friendlyAuthError(error));
+        return;
+      }
+
+      if (data.session && data.user) {
+        // No email confirmation required — create profile and enter.
+        await ensureProfile(data.user);
         router.replace('/(tabs)');
+      } else if (data.user) {
+        // Email confirmation required — guide to inbox.
+        router.push({
+          pathname: '/verify-email',
+          params: { email: cleanEmail },
+        });
       }
-    } catch (error: any) {
-      const msg = error.message?.toLowerCase() || '';
-      if (msg.includes('already') || msg.includes('duplicate') || msg.includes('unique')) {
-        showAlreadyRegisteredAlert();
-      } else {
-        Alert.alert('Protocol Failure', error.message);
-      }
+    } catch (e: any) {
+      Alert.alert('Sign Up Failed', friendlyAuthError(e));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <AuthLayout
-      title="System Initialization"
-      subtitle="Enlist in the SafeLife AI Guardian Network"
-      footerText="ALREADY REGISTERED?"
-      footerLink="SIGN IN"
-      onFooterPress={() => router.push('/login')}
-    >
-      <View style={styles.row}>
-        <View style={styles.half}>
-          <AuthInput label="First Name" icon="account-outline" placeholder="John" value={formData.firstName} onChangeText={set('firstName')} />
-        </View>
-        <View style={styles.half}>
-          <AuthInput label="Last Name" icon="account-outline" placeholder="Doe" value={formData.lastName} onChangeText={set('lastName')} />
-        </View>
-      </View>
-      <AuthInput
-        label="Tactical Email"
-        icon="email-outline"
-        placeholder="guardian@safelife.ai"
-        value={formData.email}
-        onChangeText={set('email')}
-        keyboardType="email-address"
-        autoCapitalize="none"
-      />
-      <AuthInput
-        label="Access Cipher"
-        icon="lock-outline"
-        placeholder="••••••••"
-        value={formData.password}
-        onChangeText={set('password')}
-        secure
-      />
-      <AuthInput
-        label="Comms Channel"
-        icon="phone-outline"
-        placeholder="+91 XXXXX XXXXX"
-        value={formData.phone}
-        onChangeText={set('phone')}
-        keyboardType="phone-pad"
-      />
-      <AuthInput
-        label="Deployment Base"
-        icon="map-marker-outline"
-        placeholder="Home base address"
-        value={formData.address}
-        onChangeText={set('address')}
-        multiline
-      />
-      <GlowButton title="INITIALIZE PROFILE" onPress={handleRegister} loading={loading} />
-    </AuthLayout>
+    <FloxlyBackground>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.flex}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Animated.View entering={FadeIn.duration(500)} style={styles.brand}>
+            <FloxlyBrand compact />
+          </Animated.View>
+
+          <Animated.View entering={FadeInUp.delay(100).duration(500)}>
+            <Text style={styles.headline}>Create an Account</Text>
+            <Text style={styles.sub}>
+              Join the guardian network — verify your email and set a password.
+            </Text>
+          </Animated.View>
+
+          <Animated.View entering={FadeInUp.delay(180).duration(500)} style={styles.socialRow}>
+            <SocialButton provider="google" onPress={() => handleOAuth('google')} />
+            <View style={styles.socialGap} />
+            <SocialButton provider="apple" onPress={() => handleOAuth('apple')} />
+          </Animated.View>
+
+          <Animated.View entering={FadeInUp.delay(240).duration(500)}>
+            <OrDivider />
+
+            <View style={styles.row}>
+              <View style={styles.half}>
+                <FloxlyInput
+                  icon="account-outline"
+                  placeholder="First name"
+                  value={firstName}
+                  onChangeText={setFirstName}
+                />
+              </View>
+              <View style={styles.half}>
+                <FloxlyInput
+                  icon="account-outline"
+                  placeholder="Last name"
+                  value={lastName}
+                  onChangeText={setLastName}
+                />
+              </View>
+            </View>
+
+            <FloxlyInput
+              icon="phone-outline"
+              placeholder="Phone number"
+              value={phone}
+              onChangeText={setPhone}
+              keyboardType="phone-pad"
+              containerStyle={styles.fieldGap}
+            />
+            <FloxlyInput
+              icon="email-outline"
+              placeholder="Email address"
+              value={email}
+              onChangeText={setEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              containerStyle={styles.fieldGap}
+            />
+            <FloxlyInput
+              icon="lock-outline"
+              placeholder="Set a password"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry
+              containerStyle={styles.fieldGap}
+            />
+
+            <FloxlyButton
+              title="Continue"
+              onPress={handleRegister}
+              loading={loading}
+              style={styles.cta}
+            />
+
+            <View style={styles.switchRow}>
+              <Text style={styles.switchText}>Have an account? </Text>
+              <Pressable onPress={() => router.push('/login')} hitSlop={8}>
+                <Text style={styles.switchLink}>Log In</Text>
+              </Pressable>
+            </View>
+          </Animated.View>
+
+          <Text style={styles.terms}>Terms of Service | Privacy Policy</Text>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </FloxlyBackground>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1 },
+  scroll: {
+    flexGrow: 1,
+    paddingHorizontal: 30,
+    paddingTop: 64,
+    paddingBottom: 30,
+    justifyContent: 'center',
+  },
+  brand: { alignItems: 'center', marginBottom: 26 },
+  headline: {
+    color: Floxly.colors.heading,
+    fontFamily: Floxly.fonts.headline,
+    fontSize: 30,
+    textAlign: 'center',
+  },
+  sub: {
+    color: Floxly.colors.subtext,
+    fontFamily: Floxly.fonts.body,
+    fontSize: 13.5,
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 24,
+    lineHeight: 19,
+  },
+  socialRow: { flexDirection: 'row' },
+  socialGap: { width: 14 },
   row: { flexDirection: 'row', gap: 12 },
   half: { flex: 1 },
+  fieldGap: { marginTop: 14 },
+  cta: { marginTop: 24, marginBottom: 20 },
+  switchRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
+  switchText: { color: Floxly.colors.subtext, fontFamily: Floxly.fonts.body, fontSize: 14 },
+  switchLink: {
+    color: '#fff',
+    fontFamily: Floxly.fonts.bodyBold,
+    fontSize: 14,
+    textDecorationLine: 'underline',
+  },
+  terms: {
+    color: Floxly.colors.faint,
+    fontFamily: Floxly.fonts.body,
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 28,
+    textDecorationLine: 'underline',
+  },
 });
