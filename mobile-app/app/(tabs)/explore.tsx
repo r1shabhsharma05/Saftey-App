@@ -9,7 +9,6 @@ import {
   Alert,
 } from 'react-native';
 import Reanimated, { FadeInUp } from 'react-native-reanimated';
-import { Image } from 'expo-image';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../../utils/supabase';
@@ -87,7 +86,9 @@ export default function PremiumProfileScreen() {
         {/* Profile hero */}
         <Reanimated.View entering={FadeInUp.delay(80).duration(500)} style={styles.profileHero}>
           <View style={styles.avatarGlow}>
-            <Image source={require('../../assets/images/icon.png')} style={styles.avatar} contentFit="cover" />
+            <View style={styles.avatarInner}>
+              <Ionicons name="person" size={52} color={Theme.colors.primary} />
+            </View>
           </View>
           <Text style={styles.userName}>
             {profile?.first_name} {profile?.last_name}
@@ -198,7 +199,14 @@ const styles = StyleSheet.create({
     elevation: 12,
     overflow: 'hidden',
   },
-  avatar: { width: '100%', height: '100%', borderRadius: 31 },
+  avatarInner: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 31,
+    backgroundColor: '#101024',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   userName: { fontFamily: Theme.fonts.headline, fontSize: 24, color: Theme.colors.onSurface, marginTop: 16 },
   idRow: { marginTop: 10 },
   infoGrid: { flexDirection: 'row', gap: 12 },

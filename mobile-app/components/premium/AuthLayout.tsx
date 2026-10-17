@@ -9,7 +9,7 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
-import { Image } from 'expo-image';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Theme } from '../../constants/theme';
 import ScreenBackground from './ScreenBackground';
 
@@ -47,11 +47,7 @@ export default function AuthLayout({
         >
           <Animated.View entering={FadeIn.duration(500)} style={styles.header}>
             <View style={styles.logoGlow}>
-              <Image
-                source={require('../../assets/images/icon.png')}
-                style={styles.logo}
-                contentFit="contain"
-              />
+              <MaterialCommunityIcons name="shield-check" size={56} color={Theme.colors.primary} />
             </View>
             <Text style={styles.title}>{title}</Text>
             <Text style={styles.subtitle}>{subtitle}</Text>
@@ -95,7 +91,6 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     overflow: 'hidden',
   },
-  logo: { width: 104, height: 104 },
   title: {
     fontFamily: Theme.fonts.headline,
     fontSize: 30,
