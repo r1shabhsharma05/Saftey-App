@@ -93,7 +93,7 @@ ${nearestStation || "Searching nearest station..."}
 });
 
 // 📡 LIVE LOCATION UPDATE
-app.post("/location-update", async (req, res) => {
+app.post("/location-update", requireApiKey, async (req, res) => {
   const { lat, lng } = req.body;
 
   const message = `📡 LIVE TRACKING UPDATE
