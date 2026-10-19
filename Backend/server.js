@@ -1,8 +1,12 @@
 const express = require("express");
 const axios = require("axios");
 const requireApiKey = require("./middleware/requireApiKey");
+const helmet = require("helmet");
 
 const app = express();
+
+// 🔒 Security headers. CSP off: this is a JSON API, no HTML is served.
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json());
 
 // ✅ CORS
