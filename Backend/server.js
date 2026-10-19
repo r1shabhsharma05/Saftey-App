@@ -135,7 +135,7 @@ app.get("/health", (req, res) => {
 });
 
 // 🧪 TEST ALERT (for debugging)
-app.post("/test-alert", async (req, res) => {
+app.post("/test-alert", requireApiKey, async (req, res) => {
   const testLat = "28.6139";
   const testLng = "77.2090";
   const message = `🧪 TEST ALERT!
