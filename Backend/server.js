@@ -1,5 +1,6 @@
 const express = require("express");
 const axios = require("axios");
+const requireApiKey = require("./middleware/requireApiKey");
 
 const app = express();
 app.use(express.json());
@@ -44,7 +45,7 @@ const sendTelegramMessage = async (message) => {
 };
 
 // 🚨 SOS ALERT
-app.post("/alert", async (req, res) => {
+app.post("/alert", requireApiKey, async (req, res) => {
   const { lat, lng, name, phone, battery, status, nearestStation } = req.body;
 
   if (!lat || !lng) {
