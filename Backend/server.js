@@ -14,18 +14,25 @@ app.use((req, res, next) => {
   next();
 });
 
-// 🔐 Telegram config
-const BOT_TOKEN = "8708535469:AAF4UQoFDv_LeH3TqsmxHeu7XXaEBEkVf8Q";
+// 🔐 Telegram config — secrets come from the environment, never from code.
+// Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS in the hosting dashboard
+// (Vercel → Project → Settings → Environment Variables).
+// NOTE: a bot token was previously hardcoded in this public repo's history —
+// rotate it via BotFather; the code no longer embeds any credential.
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 
-// 👇 MULTIPLE CONTACTS
-const CHAT_IDS = [
-  "5870098046", // tu
-  // "SECOND_CHAT_ID",
-  // "THIRD_CHAT_ID"
-];
+// 👇 Recipient chat IDs — comma-separated, from the environment.
+const CHAT_IDS = (process.env.TELEGRAM_CHAT_IDS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 // 🔥 COMMON SEND FUNCTION
 const sendTelegramMessage = async (message) => {
+  if (!BOT_TOKEN || CHAT_IDS.length === 0) {
+    console.log("⚠️ Telegram disabled — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS.");
+    return;
+  }
   for (let chat_id of CHAT_IDS) {
     try {
       const resp = await axios.post(
