@@ -179,7 +179,11 @@ export default function TacticalDashboard() {
 
       const response = await fetch(`${BACKEND_URL}/alert`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // Backend API-key auth: required on /alert when the backend's API_SECRET is set.
+          'x-api-key': process.env.EXPO_PUBLIC_API_SECRET ?? '',
+        },
         body: JSON.stringify({
           lat,
           lng,
