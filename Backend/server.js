@@ -7,7 +7,8 @@ const app = express();
 
 // 🔒 Security headers. CSP off: this is a JSON API, no HTML is served.
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(express.json());
+// 🛡️ Cap body size — SOS payloads are tiny; oversized bodies are abuse.
+app.use(express.json({ limit: "32kb" }));
 
 // ✅ CORS
 app.use((req, res, next) => {
