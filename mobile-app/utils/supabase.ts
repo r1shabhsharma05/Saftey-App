@@ -35,8 +35,8 @@ const customStorage = {
 };
 
 // 🚀 SUPABASE CONFIGURATION
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://menxbyfrgqnhjfypomeg.supabase.co';
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_eLAdACeCCmUtGJQN0N5QxA_Wf_VeZcc';
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://xkfrsjtfbylhhrvibmxk.supabase.co';
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhrZnJzanRmYnlsaGhydmlibXhrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzODcwNDksImV4cCI6MjEwNzk2MzA0OX0.ypd-j8LROeCjqcTloC2qhUw73gJZA_Hd7fn6KtJSYPE';
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
