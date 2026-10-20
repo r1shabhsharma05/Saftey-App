@@ -134,12 +134,18 @@ ${nearestStation}
 
 // 📡 LIVE LOCATION UPDATE
 // Rate-limited (60/min per IP — live tracking updates every few seconds)
-// + API-key gated.
+// + API-key gated. Coordinates strictly validated like /alert.
 app.post("/location-update", trackingLimiter, requireApiKey, async (req, res) => {
   const { lat, lng } = req.body;
 
+  if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
+    return res.status(400).json({ success: false, error: "Invalid location data" });
+  }
+  const latNum = toNumber(lat);
+  const lngNum = toNumber(lng);
+
   const message = `📡 LIVE TRACKING UPDATE
-📍 https://maps.google.com/?q=${lat},${lng}`;
+📍 https://maps.google.com/?q=${latNum},${lngNum}`;
 
   try {
     await sendTelegramMessage(message);
