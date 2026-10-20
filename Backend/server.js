@@ -1,6 +1,7 @@
 const express = require("express");
 const axios = require("axios");
 const requireApiKey = require("./middleware/requireApiKey");
+const { sosLimiter, trackingLimiter, testLimiter } = require("./middleware/rateLimit");
 const helmet = require("helmet");
 
 const app = express();
@@ -9,6 +10,11 @@ const app = express();
 app.use(helmet({ contentSecurityPolicy: false }));
 // 🛡️ Cap body size — SOS payloads are tiny; oversized bodies are abuse.
 app.use(express.json({ limit: "32kb" }));
+
+// 🌐 Trust the first proxy hop (Vercel's edge / local reverse proxies) so
+// req.ip — and therefore rate limiting — sees the real client IP. Without
+// this, every user shares one rate-limit bucket.
+app.set("trust proxy", 1);
 
 // ✅ CORS
 app.use((req, res, next) => {
@@ -57,7 +63,9 @@ const sendTelegramMessage = async (message) => {
 };
 
 // 🚨 SOS ALERT
-app.post("/alert", requireApiKey, async (req, res) => {
+// Rate-limited (5/15min per IP — each hit spams the user's Telegram
+// contacts) + API-key gated.
+app.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
   const { lat, lng, name, phone, battery, status, nearestStation } = req.body;
 
   if (!lat || !lng) {
@@ -105,7 +113,9 @@ ${nearestStation || "Searching nearest station..."}
 });
 
 // 📡 LIVE LOCATION UPDATE
-app.post("/location-update", requireApiKey, async (req, res) => {
+// Rate-limited (60/min per IP — live tracking updates every few seconds)
+// + API-key gated.
+app.post("/location-update", trackingLimiter, requireApiKey, async (req, res) => {
   const { lat, lng } = req.body;
 
   const message = `📡 LIVE TRACKING UPDATE
@@ -147,7 +157,8 @@ app.get("/health", (req, res) => {
 });
 
 // 🧪 TEST ALERT (for debugging)
-app.post("/test-alert", requireApiKey, async (req, res) => {
+// Rate-limited (10/hour per IP — debugging only, no reason to hammer it).
+app.post("/test-alert", testLimiter, requireApiKey, async (req, res) => {
   const testLat = "28.6139";
   const testLng = "77.2090";
   const message = `🧪 TEST ALERT!
