@@ -2,6 +2,12 @@ const express = require("express");
 const axios = require("axios");
 const requireApiKey = require("./middleware/requireApiKey");
 const { sosLimiter, trackingLimiter, testLimiter } = require("./middleware/rateLimit");
+const {
+  isValidLatitude,
+  isValidLongitude,
+  toNumber,
+  sanitizeText,
+} = require("./lib/validate");
 const helmet = require("helmet");
 
 const app = express();
@@ -64,34 +70,46 @@ const sendTelegramMessage = async (message) => {
 
 // 🚨 SOS ALERT
 // Rate-limited (5/15min per IP — each hit spams the user's Telegram
-// contacts) + API-key gated.
+// contacts) + API-key gated. Coordinates are strictly validated; free-text
+// fields are sanitized before they reach the Telegram message and logs.
 app.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
-  const { lat, lng, name, phone, battery, status, nearestStation } = req.body;
+  const { lat, lng } = req.body;
 
-  if (!lat || !lng) {
-    return res.json({ success: false, error: "Missing location data" });
+  // Reject garbage coordinates (non-numeric, out of range). The app blocks
+  // SOS before a GPS fix client-side; this is the server-side backstop —
+  // a maps link with "Loading..." or 9999 in it helps nobody.
+  if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
+    return res.status(400).json({ success: false, error: "Invalid location data" });
   }
+  const latNum = toNumber(lat);
+  const lngNum = toNumber(lng);
+
+  const name = sanitizeText(req.body.name, 100) || "Unknown User";
+  const phone = sanitizeText(req.body.phone, 30) || "Not Provided";
+  const battery = sanitizeText(req.body.battery, 10) || "Unknown";
+  const status = sanitizeText(req.body.status, 50) || "Stationary";
+  const nearestStation = sanitizeText(req.body.nearestStation, 200) || "Searching nearest station...";
 
   const message = `🚨 EMERGENCY SOS ALERT 🚨
 
-Name: ${name || "Unknown User"}
-Phone: ${phone || "Not Provided"}
+Name: ${name}
+Phone: ${phone}
 
 ⚠️ I AM IN DANGER. PLEASE HELP IMMEDIATELY.
 
 📍 STATIC LOCATION (Captured at SOS Trigger):
-https://maps.google.com/?q=${lat},${lng}
+https://maps.google.com/?q=${latNum},${lngNum}
 
 📡 LIVE LOCATION TRACKING (Real-Time Updates):
-https://maps.google.com/?q=${lat},${lng}
+https://maps.google.com/?q=${latNum},${lngNum}
 
 🕒 Time: ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })} | ${new Date().toLocaleDateString('en-GB')}
 
-🚶 Status: ${status || "Stationary"}
-🔋 Battery: ${battery || "Unknown"}%
+🚶 Status: ${status}
+🔋 Battery: ${battery}%
 
 🚓 Nearest Police Station:
-${nearestStation || "Searching nearest station..."}
+${nearestStation}
 
 🎥 Audio/Video recording started (if enabled)
 
@@ -102,13 +120,15 @@ ${nearestStation || "Searching nearest station..."}
     // We initiate the sending but don't await BEFORE responding success
     sendTelegramMessage(message).catch(err => console.log("🔥 Telegram Background Error:", err.message));
 
-    console.log("✅ SOS ALERT INITIATED for:", name, "at", lat, lng);
+    console.log("✅ SOS ALERT INITIATED for:", name, "at", latNum, lngNum);
 
     // 🚀 Respond immediately!
     res.json({ success: true, message: "Alert initiated successfully" });
   } catch (err) {
     console.log("❌ ERROR:", err.message);
-    res.status(500).json({ success: false, error: err.message });
+    // Generic message — err.message can leak internals (Telegram API
+    // errors, stack fragments). Details stay in the server logs.
+    res.status(500).json({ success: false, error: "Failed to send alert" });
   }
 });
 
