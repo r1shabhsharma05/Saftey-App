@@ -169,6 +169,13 @@ export default function TacticalDashboard() {
   };
 
   const sendSOSAlert = async () => {
+    // Don't fire an SOS with a placeholder location — the backend now
+    // rejects non-numeric coordinates with a 400, so fail fast here with
+    // a clear message instead of a silent server rejection.
+    if (lat === 'Loading...' || lng === 'Loading...') {
+      Alert.alert('Hold on', 'Waiting for a GPS fix before sending the SOS.');
+      return;
+    }
     setIsLoading(true);
     setStatus('ALERT ACTIVE');
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -200,6 +207,12 @@ export default function TacticalDashboard() {
       const data = await response.json();
       if (data.success) {
         Alert.alert('Alert Sent', 'Emergency contacts have been notified.');
+      } else {
+        // Surface backend rejections (400 invalid location, 401, 429 rate
+        // limit) instead of failing silently — the server's error strings
+        // are safe generics, never internals.
+        Alert.alert('Alert Failed', data?.error || 'Emergency servers rejected the alert. Try again.');
+        setStatus('SAFE');
       }
     } catch {
       Alert.alert('Alert Failed', 'Could not reach emergency servers. Check the backend URL.');
