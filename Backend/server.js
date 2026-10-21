@@ -2,6 +2,7 @@ const express = require("express");
 const axios = require("axios");
 const requireApiKey = require("./middleware/requireApiKey");
 const { sosLimiter, trackingLimiter, testLimiter } = require("./middleware/rateLimit");
+const corsMiddleware = require("./middleware/cors");
 const {
   isValidLatitude,
   isValidLongitude,
@@ -22,14 +23,11 @@ app.use(express.json({ limit: "32kb" }));
 // this, every user shares one rate-limit bucket.
 app.set("trust proxy", 1);
 
-// ✅ CORS
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.sendStatus(200);
-  next();
-});
+// 🔒 CORS — allowlisted origins only (see middleware/cors.js). With
+// CORS_ALLOWED_ORIGINS unset this emits no CORS headers at all (fail
+// closed): cross-site browser calls are blocked, the native app — which
+// sends no Origin — is unaffected.
+app.use(corsMiddleware);
 
 // 🔐 Telegram config — secrets come from the environment, never from code.
 // Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS in the hosting dashboard
