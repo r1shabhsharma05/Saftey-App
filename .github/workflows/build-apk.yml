@@ -48,4 +48,4 @@ jobs:
       - name: Publish APK as a GitHub release asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "apk-${{ github.run_number }}" mobile-app/android/app/build/outputs/apk/release/app-release.apk --title "SafeLife AI test APK #${{ github.run_number }}" --notes "Release APK (debug-signed) built by GitHub Actions for on-device testing."
+        run: gh release create "apk-${{ github.run_number }}" mobile-app/android/app/build/outputs/apk/release/app-release.apk --title "SafeLife AI test APK ${{ github.run_number }}" --notes "Release APK (debug-signed) built by GitHub Actions for on-device testing."
