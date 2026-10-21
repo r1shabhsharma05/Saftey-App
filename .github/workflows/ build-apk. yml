@@ -1,0 +1,51 @@
+name: Build SafeLife APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [apk-build]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Write runtime env (public client config only)
+        run: |
+          cat > mobile-app/.env <<'EOF'
+          EXPO_PUBLIC_BACKEND_URL=https://safelife-backend-rish0000-dots-projects.vercel.app
+          EOF
+
+      - name: Install dependencies
+        working-directory: mobile-app
+        run: npm install --no-audit --no-fund
+
+      - name: Prebuild Android project
+        working-directory: mobile-app
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+
+      - name: Build release APK
+        working-directory: mobile-app/android
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Publish APK as a GitHub release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "apk-${{ github.run_number }}" mobile-app/android/app/build/outputs/apk/release/app-release.apk --title "SafeLife AI test APK #${{ github.run_number }}" --notes "Release APK (debug-signed) built by GitHub Actions for on-device testing."
