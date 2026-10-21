@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "SafeLife AI",
+    "name": "SafeLife",
     "slug": "safelife-ai",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -38,7 +38,25 @@
           }
         }
       ],
-      "expo-font"
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "SafeLife uses your location to send SOS alerts and show nearby safe places."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "SafeLife lets you set a profile photo from your gallery."
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "SafeLife lets you pick emergency contacts to receive your SOS location."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

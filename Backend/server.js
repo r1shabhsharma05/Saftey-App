@@ -100,6 +100,23 @@ app.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
   const status = sanitizeText(req.body.status, 50) || "Stationary";
   const nearestStation = sanitizeText(req.body.nearestStation, 200) || "Searching nearest station...";
 
+  // 👥 Optional emergency contacts picked by the user in the app's
+  // Contacts tab and sent with the SOS. Capped at 10 and sanitized like
+  // every other field; listed in the message so the Telegram receiver
+  // can see who else the user chose to alert.
+  const contacts = (Array.isArray(req.body.contacts) ? req.body.contacts : [])
+    .slice(0, 10)
+    .map((c) => ({
+      name: sanitizeText(c?.name, 60),
+      phone: sanitizeText(c?.phone, 20),
+    }))
+    .filter((c) => c.name || c.phone);
+  const contactsSection = contacts.length
+    ? `\n\n👥 Emergency contacts selected by user:\n${contacts
+        .map((c) => `• ${c.name || "Unknown"} — ${c.phone || "No phone"}`)
+        .join("\n")}`
+    : "";
+
   const message = `🚨 EMERGENCY SOS ALERT 🚨
 
 Name: ${name}
@@ -119,7 +136,7 @@ https://maps.google.com/?q=${latNum},${lngNum}
 🔋 Battery: ${battery}%
 
 🚓 Nearest Police Station:
-${nearestStation}
+${nearestStation}${contactsSection}
 
 🎥 Audio/Video recording started (if enabled)
 

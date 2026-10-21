@@ -36,6 +36,17 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="contacts"
+        options={{
+          title: 'CONTACTS',
+          tabBarIcon: ({ color, focused }) => (
+            <View style={[styles.iconOrb, focused && styles.iconOrbActive]}>
+              <Ionicons name={focused ? 'people' : 'people-outline'} size={23} color={color} />
+            </View>
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="explore"
         options={{
           title: 'PROFILE',

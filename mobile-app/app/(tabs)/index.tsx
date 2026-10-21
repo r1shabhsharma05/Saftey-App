@@ -18,6 +18,7 @@ import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
 import { supabase } from '../../utils/supabase';
+import { ensureProfile } from '../../utils/auth';
 import { getBackendUrl } from '../../utils/backendUrl';
 import { Theme } from '../../constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -47,7 +48,10 @@ export default function TacticalDashboard() {
   const [nearestStation, setNearestStation] = useState('Searching...');
   const [isLoading, setIsLoading] = useState(false);
   const [cachedSafePlaces, setCachedSafePlaces] = useState<any[]>([]);
+  const [locationError, setLocationError] = useState<string | null>(null);
   const lastFetchTime = useRef<number>(0);
+  const locSubRef = useRef<Location.LocationSubscription | null>(null);
+  const batSubRef = useRef<{ remove: () => void } | null>(null);
 
   // --- Animations ---
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -61,34 +65,42 @@ export default function TacticalDashboard() {
         const offlineCache = await AsyncStorage.getItem('safePlacesCache');
         if (offlineCache) setCachedSafePlaces(JSON.parse(offlineCache));
 
-        const { status: permissionStatus } = await Location.requestForegroundPermissionsAsync();
-        if (permissionStatus !== 'granted') return;
-
-        const location = await Location.getCurrentPositionAsync({});
-        updateLocationData(location);
+        // (a) Seed coordinates from the last cached fix so the Live
+        // Location card never sits on 'Loading...' when GPS is slow —
+        // and SOS can still send with the last known position.
+        try {
+          const cachedCoords = await AsyncStorage.getItem('lastCoords');
+          if (cachedCoords) {
+            const parsed = JSON.parse(cachedCoords);
+            if (typeof parsed?.latitude === 'number' && typeof parsed?.longitude === 'number') {
+              applyCoords({
+                latitude: parsed.latitude,
+                longitude: parsed.longitude,
+                speed: typeof parsed.speed === 'number' ? parsed.speed : null,
+              });
+            }
+          }
+        } catch {
+          /* cache is best-effort */
+        }
 
         const level = await Battery.getBatteryLevelAsync();
         setBatteryLevel(Math.round(level * 100));
 
+        batSubRef.current = Battery.addBatteryLevelListener(({ batteryLevel }) => {
+          setBatteryLevel(Math.round(batteryLevel * 100));
+        });
+
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
+          // Users who signed up before the profiles flow existed may
+          // have no row — create it from auth metadata before selecting.
+          await ensureProfile(user);
           const { data } = await supabase.from('profiles').select('*').eq('id', user.id).single();
           if (data) setUserData(data);
         }
 
-        const locSub = await Location.watchPositionAsync(
-          { accuracy: Location.Accuracy.High, timeInterval: 10000, distanceInterval: 50 },
-          (loc) => updateLocationData(loc)
-        );
-
-        const batSub = Battery.addBatteryLevelListener(({ batteryLevel }) => {
-          setBatteryLevel(Math.round(batteryLevel * 100));
-        });
-
-        return () => {
-          locSub.remove();
-          batSub.remove();
-        };
+        await startLocationWatch();
       } catch (err) {
         console.log('Setup error:', err);
       }
@@ -102,15 +114,96 @@ export default function TacticalDashboard() {
         Animated.timing(pulseAnim, { toValue: 1, duration: 1600, useNativeDriver: true }),
       ])
     ).start();
+
+    return () => {
+      locSubRef.current?.remove();
+      batSubRef.current?.remove();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const updateLocationData = (location: Location.LocationObject) => {
-    const currentLat = location.coords.latitude.toFixed(6);
-    const currentLng = location.coords.longitude.toFixed(6);
+  const applyCoords = (coords: { latitude: number; longitude: number; speed?: number | null }) => {
+    const currentLat = coords.latitude.toFixed(6);
+    const currentLng = coords.longitude.toFixed(6);
     setLat(currentLat);
     setLng(currentLng);
-    setIsMoving(location.coords.speed !== null && location.coords.speed > 0.5);
+    setIsMoving(coords.speed != null && coords.speed > 0.5);
+    // Persist every fix so the next cold start can seed instantly.
+    AsyncStorage.setItem(
+      'lastCoords',
+      JSON.stringify({
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        speed: coords.speed ?? null,
+        timestamp: Date.now(),
+      })
+    ).catch(() => {});
     fetchSafePlacesCache(currentLat, currentLng);
+  };
+
+  const updateLocationData = (location: Location.LocationObject) => {
+    applyCoords(location.coords);
+  };
+
+  /**
+   * Location strategy: permission → last-known fix → fresh fix raced
+   * against a 12s timeout → live watch. The watch starts even if the
+   * first fixes fail, so a late GPS lock still lands. Failures are
+   * logged (never fatal) and permission problems surface via
+   * `locationError` in the Live Location card.
+   */
+  const startLocationWatch = async () => {
+    const { status: permissionStatus, canAskAgain } = await Location.requestForegroundPermissionsAsync();
+    if (permissionStatus !== 'granted') {
+      setLocationError(
+        canAskAgain
+          ? 'Location permission is off. SafeLife needs your location for SOS alerts and nearby safe places.'
+          : 'Location permission is permanently off. Enable it for SafeLife in Settings to use SOS.'
+      );
+      return;
+    }
+    setLocationError(null);
+
+    // (b) Last-known fix — usually instant, may be stale.
+    try {
+      const lastKnown = await Location.getLastKnownPositionAsync();
+      if (lastKnown) updateLocationData(lastKnown);
+    } catch (err) {
+      console.log('Last-known position failed:', err);
+    }
+
+    // (c) Fresh fix, raced against a 12s timeout so a hung GPS chip
+    // can't block the rest of setup.
+    try {
+      const fresh = await Promise.race([
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 12000)),
+      ]);
+      if (fresh) updateLocationData(fresh);
+    } catch (err) {
+      console.log('Current position failed:', err);
+    }
+
+    // (d) Live watch — starts regardless of whether a fix landed yet.
+    try {
+      locSubRef.current?.remove();
+      locSubRef.current = await Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.Balanced, timeInterval: 10000, distanceInterval: 50 },
+        (loc) => updateLocationData(loc)
+      );
+    } catch (err) {
+      console.log('Watch position failed:', err);
+    }
+  };
+
+  const handleEnableLocation = async () => {
+    const { status, canAskAgain } = await Location.getForegroundPermissionsAsync();
+    if (status !== 'granted' && !canAskAgain) {
+      // Permanently denied — the in-app prompt can't be shown again.
+      Linking.openSettings();
+      return;
+    }
+    await startLocationWatch();
   };
 
   const fetchSafePlacesCache = async (lat: string, lng: string) => {
@@ -171,16 +264,39 @@ export default function TacticalDashboard() {
   };
 
   const sendSOSAlert = async () => {
-    // Don't fire an SOS with a placeholder location — the backend now
-    // rejects non-numeric coordinates with a 400, so fail fast here with
-    // a clear message instead of a silent server rejection.
-    if (lat === 'Loading...' || lng === 'Loading...') {
-      Alert.alert('Hold on', 'Waiting for a GPS fix before sending the SOS.');
+    // Block only when NO coordinates exist at all — neither a live fix
+    // nor a cached one (lat/lng stay 'Loading...' only in that case).
+    // Never send placeholder strings: the backend rejects non-numeric
+    // coordinates with a 400.
+    if (lat === 'Loading...' || lng === 'Loading...' || isNaN(parseFloat(lat)) || isNaN(parseFloat(lng))) {
+      Alert.alert(
+        'Location not available yet',
+        'SafeLife has no location fix yet. Please enable GPS / location permission and try again.'
+      );
       return;
     }
     setIsLoading(true);
     setStatus('ALERT ACTIVE');
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+
+    // Emergency contacts picked in the Contacts tab (cached locally at
+    // save time) ride along with every SOS so the backend can list them
+    // in the alert message.
+    let sosContacts: { name: string; phone: string }[] = [];
+    try {
+      const rawContacts = await AsyncStorage.getItem('emergencyContacts');
+      if (rawContacts) {
+        const parsed = JSON.parse(rawContacts);
+        if (Array.isArray(parsed)) {
+          sosContacts = parsed
+            .filter((c) => c && typeof c.phone === 'string' && c.phone.trim() !== '')
+            .slice(0, 10)
+            .map((c) => ({ name: typeof c.name === 'string' ? c.name : '', phone: c.phone }));
+        }
+      }
+    } catch {
+      /* contacts are an optional part of the payload */
+    }
 
     try {
       const controller = new AbortController();
@@ -201,6 +317,7 @@ export default function TacticalDashboard() {
           battery: batteryLevel,
           status: isMoving ? 'Moving' : 'Stationary',
           nearestStation,
+          contacts: sosContacts,
         }),
         signal: controller.signal,
       });
@@ -237,7 +354,7 @@ export default function TacticalDashboard() {
     }
     try {
       await Share.share({
-        message: `SafeLife AI — my live location: https://maps.google.com/?q=${lat},${lng}`,
+        message: `SafeLife — my live location: https://maps.google.com/?q=${lat},${lng}`,
       });
     } catch {
       /* dismissed */
@@ -288,7 +405,7 @@ export default function TacticalDashboard() {
             <View style={styles.brandDot}>
               <MaterialCommunityIcons name="shield-check" size={20} color={Theme.colors.primaryContainer} />
             </View>
-            <Text style={styles.brandTitle}>SafeLife AI</Text>
+            <Text style={styles.brandTitle}>SafeLife</Text>
           </View>
           <StatusPill
             label={status}
@@ -348,6 +465,22 @@ export default function TacticalDashboard() {
                 </Text>
               </View>
             </View>
+            {locationError && (
+              <View style={styles.locationErrorBox}>
+                <View style={styles.locationErrorRow}>
+                  <Ionicons name="alert-circle-outline" size={16} color={Theme.colors.error} />
+                  <Text style={styles.locationErrorText}>{locationError}</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.enableLocationBtn}
+                  onPress={handleEnableLocation}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="location-outline" size={14} color={Theme.colors.primary} />
+                  <Text style={styles.enableLocationText}>ENABLE LOCATION</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </GlassCard>
         </Reanimated.View>
 
@@ -521,6 +654,29 @@ const styles = StyleSheet.create({
   },
   coordLabel: { fontFamily: Theme.fonts.label, fontSize: 8, color: Theme.colors.onSurfaceVariant, letterSpacing: 1.5, marginBottom: 5 },
   coordValue: { fontFamily: Theme.fonts.headline, fontSize: 13, color: Theme.colors.onSurface },
+  locationErrorBox: {
+    marginTop: 14,
+    backgroundColor: 'rgba(245, 51, 53, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 51, 53, 0.25)',
+    borderRadius: 14,
+    padding: 12,
+    gap: 10,
+  },
+  locationErrorRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  locationErrorText: { flex: 1, fontFamily: Theme.fonts.body, fontSize: 12, lineHeight: 17, color: Theme.colors.onSurface },
+  enableLocationBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    paddingVertical: 9,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 227, 253, 0.35)',
+    backgroundColor: 'rgba(0, 227, 253, 0.10)',
+  },
+  enableLocationText: { fontFamily: Theme.fonts.label, fontSize: 10, letterSpacing: 1.5, color: Theme.colors.primary },
   actionsGrid: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 22, paddingHorizontal: 4 },
   actionItem: { alignItems: 'center', gap: 8 },
   actionIconBox: {

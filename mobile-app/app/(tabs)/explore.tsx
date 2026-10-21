@@ -11,7 +11,10 @@ import {
 import Reanimated, { FadeInUp } from 'react-native-reanimated';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../utils/supabase';
+import { ensureProfile } from '../../utils/auth';
 import { useRouter } from 'expo-router';
 import { Theme } from '../../constants/theme';
 import ScreenBackground from '../../components/ui/ScreenBackground';
@@ -23,6 +26,8 @@ export default function PremiumProfileScreen() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<any>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   useEffect(() => {
     fetchProfile();
@@ -35,6 +40,10 @@ export default function PremiumProfileScreen() {
         router.replace('/login');
         return;
       }
+      setUserId(user.id);
+      // Users who signed up before the profiles flow existed may have
+      // no row — create it from auth metadata before selecting.
+      await ensureProfile(user);
       const { data, error } = await supabase.from('profiles').select('*').eq('id', user.id).single();
       if (error) throw error;
       setProfile(data);
@@ -42,6 +51,55 @@ export default function PremiumProfileScreen() {
       console.error('Profile fetch error:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleChangePhoto = async () => {
+    try {
+      if (!userId) {
+        Alert.alert('Not signed in', 'Please sign in again to change your photo.');
+        return;
+      }
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Allow photo access in Settings to set a profile photo.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.7,
+      });
+      if (result.canceled || !result.assets?.length) return;
+
+      setUploadingPhoto(true);
+      // Upload to the public `avatars` bucket under the user's own uid
+      // folder (storage RLS only allows writes there).
+      const arrayBuffer = await (await fetch(result.assets[0].uri)).arrayBuffer();
+      const path = `${userId}/avatar.jpg`;
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(path, arrayBuffer, { contentType: 'image/jpeg', upsert: true });
+      if (uploadError) throw uploadError;
+
+      const { data: pub } = supabase.storage.from('avatars').getPublicUrl(path);
+      // Cache-buster: the path never changes, so without it the CDN /
+      // image cache would keep serving the old photo.
+      const publicUrl = `${pub.publicUrl}?v=${Date.now()}`;
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ avatar_url: publicUrl })
+        .eq('id', userId);
+      if (updateError) throw updateError;
+
+      setProfile((prev: any) => (prev ? { ...prev, avatar_url: publicUrl } : prev));
+      Alert.alert('Photo updated', 'Your profile photo has been changed.');
+    } catch (err: any) {
+      console.error('Change photo error:', err);
+      Alert.alert('Upload failed', err?.message || 'Could not update your photo. Please try again.');
+    } finally {
+      setUploadingPhoto(false);
     }
   };
 
@@ -87,9 +145,31 @@ export default function PremiumProfileScreen() {
         <Reanimated.View entering={FadeInUp.delay(80).duration(500)} style={styles.profileHero}>
           <View style={styles.avatarGlow}>
             <View style={styles.avatarInner}>
-              <Ionicons name="person" size={52} color={Theme.colors.primary} />
+              {profile?.avatar_url ? (
+                <Image
+                  source={{ uri: profile.avatar_url }}
+                  style={styles.avatarImage}
+                  contentFit="cover"
+                  transition={300}
+                />
+              ) : (
+                <Ionicons name="person" size={52} color={Theme.colors.primary} />
+              )}
             </View>
           </View>
+          <TouchableOpacity
+            style={styles.changePhotoBtn}
+            onPress={handleChangePhoto}
+            activeOpacity={0.8}
+            disabled={uploadingPhoto}
+          >
+            {uploadingPhoto ? (
+              <ActivityIndicator size="small" color={Theme.colors.primary} />
+            ) : (
+              <Ionicons name="camera-outline" size={15} color={Theme.colors.primary} />
+            )}
+            <Text style={styles.changePhotoText}>{uploadingPhoto ? 'UPLOADING…' : 'CHANGE PHOTO'}</Text>
+          </TouchableOpacity>
           <Text style={styles.userName}>
             {profile?.first_name} {profile?.last_name}
           </Text>
@@ -206,7 +286,22 @@ const styles = StyleSheet.create({
     backgroundColor: '#101024',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
+  avatarImage: { width: '100%', height: '100%' },
+  changePhotoBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    marginTop: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 227, 253, 0.30)',
+    backgroundColor: 'rgba(0, 227, 253, 0.08)',
+  },
+  changePhotoText: { fontFamily: Theme.fonts.label, fontSize: 10, letterSpacing: 1.5, color: Theme.colors.primary },
   userName: { fontFamily: Theme.fonts.headline, fontSize: 24, color: Theme.colors.onSurface, marginTop: 16 },
   idRow: { marginTop: 10 },
   infoGrid: { flexDirection: 'row', gap: 12 },
