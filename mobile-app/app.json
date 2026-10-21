@@ -17,7 +17,8 @@
         "foregroundImage": "./assets/images/android-icon-foreground.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.rishabh.safelifeai"
     },
     "web": {
       "output": "static",
@@ -42,6 +43,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "owner": "rishabhsharma14426s-team",
+    "extra": {
+      "eas": {
+        "projectId": "f0290930-811f-49c4-960c-fad1abd68b75"
+      }
     }
   }
 }
