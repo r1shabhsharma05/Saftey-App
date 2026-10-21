@@ -18,6 +18,7 @@ import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
 import { supabase } from '../../utils/supabase';
+import { getBackendUrl } from '../../utils/backendUrl';
 import { Theme } from '../../constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import AlertActiveView from '../../components/AlertActiveView';
@@ -30,9 +31,10 @@ import SectionHeader from '../../components/ui/SectionHeader';
 import SafeHubCard from '../../components/ui/SafeHubCard';
 import PoliceStationCard from '../../components/ui/PoliceStationCard';
 
-// Backend URL is configurable via EXPO_PUBLIC_BACKEND_URL (see .env.example).
-// Falls back to the last-known dev address for local runs.
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? 'http://172.16.48.118:5000';
+// Backend URL comes from EXPO_PUBLIC_BACKEND_URL (see .env.example).
+// Resolved eagerly: a missing/insecure URL throws a clear config error at
+// screen load instead of silently falling back to plaintext HTTP.
+const BACKEND_URL = getBackendUrl();
 
 export default function TacticalDashboard() {
   // --- States ---
