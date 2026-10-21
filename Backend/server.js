@@ -43,10 +43,16 @@ const CHAT_IDS = (process.env.TELEGRAM_CHAT_IDS || "")
   .filter(Boolean);
 
 // 🔥 COMMON SEND FUNCTION
+// Returns { sent, failed } per chat so callers can answer honestly.
+// Previously delivery failures were only logged and every caller reported
+// success — which made /test-alert useless as a config check (it exists
+// precisely to answer "is my Telegram wiring working?").
 const sendTelegramMessage = async (message) => {
+  const result = { sent: 0, failed: 0 };
   if (!BOT_TOKEN || CHAT_IDS.length === 0) {
     console.log("⚠️ Telegram disabled — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS.");
-    return;
+    result.failed = 1;
+    return result;
   }
   for (let chat_id of CHAT_IDS) {
     try {
@@ -59,11 +65,17 @@ const sendTelegramMessage = async (message) => {
       );
       if (resp.data.ok) {
         console.log(`✅ Message successfully sent to Telegram ID: ${chat_id}`);
+        result.sent += 1;
+      } else {
+        console.log(`❌ Telegram rejected message for ${chat_id}:`, resp.data.description);
+        result.failed += 1;
       }
     } catch (err) {
       console.log(`❌ Failed for ${chat_id}:`, err.response?.data?.description || err.message);
+      result.failed += 1;
     }
   }
+  return result;
 };
 
 // 🚨 SOS ALERT
@@ -146,7 +158,11 @@ app.post("/location-update", trackingLimiter, requireApiKey, async (req, res) =>
 📍 https://maps.google.com/?q=${latNum},${lngNum}`;
 
   try {
-    await sendTelegramMessage(message);
+    const { sent } = await sendTelegramMessage(message);
+    if (sent === 0) {
+      console.log("❌ Live location failed for all recipients");
+      return res.json({ success: false });
+    }
 
     console.log("📡 Live location sent");
 
@@ -191,12 +207,21 @@ app.post("/test-alert", testLimiter, requireApiKey, async (req, res) => {
 🔗 This is a test message from SafeLife AI`;
 
   try {
-    await sendTelegramMessage(message);
+    const { sent, failed } = await sendTelegramMessage(message);
+    if (sent === 0) {
+      // All deliveries failed (bad token, bad chat IDs, Telegram down,
+      // or Telegram not configured) — say so instead of reporting
+      // success. Details stay in the server logs, never the response.
+      console.log(`❌ TEST ALERT FAILED for all recipients (failed=${failed})`);
+      return res.status(500).json({ success: false, error: "Failed to send test alert" });
+    }
     console.log("✅ TEST ALERT SENT");
     res.json({ success: true, message: "Test alert sent successfully" });
   } catch (err) {
     console.log("❌ TEST ERROR:", err.message);
-    res.status(500).json({ success: false, error: err.message });
+    // Generic message: err.message can carry Telegram/axios internals
+    // (same policy as POST /alert's "Failed to send alert").
+    res.status(500).json({ success: false, error: "Failed to send test alert" });
   }
 });
 
