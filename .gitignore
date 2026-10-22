@@ -1,0 +1,18 @@
+# Local env files — never commit real keys.
+# (Backend/.env holds TELEGRAM_BOT_TOKEN + API_SECRET for local dev;
+#  mobile-app/.env holds EXPO_PUBLIC_* values. Both are gitignored here;
+#  commit only the .env.example templates.)
+.env
+.env*.local
+
+# Key material
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Dependencies — historically tracked in this repo; keep new installs out.
+node_modules/
+
+# Editor / OS noise
+.DS_Store
