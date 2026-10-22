@@ -1,7 +1,7 @@
 import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
 // Custom storage adapter for SSR safety (Expo Web)
 const customStorage = {
@@ -47,3 +47,14 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     detectSessionInUrl: Platform.OS === 'web',
   },
 });
+
+// React Native has no window-focus events for supabase-js to key its
+// refresh timer on, so drive it from AppState (Supabase's RN guidance).
+// Without this, a backgrounded app's session can lapse unrefreshed and
+// the user finds themselves logged out despite persistSession: true.
+if (Platform.OS !== 'web') {
+  AppState.addEventListener('change', (state) => {
+    if (state === 'active') supabase.auth.startAutoRefresh();
+    else supabase.auth.stopAutoRefresh();
+  });
+}

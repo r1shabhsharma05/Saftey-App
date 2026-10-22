@@ -34,8 +34,13 @@ export default function RegisterScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
 
   const handleGoogle = async () => {
+    // In-flight guard: rapid taps used to stack multiple auth browser
+    // sessions on top of each other.
+    if (googleBusy) return;
+    setGoogleBusy(true);
     try {
       const { error } = await signInWithGoogle();
       if (error) {
@@ -44,6 +49,8 @@ export default function RegisterScreen() {
       // On success the root layout's auth listener navigates to the tabs.
     } catch (e: any) {
       Alert.alert('Google Sign-Up Unavailable', friendlyAuthError(e));
+    } finally {
+      setGoogleBusy(false);
     }
   };
 
@@ -105,6 +112,9 @@ export default function RegisterScreen() {
           pathname: '/verify-email',
           params: { email: cleanEmail },
         });
+      } else {
+        // No error, no user, no session: never fail silently.
+        Alert.alert('Sign Up Incomplete', 'Sign-up did not finish. Please try again.');
       }
     } catch (e: any) {
       Alert.alert('Sign Up Failed', friendlyAuthError(e));

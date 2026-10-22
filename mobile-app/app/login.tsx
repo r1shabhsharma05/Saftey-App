@@ -10,6 +10,7 @@ import {
   Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import * as Linking from 'expo-linking';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
 import { supabase } from '../utils/supabase';
 import { ensureProfile, friendlyAuthError, resendConfirmation } from '../utils/auth';
@@ -31,6 +32,7 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
 
   const handleLogin = async () => {
     const cleanEmail = email.trim().toLowerCase();
@@ -69,6 +71,13 @@ export default function LoginScreen() {
       if (data.session && data.user) {
         await ensureProfile(data.user);
         router.replace('/(tabs)');
+      } else {
+        // No error but no session either (e.g. email not yet
+        // confirmed): the old code just stopped the spinner silently.
+        Alert.alert(
+          'Sign-In Incomplete',
+          'Sign-in did not finish. If this account is new, verify your email first, then sign in.'
+        );
       }
     } catch (e: any) {
       Alert.alert('Login Failed', friendlyAuthError(e));
@@ -78,6 +87,10 @@ export default function LoginScreen() {
   };
 
   const handleGoogle = async () => {
+    // In-flight guard: rapid taps used to stack multiple auth browser
+    // sessions on top of each other.
+    if (googleBusy) return;
+    setGoogleBusy(true);
     try {
       const { error } = await signInWithGoogle();
       if (error) {
@@ -86,6 +99,8 @@ export default function LoginScreen() {
       // On success the root layout's auth listener navigates to the tabs.
     } catch (e: any) {
       Alert.alert('Google Sign-In Unavailable', friendlyAuthError(e));
+    } finally {
+      setGoogleBusy(false);
     }
   };
 
@@ -143,8 +158,14 @@ export default function LoginScreen() {
                       text: 'OK',
                       onPress: async () => {
                         if (!email.trim()) return;
+                        // redirectTo matters: without it the email link
+                        // dead-ends on the Supabase site URL. It opens
+                        // the app's reset screen instead (the URL must
+                        // also be allow-listed in the Supabase dashboard
+                        // under Auth → URL Configuration).
                         const { error } = await supabase.auth.resetPasswordForEmail(
-                          email.trim().toLowerCase()
+                          email.trim().toLowerCase(),
+                          { redirectTo: Linking.createURL('reset-password') }
                         );
                         Alert.alert(
                           error ? 'Reset Failed' : 'Email Sent',

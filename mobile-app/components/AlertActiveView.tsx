@@ -133,8 +133,10 @@ export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [
           )}
         </Reanimated.View>
 
-        {/* Alternative routes */}
-        {cachedSafePlaces.length > 1 && (
+        {/* Alternative routes — needs a real GPS fix: ranking against
+            parseFloat('Loading...') is NaN, which used to scramble the
+            order (rankSafePlaces now also refuses non-finite input). */}
+        {cachedSafePlaces.length > 1 && Number.isFinite(parseFloat(lat)) && Number.isFinite(parseFloat(lng)) && (
           <Reanimated.View entering={FadeInUp.delay(220).duration(500)} style={styles.altSection}>
             <SectionHeader
               icon={<MaterialCommunityIcons name="routes" size={18} color={Theme.colors.primary} />}

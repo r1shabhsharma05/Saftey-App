@@ -41,6 +41,7 @@ import SectionHeader from '../../components/ui/SectionHeader';
 export default function PremiumProfileScreen() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [profile, setProfile] = useState<any>(null);
   const [avatarDisplayUrl, setAvatarDisplayUrl] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
@@ -64,9 +65,13 @@ export default function PremiumProfileScreen() {
       const { data, error } = await supabase.from('profiles').select('*').eq('id', user.id).single();
       if (error) throw error;
       setProfile(data);
+      setLoadError(null);
       setAvatarDisplayUrl(await resolveAvatarDisplayUrl(data?.avatar_url));
     } catch (error: any) {
       console.error('Profile fetch error:', error);
+      // A failed load used to render as a fake EMPTY profile (blank
+      // name, '—' fields) with no way to retry. Surface it honestly.
+      setLoadError('Your profile could not be loaded. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -142,6 +147,24 @@ export default function PremiumProfileScreen() {
         <View style={styles.loaderContainer}>
           <ActivityIndicator size="large" color={Theme.colors.primary} />
           <Text style={styles.loaderText}>LOADING GUARDIAN…</Text>
+        </View>
+      </ScreenBackground>
+    );
+  }
+
+  if (loadError && !profile) {
+    return (
+      <ScreenBackground>
+        <View style={styles.loaderContainer}>
+          <Text style={styles.loaderText}>{loadError}</Text>
+          <TouchableOpacity
+            onPress={() => {
+              setLoading(true);
+              fetchProfile();
+            }}
+          >
+            <Text style={[styles.loaderText, { color: Theme.colors.primary, marginTop: 14 }]}>RETRY</Text>
+          </TouchableOpacity>
         </View>
       </ScreenBackground>
     );

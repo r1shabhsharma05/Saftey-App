@@ -11,8 +11,15 @@ WebBrowser.maybeCompleteAuthSession();
 // own — a web-only pattern: it returns the provider URL but nothing opens
 // it, so on Android the button silently did nothing. The native flow is:
 // build the URL (skipBrowserRedirect), open it in an auth browser
-// session, and set the session from the tokens Supabase redirects back
-// to the app's scheme (safelifeai://auth-callback, implicit flow).
+// session, and complete the session from what Supabase redirects back
+// to the app's scheme (safelifeai://auth-callback).
+//
+// supabase-js v2 defaults to the PKCE flow, so the redirect carries
+// ?code=... which must be EXCHANGED for a session — an earlier version
+// of this file only looked for implicit-flow tokens (access_token /
+// refresh_token), which a PKCE redirect never contains, so every native
+// Google sign-in failed with "did not return a session". Both shapes
+// are handled below.
 //
 // Returns {} on success (the root layout's auth listener navigates to
 // the tabs) and on user cancellation; { error } with a user-safe message
@@ -42,13 +49,24 @@ export async function signInWithGoogle(): Promise<{ error?: string }> {
   const url = result.url;
   const hash = url.includes('#') ? url.split('#')[1] : '';
   const query = url.includes('?') ? url.split('?')[1].split('#')[0] : '';
-  const params = new URLSearchParams(hash || query);
+  const hashParams = new URLSearchParams(hash);
+  const queryParams = new URLSearchParams(query);
 
-  const oauthError = params.get('error_description') || params.get('error');
+  const oauthError =
+    hashParams.get('error_description') || hashParams.get('error') ||
+    queryParams.get('error_description') || queryParams.get('error');
   if (oauthError) return { error: friendly(oauthError) };
 
-  const access_token = params.get('access_token');
-  const refresh_token = params.get('refresh_token');
+  // PKCE (the supabase-js v2 default): exchange the one-time code.
+  const code = queryParams.get('code') || hashParams.get('code');
+  if (code) {
+    const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+    return { error: exchangeError ? friendly(exchangeError.message) : undefined };
+  }
+
+  // Implicit flow: tokens arrive in the hash.
+  const access_token = hashParams.get('access_token') || queryParams.get('access_token');
+  const refresh_token = hashParams.get('refresh_token') || queryParams.get('refresh_token');
   if (!access_token || !refresh_token) {
     return { error: 'Google sign-in did not return a session. Please try again.' };
   }

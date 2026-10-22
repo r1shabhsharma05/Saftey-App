@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Contacts from 'expo-contacts';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router } from 'expo-router';
 import { supabase } from '../../utils/supabase';
 import { Theme } from '../../constants/theme';
 import ScreenBackground from '../../components/ui/ScreenBackground';
@@ -36,6 +37,7 @@ export default function EmergencyContactsScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [permission, setPermission] = useState<'unknown' | 'granted' | 'denied'>('unknown');
+  const [signedOut, setSignedOut] = useState(false);
   const [canAskAgain, setCanAskAgain] = useState(true);
   const [deviceContacts, setDeviceContacts] = useState<DeviceContact[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -51,7 +53,10 @@ export default function EmergencyContactsScreen() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
-        setPermission('denied');
+        // Signed out is NOT a contacts-permission problem — the old
+        // code set permission 'denied' here, so a signed-out user got
+        // an "ALLOW CONTACTS" card that could never fix anything.
+        setSignedOut(true);
         return;
       }
       setUserId(user.id);
@@ -146,19 +151,41 @@ export default function EmergencyContactsScreen() {
     const chosen = deviceContacts.filter((c) => selected.has(c.key));
     setSaving(true);
     try {
-      // Replace the saved set wholesale: delete the user's rows, then
-      // insert the current selection (deduped by phone above).
-      const { error: deleteError } = await supabase
+      // Diff-based save. The old flow deleted ALL rows and then
+      // inserted the new selection: if the insert failed, the user's
+      // saved SOS contacts were gone server-side while the phone kept
+      // a stale local cache. Now additions are inserted first and only
+      // true removals are deleted — a failure at any step leaves the
+      // previously saved set intact. (Keyed by phone: a name edit on
+      // an already-saved number is not re-written.)
+      const { data: existingRows, error: fetchError } = await supabase
         .from('emergency_contacts')
-        .delete()
+        .select('id, phone')
         .eq('user_id', userId);
-      if (deleteError) throw deleteError;
+      if (fetchError) throw fetchError;
 
-      if (chosen.length > 0) {
+      const existingKeys = new Set(
+        (existingRows ?? []).map((r: any) => phoneKey(String(r.phone ?? '')))
+      );
+      const chosenKeys = new Set(chosen.map((c) => phoneKey(c.phone)));
+
+      const toInsert = chosen.filter((c) => !existingKeys.has(phoneKey(c.phone)));
+      if (toInsert.length > 0) {
         const { error: insertError } = await supabase.from('emergency_contacts').insert(
-          chosen.map((c) => ({ user_id: userId, name: c.name, phone: c.phone }))
+          toInsert.map((c) => ({ user_id: userId, name: c.name, phone: c.phone }))
         );
         if (insertError) throw insertError;
+      }
+
+      const toDeleteIds = (existingRows ?? [])
+        .filter((r: any) => !chosenKeys.has(phoneKey(String(r.phone ?? ''))))
+        .map((r: any) => r.id);
+      if (toDeleteIds.length > 0) {
+        const { error: deleteError } = await supabase
+          .from('emergency_contacts')
+          .delete()
+          .in('id', toDeleteIds);
+        if (deleteError) throw deleteError;
       }
 
       // Local cache — the SOS screen reads this at send time.
@@ -227,6 +254,19 @@ export default function EmergencyContactsScreen() {
             <ActivityIndicator size="large" color={Theme.colors.primary} />
             <Text style={styles.centerText}>LOADING CONTACTS…</Text>
           </View>
+        ) : signedOut ? (
+          <Reanimated.View entering={FadeInUp.delay(140).duration(500)}>
+            <GlassCard style={styles.permCard}>
+              <Ionicons name="person-circle-outline" size={30} color={Theme.colors.primary} />
+              <Text style={styles.permTitle}>Sign in needed</Text>
+              <Text style={styles.permText}>
+                You are signed out. Sign in again to choose and save your SOS contacts.
+              </Text>
+              <TouchableOpacity style={styles.permBtn} onPress={() => router.replace('/login')} activeOpacity={0.8}>
+                <Text style={styles.permBtnText}>GO TO SIGN IN</Text>
+              </TouchableOpacity>
+            </GlassCard>
+          </Reanimated.View>
         ) : permission !== 'granted' ? (
           <Reanimated.View entering={FadeInUp.delay(140).duration(500)}>
             <GlassCard style={styles.permCard}>

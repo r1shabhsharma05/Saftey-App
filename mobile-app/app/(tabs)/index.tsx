@@ -7,6 +7,7 @@ import {
   Animated,
   Alert,
   ActivityIndicator,
+  AppState,
   Linking,
   ScrollView,
   Share,
@@ -48,9 +49,31 @@ export default function TacticalDashboard() {
   const [nearestStation, setNearestStation] = useState('Searching...');
   const [isLoading, setIsLoading] = useState(false);
   const [cachedSafePlaces, setCachedSafePlaces] = useState<any[]>([]);
+  // Ref mirror of cachedSafePlaces: the location-watch callback chain
+  // closes over first-render state, so the 3-minute refresh check read
+  // a forever-stale [] and refetched on the 30s cadence all session.
+  const cachedPlacesRef = useRef<any[]>([]);
+  const updateCachedPlaces = (places: any[]) => {
+    cachedPlacesRef.current = places;
+    setCachedSafePlaces(places);
+  };
+  // Double-tap guard for SOS (see sendSOSAlert).
+  const sosInFlightRef = useRef(false);
   // Drives the Safe Hubs card: without it a failed Overpass fetch left the
   // "Scanning…" spinner on screen forever.
   const [safePlacesState, setSafePlacesState] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
+  // Styled in-app SOS feedback. SOS results used to surface through
+  // raw system Alert.alert dialogs — grey, unstyled, and with a
+  // misleading "check the backend URL" message on any network hiccup.
+  const [sosBanner, setSosBanner] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const bannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showBanner = (kind: 'success' | 'error', text: string) => {
+    setSosBanner({ kind, text });
+    if (bannerTimer.current) clearTimeout(bannerTimer.current);
+    if (kind === 'success') {
+      bannerTimer.current = setTimeout(() => setSosBanner(null), 7000);
+    }
+  };
   const [locationError, setLocationError] = useState<string | null>(null);
   const lastFetchTime = useRef<number>(0);
   const locSubRef = useRef<Location.LocationSubscription | null>(null);
@@ -64,9 +87,19 @@ export default function TacticalDashboard() {
   useEffect(() => {
     const setupSubscriptions = async () => {
       try {
-        // Instant offline loading
-        const offlineCache = await AsyncStorage.getItem('safePlacesCache');
-        if (offlineCache) setCachedSafePlaces(JSON.parse(offlineCache));
+        // Instant offline loading — parsed in its OWN try: this sits
+        // inside the one big setup try, and a corrupt cache value used
+        // to throw here and silently skip everything after it (battery,
+        // profile, and the location watch — no GPS fix, SOS blocked).
+        try {
+          const offlineCache = await AsyncStorage.getItem('safePlacesCache');
+          if (offlineCache) {
+            const parsedCache = JSON.parse(offlineCache);
+            if (Array.isArray(parsedCache)) updateCachedPlaces(parsedCache);
+          }
+        } catch {
+          /* cache is best-effort */
+        }
 
         // (a) Seed coordinates from the last cached fix so the Live
         // Location card never sits on 'Loading...' when GPS is slow —
@@ -111,6 +144,13 @@ export default function TacticalDashboard() {
 
     setupSubscriptions();
 
+    // Deliver any SOS that was queued while the network was down —
+    // on launch and every time the app returns to the foreground.
+    flushPendingSOS();
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') flushPendingSOS();
+    });
+
     Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, { toValue: 1.08, duration: 1600, useNativeDriver: true }),
@@ -121,6 +161,7 @@ export default function TacticalDashboard() {
     return () => {
       locSubRef.current?.remove();
       batSubRef.current?.remove();
+      appStateSub.remove();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -215,38 +256,41 @@ export default function TacticalDashboard() {
     // Prevent API spam bans: 30s cooldown, 3min refresh when data exists.
     // `force` (the Retry button) bypasses the cooldown on user demand.
     if (!force && now - lastFetchTime.current < 30000) return;
-    if (!force && now - lastFetchTime.current < 180000 && cachedSafePlaces.length > 0) return;
+    if (!force && now - lastFetchTime.current < 180000 && cachedPlacesRef.current.length > 0) return;
 
     lastFetchTime.current = now;
     setSafePlacesState('loading');
 
     try {
       const query = `[out:json];(nwr["amenity"="police"](around:50000,${lat},${lng});nwr["amenity"~"hospital|clinic|mall|cafe|bank|pharmacy|university|college"](around:10000,${lat},${lng});nwr["tourism"~"hostel|hotel"](around:10000,${lat},${lng});nwr["shop"~"mall|supermarket|department_store"](around:10000,${lat},${lng}););out center;`;
-      // 12s timeout per endpoint + a mirror fallback: the old bare fetch
-      // had NO timeout, so a slow/blocked Overpass hung the Safe Hubs
-      // spinner forever.
-      const endpoints = [
-        'https://overpass-api.de/api/interpreter',
-        'https://overpass.kumi.systems/api/interpreter',
+      // First try our own backend's /safe-places proxy: it runs the
+      // Overpass query server-side (fast region, cached, bounded
+      // timeouts) and returns the same JSON shape — a phone on flaky
+      // data gets one small fast response instead of wrestling
+      // Overpass directly. The direct endpoints stay as fallback.
+      const urls = [
+        `${BACKEND_URL}/safe-places?lat=${lat}&lng=${lng}`,
+        `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`,
+        `https://overpass.kumi.systems/api/interpreter?data=${encodeURIComponent(query)}`,
       ];
       let data: any = null;
       let lastErr: any = null;
-      for (const base of endpoints) {
+      for (const url of urls) {
         try {
           const controller = new AbortController();
-          const t = setTimeout(() => controller.abort(), 12000);
-          const response = await fetch(`${base}?data=${encodeURIComponent(query)}`, {
+          const t = setTimeout(() => controller.abort(), 25000);
+          const response = await fetch(url, {
             signal: controller.signal,
           });
           clearTimeout(t);
-          if (!response.ok) throw new Error(`Overpass HTTP ${response.status}`);
+          if (!response.ok) throw new Error(`Places HTTP ${response.status}`);
           data = await response.json();
           break;
         } catch (e) {
           lastErr = e;
         }
       }
-      if (!data) throw lastErr || new Error('Overpass unreachable');
+      if (!data) throw lastErr || new Error('Places unreachable');
 
       if (data.elements && data.elements.length > 0) {
         const parsedPlaces = data.elements.map((el: any) => {
@@ -272,7 +316,7 @@ export default function TacticalDashboard() {
           };
         }).filter((p: any) => p.lat && p.lng);
 
-        setCachedSafePlaces(parsedPlaces);
+        updateCachedPlaces(parsedPlaces);
         setSafePlacesState(parsedPlaces.length > 0 ? 'ready' : 'empty');
         AsyncStorage.setItem('safePlacesCache', JSON.stringify(parsedPlaces));
 
@@ -294,16 +338,96 @@ export default function TacticalDashboard() {
     }
   };
 
+  // One SOS POST with a hard timeout. Resolves true only when the
+  // backend confirms Telegram delivery — never on a blind 200.
+  const postAlertOnce = async (payload: Record<string, unknown>): Promise<boolean> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(`${BACKEND_URL}/alert`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          // Backend API-key auth: required on /alert when the backend's
+          // API_SECRET is set. Send the header only when a key exists —
+          // an empty-string header is a device-stack-only variable
+          // (RN fetch → OkHttp) that curl tests cannot replicate.
+          ...(process.env.EXPO_PUBLIC_API_SECRET
+            ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
+            : {}),
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      const data = await response.json().catch(() => null);
+      return !!(data && data.success);
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  // An SOS must be stubborn: one failed attempt on a flaky mobile link
+  // used to be the end of it (the old code gave up after a single try
+  // and showed a grey system dialog). Three attempts with backoff —
+  // then the caller queues the alert for auto-delivery.
+  const postAlertWithRetry = async (payload: Record<string, unknown>): Promise<boolean> => {
+    const delays = [0, 2500, 7000];
+    for (const delay of delays) {
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+      if (await postAlertOnce(payload)) return true;
+    }
+    return false;
+  };
+
+  // Send a previously queued SOS (stored when every retry failed).
+  const flushPendingSOS = async () => {
+    try {
+      const raw = await AsyncStorage.getItem('pendingSOS');
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      // A queued alert older than a day is history, not an emergency —
+      // drop it instead of retrying it on every foreground forever.
+      if (parsed && Date.now() - (parsed.queuedAt || 0) > 24 * 60 * 60 * 1000) {
+        await AsyncStorage.removeItem('pendingSOS');
+        return;
+      }
+      if (parsed && parsed.payload && (await postAlertOnce(parsed.payload))) {
+        await AsyncStorage.removeItem('pendingSOS');
+        showBanner('success', 'Queued SOS delivered — your earlier alert just reached SafeLife on Telegram.');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch {
+      /* the queue is best-effort */
+    }
+  };
+
+  // SMS needs no data connection at all — the last-resort channel when
+  // the network is down. Opens the user's SMS app with the SOS text
+  // prefilled; they pick a contact and hit send.
+  const sendSOSviaSMS = () => {
+    const who = userData ? `${userData.first_name} ${userData.last_name}` : 'a SafeLife user';
+    const text =
+      `SOS! I need help. I am ${who}. My location: ` +
+      `https://maps.google.com/?q=${lat},${lng} (battery ${batteryLevel}%) — sent from SafeLife`;
+    Linking.openURL(`sms:?&body=${encodeURIComponent(text)}`).catch(() => {});
+  };
+
   const sendSOSAlert = async () => {
+    // In-flight guard: a double-tap (or a tap during the press
+    // animation) used to launch concurrent POSTs — the duplicate could
+    // hit the backend rate limiter and report failure for an SOS that
+    // actually went through.
+    if (sosInFlightRef.current) return;
+    sosInFlightRef.current = true;
     // Block only when NO coordinates exist at all — neither a live fix
     // nor a cached one (lat/lng stay 'Loading...' only in that case).
     // Never send placeholder strings: the backend rejects non-numeric
     // coordinates with a 400.
     if (lat === 'Loading...' || lng === 'Loading...' || isNaN(parseFloat(lat)) || isNaN(parseFloat(lng))) {
-      Alert.alert(
-        'Location not available yet',
-        'SafeLife has no location fix yet. Please enable GPS / location permission and try again.'
-      );
+      sosInFlightRef.current = false;
+      showBanner('error', 'No location fix yet — SafeLife needs your GPS position for an SOS. Enable GPS / location permission and try again.');
       return;
     }
     setIsLoading(true);
@@ -329,46 +453,39 @@ export default function TacticalDashboard() {
       /* contacts are an optional part of the payload */
     }
 
+    const payload = {
+      lat,
+      lng,
+      name: userData ? `${userData.first_name} ${userData.last_name}` : 'Unknown User',
+      phone: userData ? userData.phone : 'Not Provided',
+      battery: batteryLevel,
+      status: isMoving ? 'Moving' : 'Stationary',
+      nearestStation,
+      contacts: sosContacts,
+    };
+
     try {
-      const controller = new AbortController();
-      // 15s: a Vercel cold start plus the awaited Telegram delivery can
-      // take several seconds; the old 3.5s abort killed real SOS sends.
-      const timeout = setTimeout(() => controller.abort(), 15000);
-
-      const response = await fetch(`${BACKEND_URL}/alert`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          // Backend API-key auth: required on /alert when the backend's API_SECRET is set.
-          'x-api-key': process.env.EXPO_PUBLIC_API_SECRET ?? '',
-        },
-        body: JSON.stringify({
-          lat,
-          lng,
-          name: userData ? `${userData.first_name} ${userData.last_name}` : 'Unknown User',
-          phone: userData ? userData.phone : 'Not Provided',
-          battery: batteryLevel,
-          status: isMoving ? 'Moving' : 'Stationary',
-          nearestStation,
-          contacts: sosContacts,
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeout);
-      const data = await response.json();
-      if (data.success) {
-        Alert.alert('Alert Sent', 'Emergency contacts have been notified.');
+      const delivered = await postAlertWithRetry(payload);
+      if (delivered) {
+        // Success needs no dialog: the screen switches to the ALERT
+        // ACTIVE view, which is the confirmation.
+        await AsyncStorage.removeItem('pendingSOS').catch(() => {});
       } else {
-        // Surface backend rejections (400 invalid location, 401, 429 rate
-        // limit) instead of failing silently — the server's error strings
-        // are safe generics, never internals.
-        Alert.alert('Alert Failed', data?.error || 'Emergency servers rejected the alert. Try again.');
+        // Queue it — flushPendingSOS auto-sends when connectivity
+        // returns — and tell the user honestly, with an SMS escape
+        // hatch that works with zero data connection.
+        await AsyncStorage.setItem(
+          'pendingSOS',
+          JSON.stringify({ payload, queuedAt: Date.now() })
+        ).catch(() => {});
         setStatus('SAFE');
+        showBanner(
+          'error',
+          'SOS could not be delivered — the connection failed. It is queued and will auto-send when the network returns, or send it by SMS now.'
+        );
       }
-    } catch {
-      Alert.alert('Alert Failed', 'Could not reach emergency servers. Check the backend URL.');
     } finally {
+      sosInFlightRef.current = false;
       setIsLoading(false);
     }
   };
@@ -452,6 +569,38 @@ export default function TacticalDashboard() {
           <StatusPill label="SYSTEM GUARDIAN ACTIVE" color={Theme.colors.success} pulse />
         </Reanimated.View>
 
+        {/* SOS feedback banner — styled, in-app, honest. Replaces the
+            old raw system dialogs for SOS results. */}
+        {sosBanner && (
+          <View style={[styles.sosBanner, sosBanner.kind === 'success' ? styles.sosBannerSuccess : styles.sosBannerError]}>
+            <Text style={styles.sosBannerText}>{sosBanner.text}</Text>
+            {sosBanner.kind === 'error' ? (
+              <View style={styles.sosBannerActions}>
+                <TouchableOpacity
+                  onPress={() => {
+                    setSosBanner(null);
+                    sendSOSAlert();
+                  }}
+                >
+                  <Text style={styles.sosBannerAction}>RETRY</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={sendSOSviaSMS}>
+                  <Text style={styles.sosBannerAction}>SEND VIA SMS</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setSosBanner(null)}>
+                  <Text style={styles.sosBannerAction}>DISMISS</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.sosBannerActions}>
+                <TouchableOpacity onPress={() => setSosBanner(null)}>
+                  <Text style={styles.sosBannerAction}>OK</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        )}
+
         {/* SOS Core — 3D tilt orb */}
         <Reanimated.View entering={FadeInUp.delay(140).duration(600)} style={styles.sosWrap}>
           <Animated.View style={[styles.pulseRing, { transform: [{ scale: pulseAnim }] }]} />
@@ -522,7 +671,19 @@ export default function TacticalDashboard() {
           {[
             { icon: 'call', label: 'CALL', action: () => Linking.openURL('tel:112') },
             { icon: 'share-social', label: 'SHARE', action: handleShareLocation },
-            { icon: 'map', label: 'MAP', action: () => Linking.openURL(`https://maps.google.com/?q=${lat},${lng}`) },
+            {
+              icon: 'map',
+              label: 'MAP',
+              action: () => {
+                // Guard like SHARE has: without a GPS fix this used to
+                // open Maps at "Loading...,Loading...".
+                if (lat === 'Loading...' || lng === 'Loading...') {
+                  showBanner('error', 'Waiting for a GPS fix before opening the map.');
+                  return;
+                }
+                Linking.openURL(`https://maps.google.com/?q=${lat},${lng}`);
+              },
+            },
             { icon: 'navigate', label: 'RESCUE', action: handleNavigateNearest },
           ].map((item, idx) => (
             <TouchableOpacity key={idx} style={styles.actionItem} onPress={item.action} activeOpacity={0.7}>
@@ -757,4 +918,10 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   loaderText: { fontFamily: Theme.fonts.headline, color: Theme.colors.primary, letterSpacing: 4, fontSize: 14 },
+  sosBanner: { borderRadius: 16, padding: 14, marginBottom: 14, borderWidth: 1 },
+  sosBannerSuccess: { backgroundColor: 'rgba(46, 204, 140, 0.13)', borderColor: 'rgba(46, 204, 140, 0.5)' },
+  sosBannerError: { backgroundColor: 'rgba(255, 113, 108, 0.12)', borderColor: 'rgba(255, 113, 108, 0.5)' },
+  sosBannerText: { fontFamily: Theme.fonts.body, fontSize: 13, lineHeight: 18, color: Theme.colors.onSurface },
+  sosBannerActions: { flexDirection: 'row', gap: 18, marginTop: 10 },
+  sosBannerAction: { fontFamily: Theme.fonts.label, fontSize: 12, letterSpacing: 1, color: Theme.colors.primary, fontWeight: 'bold' },
 });

@@ -50,12 +50,17 @@ export function friendlyAuthError(error: any): string {
  */
 export async function ensureProfile(user: User): Promise<void> {
   try {
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from('profiles')
       .select('id')
       .eq('id', user.id)
       .maybeSingle();
     if (existing) return;
+    if (existingError) {
+      // A failed check (RLS, network) is not "no row" — say so in the
+      // log instead of marching into an insert that fails confusingly.
+      console.warn('ensureProfile: existence check failed, attempting insert anyway:', existingError.message);
+    }
 
     const meta = (user.user_metadata || {}) as Record<string, string>;
     // Google sign-ins carry full_name/name, not first_name/last_name —

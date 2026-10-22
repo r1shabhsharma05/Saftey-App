@@ -51,7 +51,7 @@ export default function RootLayout() {
   const [session, setSession] = useState<any>(null);
   const [initialized, setInitialized] = useState(false);
 
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontError] = useFonts({
     SpaceGrotesk_300Light,
     SpaceGrotesk_400Regular,
     SpaceGrotesk_500Medium,
@@ -66,15 +66,21 @@ export default function RootLayout() {
   });
 
   useEffect(() => {
-    if (fontsLoaded) {
+    // fontError counts as "ready" too: a failed font load used to
+    // wedge the app on a blank screen forever (the tree below returned
+    // null until fontsLoaded). Fall back to system fonts instead.
+    if (fontsLoaded || fontError) {
       SplashScreen.hideAsync();
     }
-  }, [fontsLoaded]);
+  }, [fontsLoaded, fontError]);
 
   useEffect(() => {
-    // Check initial session
+    // Check initial session — with a catch: a rejected getSession()
+    // used to leave `initialized` false forever and the app hung.
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
+      setInitialized(true);
+    }).catch(() => {
       setInitialized(true);
     });
 
@@ -92,23 +98,26 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
-    if (!initialized || !fontsLoaded) return;
+    if (!initialized || (!fontsLoaded && !fontError)) return;
 
     const inTabsGroup = segments[0] === '(tabs)';
-    const inAuthGroup = ['login', 'register', 'onboarding', 'verify-email'].includes(
+    const inAuthGroup = ['login', 'register', 'onboarding', 'verify-email', 'reset-password'].includes(
       segments[0] as string
     );
 
     if (!session && inTabsGroup) {
       router.replace('/onboarding');
-    } else if (session && !inTabsGroup) {
+    } else if (session && !inTabsGroup && segments[0] !== 'reset-password') {
+      // reset-password is exempt: a recovery link creates a session
+      // BEFORE the user has typed the new password — bouncing to the
+      // tabs here would make password reset impossible.
       router.replace('/(tabs)');
     } else if (!session && !inTabsGroup && !inAuthGroup) {
       router.replace('/onboarding');
     }
-  }, [session, initialized, segments, fontsLoaded]);
+  }, [session, initialized, segments, fontsLoaded, fontError]);
 
-  if (!fontsLoaded) {
+  if (!fontsLoaded && !fontError) {
     return null;
   }
 
@@ -119,6 +128,7 @@ export default function RootLayout() {
         <Stack.Screen name="login" />
         <Stack.Screen name="register" />
         <Stack.Screen name="verify-email" />
+        <Stack.Screen name="reset-password" />
         <Stack.Screen name="(tabs)" />
       </Stack>
       <StatusBar style="auto" />
