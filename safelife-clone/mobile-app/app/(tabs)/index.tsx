@@ -48,6 +48,9 @@ export default function TacticalDashboard() {
   const [nearestStation, setNearestStation] = useState('Searching...');
   const [isLoading, setIsLoading] = useState(false);
   const [cachedSafePlaces, setCachedSafePlaces] = useState<any[]>([]);
+  // Drives the Safe Hubs card: without it a failed Overpass fetch left the
+  // "Scanning…" spinner on screen forever.
+  const [safePlacesState, setSafePlacesState] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
   const [locationError, setLocationError] = useState<string | null>(null);
   const lastFetchTime = useRef<number>(0);
   const locSubRef = useRef<Location.LocationSubscription | null>(null);
@@ -206,19 +209,44 @@ export default function TacticalDashboard() {
     await startLocationWatch();
   };
 
-  const fetchSafePlacesCache = async (lat: string, lng: string) => {
+  const fetchSafePlacesCache = async (lat: string, lng: string, force = false) => {
     const now = Date.now();
 
     // Prevent API spam bans: 30s cooldown, 3min refresh when data exists.
-    if (now - lastFetchTime.current < 30000) return;
-    if (now - lastFetchTime.current < 180000 && cachedSafePlaces.length > 0) return;
+    // `force` (the Retry button) bypasses the cooldown on user demand.
+    if (!force && now - lastFetchTime.current < 30000) return;
+    if (!force && now - lastFetchTime.current < 180000 && cachedSafePlaces.length > 0) return;
 
     lastFetchTime.current = now;
+    setSafePlacesState('loading');
 
     try {
       const query = `[out:json];(nwr["amenity"="police"](around:50000,${lat},${lng});nwr["amenity"~"hospital|clinic|mall|cafe|bank|pharmacy|university|college"](around:10000,${lat},${lng});nwr["tourism"~"hostel|hotel"](around:10000,${lat},${lng});nwr["shop"~"mall|supermarket|department_store"](around:10000,${lat},${lng}););out center;`;
-      const response = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
-      const data = await response.json();
+      // 12s timeout per endpoint + a mirror fallback: the old bare fetch
+      // had NO timeout, so a slow/blocked Overpass hung the Safe Hubs
+      // spinner forever.
+      const endpoints = [
+        'https://overpass-api.de/api/interpreter',
+        'https://overpass.kumi.systems/api/interpreter',
+      ];
+      let data: any = null;
+      let lastErr: any = null;
+      for (const base of endpoints) {
+        try {
+          const controller = new AbortController();
+          const t = setTimeout(() => controller.abort(), 12000);
+          const response = await fetch(`${base}?data=${encodeURIComponent(query)}`, {
+            signal: controller.signal,
+          });
+          clearTimeout(t);
+          if (!response.ok) throw new Error(`Overpass HTTP ${response.status}`);
+          data = await response.json();
+          break;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      if (!data) throw lastErr || new Error('Overpass unreachable');
 
       if (data.elements && data.elements.length > 0) {
         const parsedPlaces = data.elements.map((el: any) => {
@@ -245,6 +273,7 @@ export default function TacticalDashboard() {
         }).filter((p: any) => p.lat && p.lng);
 
         setCachedSafePlaces(parsedPlaces);
+        setSafePlacesState(parsedPlaces.length > 0 ? 'ready' : 'empty');
         AsyncStorage.setItem('safePlacesCache', JSON.stringify(parsedPlaces));
 
         const policeStations = parsedPlaces.filter((p: any) => p.category === 'police');
@@ -256,9 +285,11 @@ export default function TacticalDashboard() {
           setNearestStation('No station found in 3km');
         }
       } else {
+        setSafePlacesState('empty');
         setNearestStation('No station found in 3km');
       }
     } catch (err) {
+      setSafePlacesState('error');
       setNearestStation('Station data unavailable');
     }
   };
@@ -554,6 +585,20 @@ export default function TacticalDashboard() {
                     <SafeHubCard key={`${place.id}-${index}`} place={place} />
                   ))}
               </ScrollView>
+            ) : safePlacesState === 'error' || safePlacesState === 'empty' ? (
+              <GlassCard style={styles.scanningCard}>
+                <Text style={styles.scanningText}>
+                  {safePlacesState === 'error'
+                    ? 'Safe areas could not be loaded. Check your internet connection.'
+                    : 'No safe areas found within 10km.'}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => fetchSafePlacesCache(lat, lng, true)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={styles.retryText}>Retry</Text>
+                </TouchableOpacity>
+              </GlassCard>
             ) : (
               <GlassCard style={styles.scanningCard}>
                 <ActivityIndicator size="small" color={Theme.colors.primary} />
@@ -702,6 +747,7 @@ const styles = StyleSheet.create({
   hubsRow: { gap: 12, paddingBottom: 8, paddingRight: 20 },
   scanningCard: { paddingVertical: 30, alignItems: 'center', gap: 12 },
   scanningText: { fontFamily: Theme.fonts.label, color: Theme.colors.onSurfaceVariant, fontSize: 12 },
+  retryText: { fontFamily: Theme.fonts.label, color: Theme.colors.primary, fontSize: 13, letterSpacing: 1 },
   loader: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.85)',
