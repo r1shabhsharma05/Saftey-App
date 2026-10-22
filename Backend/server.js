@@ -254,10 +254,10 @@ app.get("/safe-places", trackingLimiter, async (req, res) => {
     return res.json(hit.data);
   }
   const query =
-    `[out:json][timeout:25];(nwr["amenity"="police"](around:50000,${lat},${lng});` +
+    `[out:json][timeout:25];(nwr["amenity"="police"](around:20000,${lat},${lng});` +
     `nwr["amenity"~"hospital|clinic|mall|cafe|bank|pharmacy|university|college"](around:10000,${lat},${lng});` +
     `nwr["tourism"~"hostel|hotel"](around:10000,${lat},${lng});` +
-    `nwr["shop"~"mall|supermarket|department_store"](around:10000,${lat},${lng}););out center;`;
+    `nwr["shop"~"mall|supermarket|department_store"](around:10000,${lat},${lng}););out center 200;`;
   // Race both public mirrors in parallel and take the first good answer:
   // sequentially trying a slow mirror first burned the whole budget
   // (observed live 2026-10-23: kumi timing out after api.de failed ->
