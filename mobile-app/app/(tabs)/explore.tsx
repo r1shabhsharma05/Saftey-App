@@ -15,6 +15,22 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../utils/supabase';
 import { ensureProfile } from '../../utils/auth';
+
+// The avatars bucket is PRIVATE (locked down 2026-10-22): profiles.avatar_url
+// stores the storage PATH ("<uid>/avatar.jpg"), never a URL. Display needs a
+// short-lived signed URL, minted on every profile load / photo change.
+// Legacy rows stored a full public URL — the path is extracted from those.
+const AVATAR_SIGN_TTL_SECONDS = 3600;
+const resolveAvatarDisplayUrl = async (stored: string | null): Promise<string | null> => {
+  if (!stored) return null;
+  const match = stored.match(/avatars\/(.+?)(\?|$)/);
+  const path = stored.startsWith('http') ? (match ? match[1] : null) : stored;
+  if (!path) return null;
+  const { data, error } = await supabase.storage
+    .from('avatars')
+    .createSignedUrl(path, AVATAR_SIGN_TTL_SECONDS);
+  return error ? null : data.signedUrl;
+};
 import { useRouter } from 'expo-router';
 import { Theme } from '../../constants/theme';
 import ScreenBackground from '../../components/ui/ScreenBackground';
@@ -26,6 +42,7 @@ export default function PremiumProfileScreen() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<any>(null);
+  const [avatarDisplayUrl, setAvatarDisplayUrl] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
@@ -47,6 +64,7 @@ export default function PremiumProfileScreen() {
       const { data, error } = await supabase.from('profiles').select('*').eq('id', user.id).single();
       if (error) throw error;
       setProfile(data);
+      setAvatarDisplayUrl(await resolveAvatarDisplayUrl(data?.avatar_url));
     } catch (error: any) {
       console.error('Profile fetch error:', error);
     } finally {
@@ -74,7 +92,7 @@ export default function PremiumProfileScreen() {
       if (result.canceled || !result.assets?.length) return;
 
       setUploadingPhoto(true);
-      // Upload to the public `avatars` bucket under the user's own uid
+      // Upload to the private `avatars` bucket under the user's own uid
       // folder (storage RLS only allows writes there).
       const arrayBuffer = await (await fetch(result.assets[0].uri)).arrayBuffer();
       const path = `${userId}/avatar.jpg`;
@@ -83,17 +101,16 @@ export default function PremiumProfileScreen() {
         .upload(path, arrayBuffer, { contentType: 'image/jpeg', upsert: true });
       if (uploadError) throw uploadError;
 
-      const { data: pub } = supabase.storage.from('avatars').getPublicUrl(path);
-      // Cache-buster: the path never changes, so without it the CDN /
-      // image cache would keep serving the old photo.
-      const publicUrl = `${pub.publicUrl}?v=${Date.now()}`;
+      // Private bucket: profiles.avatar_url stores the PATH (never a URL);
+      // the photo is displayed through a short-lived signed URL.
       const { error: updateError } = await supabase
         .from('profiles')
-        .update({ avatar_url: publicUrl })
+        .update({ avatar_url: path })
         .eq('id', userId);
       if (updateError) throw updateError;
 
-      setProfile((prev: any) => (prev ? { ...prev, avatar_url: publicUrl } : prev));
+      setProfile((prev: any) => (prev ? { ...prev, avatar_url: path } : prev));
+      setAvatarDisplayUrl(await resolveAvatarDisplayUrl(path));
       Alert.alert('Photo updated', 'Your profile photo has been changed.');
     } catch (err: any) {
       console.error('Change photo error:', err);
@@ -145,9 +162,9 @@ export default function PremiumProfileScreen() {
         <Reanimated.View entering={FadeInUp.delay(80).duration(500)} style={styles.profileHero}>
           <View style={styles.avatarGlow}>
             <View style={styles.avatarInner}>
-              {profile?.avatar_url ? (
+              {avatarDisplayUrl ? (
                 <Image
-                  source={{ uri: profile.avatar_url }}
+                  source={{ uri: avatarDisplayUrl }}
                   style={styles.avatarImage}
                   contentFit="cover"
                   transition={300}
