@@ -13,6 +13,7 @@ import { useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
 import { supabase } from '../utils/supabase';
+import { showAppDialog } from '../utils/dialog';
 import { ensureProfile, friendlyAuthError, resendConfirmation } from '../utils/auth';
 import AuthBackground from '../components/auth/Background';
 import AuthBrand from '../components/auth/Brand';
@@ -37,11 +38,11 @@ export default function LoginScreen() {
   const handleLogin = async () => {
     const cleanEmail = email.trim().toLowerCase();
     if (!cleanEmail || !password) {
-      Alert.alert('Missing Details', 'Please enter your email and password.');
+      showAppDialog('Missing Details', 'Please enter your email and password.');
       return;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      Alert.alert('Invalid Email', 'Please enter a valid email address.');
+      showAppDialog('Invalid Email', 'Please enter a valid email address.');
       return;
     }
 
@@ -54,7 +55,7 @@ export default function LoginScreen() {
 
       if (error) {
         if (/email not confirmed/i.test(error.message)) {
-          Alert.alert(
+          showAppDialog(
             'Verify Your Email',
             'Your account is created but not verified yet. Check your inbox for the confirmation link.',
             [
@@ -64,7 +65,7 @@ export default function LoginScreen() {
           );
           return;
         }
-        Alert.alert('Login Failed', friendlyAuthError(error));
+        showAppDialog('Login Failed', friendlyAuthError(error));
         return;
       }
 
@@ -74,13 +75,13 @@ export default function LoginScreen() {
       } else {
         // No error but no session either (e.g. email not yet
         // confirmed): the old code just stopped the spinner silently.
-        Alert.alert(
+        showAppDialog(
           'Sign-In Incomplete',
           'Sign-in did not finish. If this account is new, verify your email first, then sign in.'
         );
       }
     } catch (e: any) {
-      Alert.alert('Login Failed', friendlyAuthError(e));
+      showAppDialog('Login Failed', friendlyAuthError(e));
     } finally {
       setLoading(false);
     }
@@ -94,11 +95,11 @@ export default function LoginScreen() {
     try {
       const { error } = await signInWithGoogle();
       if (error) {
-        Alert.alert('Google Sign-In Unavailable', error);
+        showAppDialog('Google Sign-In Unavailable', error);
       }
       // On success the root layout's auth listener navigates to the tabs.
     } catch (e: any) {
-      Alert.alert('Google Sign-In Unavailable', friendlyAuthError(e));
+      showAppDialog('Google Sign-In Unavailable', friendlyAuthError(e));
     } finally {
       setGoogleBusy(false);
     }
@@ -149,7 +150,7 @@ export default function LoginScreen() {
             />
             <Pressable
               onPress={() =>
-                Alert.alert(
+                showAppDialog(
                   'Reset Password',
                   'Enter your email above, then tap OK and we\'ll send a reset link.',
                   [
@@ -167,7 +168,7 @@ export default function LoginScreen() {
                           email.trim().toLowerCase(),
                           { redirectTo: Linking.createURL('reset-password') }
                         );
-                        Alert.alert(
+                        showAppDialog(
                           error ? 'Reset Failed' : 'Email Sent',
                           error
                             ? friendlyAuthError(error)

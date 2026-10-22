@@ -17,6 +17,7 @@ import * as Contacts from 'expo-contacts';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { supabase } from '../../utils/supabase';
+import { showAppDialog } from '../../utils/dialog';
 import { Theme } from '../../constants/theme';
 import ScreenBackground from '../../components/ui/ScreenBackground';
 import GlassCard from '../../components/ui/GlassCard';
@@ -145,7 +146,7 @@ export default function EmergencyContactsScreen() {
 
   const handleSave = async () => {
     if (!userId) {
-      Alert.alert('Not signed in', 'Please sign in again to save emergency contacts.');
+      showAppDialog('Not signed in', 'Please sign in again to save emergency contacts.');
       return;
     }
     const chosen = deviceContacts.filter((c) => selected.has(c.key));
@@ -194,7 +195,7 @@ export default function EmergencyContactsScreen() {
         JSON.stringify(chosen.map((c) => ({ name: c.name, phone: c.phone })))
       );
 
-      Alert.alert(
+      showAppDialog(
         'Contacts saved',
         chosen.length > 0
           ? `${chosen.length} contact${chosen.length === 1 ? '' : 's'} will receive your SOS.`
@@ -202,7 +203,7 @@ export default function EmergencyContactsScreen() {
       );
     } catch (err: any) {
       console.error('Save contacts error:', err);
-      Alert.alert('Save failed', err?.message || 'Could not save contacts. Please try again.');
+      showAppDialog('Save failed', err?.message || 'Could not save contacts. Please try again.');
     } finally {
       setSaving(false);
     }

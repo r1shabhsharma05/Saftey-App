@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../utils/supabase';
+import { showAppDialog } from '../utils/dialog';
 import { friendlyAuthError } from '../utils/auth';
 import AuthBackground from '../components/auth/Background';
 import AuthBrand from '../components/auth/Brand';
@@ -88,25 +89,25 @@ export default function ResetPasswordScreen() {
 
   const handleSave = async () => {
     if (password.length < 6) {
-      Alert.alert('Weak Password', 'Password must be at least 6 characters long.');
+      showAppDialog('Weak Password', 'Password must be at least 6 characters long.');
       return;
     }
     if (password !== confirm) {
-      Alert.alert('Passwords Do Not Match', 'Type the same new password in both fields.');
+      showAppDialog('Passwords Do Not Match', 'Type the same new password in both fields.');
       return;
     }
     setSaving(true);
     try {
       const { error } = await supabase.auth.updateUser({ password });
       if (error) {
-        Alert.alert('Reset Failed', friendlyAuthError(error));
+        showAppDialog('Reset Failed', friendlyAuthError(error));
         return;
       }
-      Alert.alert('Password Updated', 'Your new password is set. You are signed in.', [
+      showAppDialog('Password Updated', 'Your new password is set. You are signed in.', [
         { text: 'OK', onPress: () => router.replace('/(tabs)') },
       ]);
     } catch (e: any) {
-      Alert.alert('Reset Failed', friendlyAuthError(e));
+      showAppDialog('Reset Failed', friendlyAuthError(e));
     } finally {
       setSaving(false);
     }

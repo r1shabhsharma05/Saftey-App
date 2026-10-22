@@ -12,6 +12,7 @@ import {
 import { useRouter } from 'expo-router';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
 import { supabase } from '../utils/supabase';
+import { showAppDialog } from '../utils/dialog';
 import { ensureProfile, friendlyAuthError } from '../utils/auth';
 import AuthBackground from '../components/auth/Background';
 import AuthBrand from '../components/auth/Brand';
@@ -44,11 +45,11 @@ export default function RegisterScreen() {
     try {
       const { error } = await signInWithGoogle();
       if (error) {
-        Alert.alert('Google Sign-Up Unavailable', error);
+        showAppDialog('Google Sign-Up Unavailable', error);
       }
       // On success the root layout's auth listener navigates to the tabs.
     } catch (e: any) {
-      Alert.alert('Google Sign-Up Unavailable', friendlyAuthError(e));
+      showAppDialog('Google Sign-Up Unavailable', friendlyAuthError(e));
     } finally {
       setGoogleBusy(false);
     }
@@ -60,26 +61,26 @@ export default function RegisterScreen() {
     const cleanPhone = phone.trim();
 
     if (!cleanFirst || !cleanEmail || !password || !cleanPhone) {
-      Alert.alert(
+      showAppDialog(
         'Missing Details',
         'Please fill in your name, phone, email and password.'
       );
       return;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      Alert.alert('Invalid Email', 'Please enter a valid email address.');
+      showAppDialog('Invalid Email', 'Please enter a valid email address.');
       return;
     }
     if (!/^[a-zA-Z\s]+$/.test(cleanFirst)) {
-      Alert.alert('Invalid Name', 'Name can only contain letters and spaces.');
+      showAppDialog('Invalid Name', 'Name can only contain letters and spaces.');
       return;
     }
     if (cleanPhone.replace(/\D/g, '').length < 10) {
-      Alert.alert('Invalid Phone', 'Please enter a valid phone number (min 10 digits).');
+      showAppDialog('Invalid Phone', 'Please enter a valid phone number (min 10 digits).');
       return;
     }
     if (password.length < 6) {
-      Alert.alert('Weak Password', 'Password must be at least 6 characters long.');
+      showAppDialog('Weak Password', 'Password must be at least 6 characters long.');
       return;
     }
 
@@ -98,7 +99,7 @@ export default function RegisterScreen() {
       });
 
       if (error) {
-        Alert.alert('Sign Up Failed', friendlyAuthError(error));
+        showAppDialog('Sign Up Failed', friendlyAuthError(error));
         return;
       }
 
@@ -114,10 +115,10 @@ export default function RegisterScreen() {
         });
       } else {
         // No error, no user, no session: never fail silently.
-        Alert.alert('Sign Up Incomplete', 'Sign-up did not finish. Please try again.');
+        showAppDialog('Sign Up Incomplete', 'Sign-up did not finish. Please try again.');
       }
     } catch (e: any) {
-      Alert.alert('Sign Up Failed', friendlyAuthError(e));
+      showAppDialog('Sign Up Failed', friendlyAuthError(e));
     } finally {
       setLoading(false);
     }

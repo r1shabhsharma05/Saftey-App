@@ -2,7 +2,11 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
+import { Pressable, StyleSheet } from 'react-native';
+import Reanimated, { FadeOut } from 'react-native-reanimated';
 import { supabase } from '../utils/supabase';
+import AnimatedLogo from '../components/AnimatedLogo';
+import AppDialogHost from '../components/ui/AppDialog';
 import * as SplashScreen from 'expo-splash-screen';
 import { 
   useFonts, 
@@ -50,6 +54,7 @@ export default function RootLayout() {
   const segments = useSegments();
   const [session, setSession] = useState<any>(null);
   const [initialized, setInitialized] = useState(false);
+  const [introVisible, setIntroVisible] = useState(true);
 
   const [fontsLoaded, fontError] = useFonts({
     SpaceGrotesk_300Light,
@@ -117,6 +122,19 @@ export default function RootLayout() {
     }
   }, [session, initialized, segments, fontsLoaded, fontError]);
 
+  // Animated app-open intro. The native splash is static by platform
+  // design, so the moment the app is actually ready this overlay takes
+  // over with the animated logo, plays briefly, and fades — the open
+  // feels designed and fast instead of "default splash, then app".
+  // It never delays readiness (same gate as the tree below) and a tap
+  // skips it once ready.
+  const appReady = initialized && (fontsLoaded || !!fontError);
+  useEffect(() => {
+    if (!appReady || !introVisible) return;
+    const t = setTimeout(() => setIntroVisible(false), 950);
+    return () => clearTimeout(t);
+  }, [appReady, introVisible]);
+
   if (!fontsLoaded && !fontError) {
     return null;
   }
@@ -132,6 +150,28 @@ export default function RootLayout() {
         <Stack.Screen name="(tabs)" />
       </Stack>
       <StatusBar style="auto" />
+      <AppDialogHost />
+      {introVisible && (
+        <Reanimated.View exiting={FadeOut.duration(320)} style={styles.intro}>
+          <Pressable
+            style={styles.introFill}
+            onPress={() => {
+              if (appReady) setIntroVisible(false);
+            }}
+          >
+            <AnimatedLogo />
+          </Pressable>
+        </Reanimated.View>
+      )}
     </ThemeProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  intro: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#0c0c1d',
+    zIndex: 50,
+  },
+  introFill: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+});

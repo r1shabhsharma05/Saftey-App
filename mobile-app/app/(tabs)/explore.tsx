@@ -14,6 +14,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../utils/supabase';
+import { showAppDialog } from '../../utils/dialog';
 import { ensureProfile } from '../../utils/auth';
 
 // The avatars bucket is PRIVATE (locked down 2026-10-22): profiles.avatar_url
@@ -80,12 +81,12 @@ export default function PremiumProfileScreen() {
   const handleChangePhoto = async () => {
     try {
       if (!userId) {
-        Alert.alert('Not signed in', 'Please sign in again to change your photo.');
+        showAppDialog('Not signed in', 'Please sign in again to change your photo.');
         return;
       }
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
-        Alert.alert('Permission needed', 'Allow photo access in Settings to set a profile photo.');
+        showAppDialog('Permission needed', 'Allow photo access in Settings to set a profile photo.');
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -123,10 +124,10 @@ export default function PremiumProfileScreen() {
 
       setProfile((prev: any) => (prev ? { ...prev, avatar_url: path } : prev));
       setAvatarDisplayUrl(await resolveAvatarDisplayUrl(path));
-      Alert.alert('Photo updated', 'Your profile photo has been changed.');
+      showAppDialog('Photo updated', 'Your profile photo has been changed.');
     } catch (err: any) {
       console.error('Change photo error:', err);
-      Alert.alert('Upload failed', err?.message || 'Could not update your photo. Please try again.');
+      showAppDialog('Upload failed', err?.message || 'Could not update your photo. Please try again.');
     } finally {
       setUploadingPhoto(false);
     }
@@ -137,7 +138,7 @@ export default function PremiumProfileScreen() {
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
     } catch (err: any) {
-      Alert.alert('System Error', 'Failed to close session: ' + err.message);
+      showAppDialog('System Error', 'Failed to close session: ' + err.message);
     }
   };
 

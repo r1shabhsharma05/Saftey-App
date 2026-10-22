@@ -499,7 +499,7 @@ export default function TacticalDashboard() {
 
   const handleShareLocation = async () => {
     if (lat === 'Loading...') {
-      Alert.alert('Hold on', 'Waiting for a GPS fix before sharing.');
+      showBanner('error', 'Waiting for a GPS fix before sharing your location.');
       return;
     }
     try {
@@ -513,7 +513,7 @@ export default function TacticalDashboard() {
 
   const handleNavigateNearest = () => {
     if (lat === 'Loading...' || cachedSafePlaces.length === 0) {
-      Alert.alert('Hold on', 'Still scanning for nearby safe places.');
+      showBanner('error', 'Still scanning for nearby safe places — try again in a moment.');
       return;
     }
     const ranked = rankSafePlaces(cachedSafePlaces, parseFloat(lat), parseFloat(lng));
