@@ -61,7 +61,11 @@ const sendTelegramMessage = async (message) => {
         {
           chat_id,
           text: message,
-        }
+        },
+        // Axios's default timeout is 0 (never). /alert awaits delivery,
+        // so a stalled Telegram API would hang the SOS request until the
+        // platform kills the function — fail fast and honestly instead.
+        { timeout: 8000 }
       );
       if (resp.data.ok) {
         console.log(`✅ Message successfully sent to Telegram ID: ${chat_id}`);
@@ -143,14 +147,19 @@ ${nearestStation}${contactsSection}
 🔴 This is an automated alert from Safety AI App.`;
 
   try {
-    // 🔥 Fire-and-forget or run in background to respond faster to the user
-    // We initiate the sending but don't await BEFORE responding success
-    sendTelegramMessage(message).catch(err => console.log("🔥 Telegram Background Error:", err.message));
-
-    console.log("✅ SOS ALERT INITIATED for:", name, "at", latNum, lngNum);
-
-    // 🚀 Respond immediately!
-    res.json({ success: true, message: "Alert initiated successfully" });
+    // AWAIT delivery before answering. On Vercel serverless the function
+    // can freeze as soon as the response is sent, so the old
+    // fire-and-forget call often died before Telegram received anything —
+    // while the app still showed "Alert Sent". Success now means Telegram
+    // actually accepted the message for at least one configured chat.
+    const { sent, failed } = await sendTelegramMessage(message);
+    console.log(`📨 SOS for ${name} at ${latNum},${lngNum}: telegram sent=${sent} failed=${failed}`);
+    if (sent === 0) {
+      return res
+        .status(502)
+        .json({ success: false, error: "Alert could not be delivered. Please try again." });
+    }
+    res.json({ success: true, message: "Alert delivered successfully" });
   } catch (err) {
     console.log("❌ ERROR:", err.message);
     // Generic message — err.message can leak internals (Telegram API
@@ -178,7 +187,12 @@ app.post("/location-update", trackingLimiter, requireApiKey, async (req, res) =>
     const { sent } = await sendTelegramMessage(message);
     if (sent === 0) {
       console.log("❌ Live location failed for all recipients");
-      return res.json({ success: false });
+      // Same contract as /alert: a delivery failure is a 502, not a
+      // 200 — clients that check the HTTP status must not read a total
+      // failure as delivered.
+      return res
+        .status(502)
+        .json({ success: false, error: "Location update could not be delivered." });
     }
 
     console.log("📡 Live location sent");
@@ -186,7 +200,7 @@ app.post("/location-update", trackingLimiter, requireApiKey, async (req, res) =>
     res.json({ success: true });
   } catch (err) {
     console.log("❌ ERROR:", err.message);
-    res.json({ success: false });
+    res.status(502).json({ success: false, error: "Location update could not be delivered." });
   }
 });
 
@@ -196,12 +210,8 @@ app.get("/", (req, res) => {
     service: "SafeLife AI — Emergency Backend",
     status: "online",
     time: new Date().toISOString(),
-    endpoints: {
-      health: "GET /health",
-      alert: "POST /alert",
-      locationUpdate: "POST /location-update",
-      testAlert: "POST /test-alert",
-    },
+    // No endpoint map here: this route is unauthenticated, and listing
+    // every route (incl. the debug one) is free reconnaissance.
   });
 });
 
@@ -219,7 +229,10 @@ app.get("/health", (req, res) => {
 // Telegram emergency chats, so a forgotten test route is an abuse vector.
 // Re-enable on a staging deploy with ENABLE_TEST_ALERT=1.
 const testAlertGate = (req, res, next) => {
-  if (process.env.NODE_ENV === "production" && process.env.ENABLE_TEST_ALERT !== "1") {
+  // Default-deny: the route is OFF unless explicitly enabled, whatever
+  // NODE_ENV says — a deploy where NODE_ENV is unset/different must not
+  // silently re-expose a debug endpoint.
+  if (process.env.ENABLE_TEST_ALERT !== "1") {
     return res.status(404).json({ success: false, error: "Not found" });
   }
   next();

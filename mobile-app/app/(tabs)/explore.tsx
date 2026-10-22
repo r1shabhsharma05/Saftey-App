@@ -103,11 +103,18 @@ export default function PremiumProfileScreen() {
 
       // Private bucket: profiles.avatar_url stores the PATH (never a URL);
       // the photo is displayed through a short-lived signed URL.
-      const { error: updateError } = await supabase
+      // .select() so a zero-row update (profile row missing) surfaces
+      // as an error instead of a silent "Photo updated" that saved
+      // nothing — PostgREST updates matching no rows return no error.
+      const { data: updated, error: updateError } = await supabase
         .from('profiles')
         .update({ avatar_url: path })
-        .eq('id', userId);
+        .eq('id', userId)
+        .select('id');
       if (updateError) throw updateError;
+      if (!updated || updated.length === 0) {
+        throw new Error('Profile not found yet — pull to refresh and try again.');
+      }
 
       setProfile((prev: any) => (prev ? { ...prev, avatar_url: path } : prev));
       setAvatarDisplayUrl(await resolveAvatarDisplayUrl(path));

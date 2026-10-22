@@ -184,8 +184,15 @@ export default function EmergencyContactsScreen() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return deviceContacts;
+    const qDigits = q.replace(/[^0-9]/g, '');
     return deviceContacts.filter(
-      (c) => c.name.toLowerCase().includes(q) || c.phone.replace(/[^0-9]/g, '').includes(q.replace(/[^0-9]/g, ''))
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        // Phone match only when the query actually has digits: for a
+        // name-only query qDigits is '' and ''.includes('') is true for
+        // EVERY contact — the old code returned the full list, so search
+        // looked completely broken.
+        (qDigits.length > 0 && c.phone.replace(/[^0-9]/g, '').includes(qDigits))
     );
   }, [deviceContacts, search]);
 

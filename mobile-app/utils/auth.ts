@@ -58,19 +58,51 @@ export async function ensureProfile(user: User): Promise<void> {
     if (existing) return;
 
     const meta = (user.user_metadata || {}) as Record<string, string>;
-    const uniqueId = `SL-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-    const { error } = await supabase.from('profiles').insert([
-      {
-        id: user.id,
-        first_name: meta.first_name || '',
-        last_name: meta.last_name || '',
-        email: user.email || '',
-        phone: meta.phone || '',
-        address: meta.address || '',
-        unique_id: uniqueId,
-      },
-    ]);
-    if (error && error.code !== '23505') {
+    // Google sign-ins carry full_name/name, not first_name/last_name —
+    // split the full name so Google users don't end up with a blank
+    // profile (and "Unknown User" on their SOS alerts).
+    let firstName = meta.first_name || '';
+    let lastName = meta.last_name || '';
+    if (!firstName && !lastName) {
+      const full = (meta.full_name || meta.name || '').trim();
+      if (full) {
+        const parts = full.split(/\s+/);
+        firstName = parts[0];
+        lastName = parts.slice(1).join(' ');
+      }
+    }
+    const row = {
+      id: user.id,
+      first_name: firstName,
+      last_name: lastName,
+      email: user.email || '',
+      phone: meta.phone || '',
+      address: meta.address || '',
+    };
+    // 8 random chars (36^8) instead of 4 — and a 23505 is only benign
+    // when it's our OWN row (a duplicate ensureProfile call). If the
+    // unique_id collided with another user, no row was created; the old
+    // code swallowed that too, leaving the profile blank forever.
+    const newUniqueId = () =>
+      `SL-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+    let { error } = await supabase
+      .from('profiles')
+      .insert([{ ...row, unique_id: newUniqueId() }]);
+    if (error?.code === '23505') {
+      const { data: own } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', user.id)
+        .maybeSingle();
+      if (!own) {
+        ({ error } = await supabase
+          .from('profiles')
+          .insert([{ ...row, unique_id: newUniqueId() }]));
+      } else {
+        error = null;
+      }
+    }
+    if (error) {
       console.log('ensureProfile: insert failed (non-fatal):', error.message);
     }
   } catch (e: any) {

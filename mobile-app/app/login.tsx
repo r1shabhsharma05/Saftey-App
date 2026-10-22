@@ -18,6 +18,7 @@ import AuthBrand from '../components/auth/Brand';
 import AuthInput from '../components/auth/Input';
 import AuthButton from '../components/auth/Button';
 import SocialButton, { OrDivider } from '../components/auth/SocialButton';
+import { signInWithGoogle } from '../utils/googleAuth';
 import { AuthTheme } from '../constants/auth-theme';
 
 /**
@@ -76,29 +77,15 @@ export default function LoginScreen() {
     }
   };
 
-  const handleOAuth = async (provider: 'google' | 'apple') => {
+  const handleGoogle = async () => {
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider,
-        options: {
-          redirectTo:
-            Platform.OS === 'web' && typeof window !== 'undefined'
-              ? window.location.origin
-              : undefined,
-        },
-      });
+      const { error } = await signInWithGoogle();
       if (error) {
-        Alert.alert(
-          'Social Sign-In Unavailable',
-          'Enable the ' +
-            provider +
-            ' provider in your Supabase dashboard (Authentication → Providers), then try again.'
-        );
+        Alert.alert('Google Sign-In Unavailable', error);
       }
-      // On web the browser redirects to the provider; the session
-      // is restored on return via detectSessionInUrl.
+      // On success the root layout's auth listener navigates to the tabs.
     } catch (e: any) {
-      Alert.alert('Social Sign-In Unavailable', friendlyAuthError(e));
+      Alert.alert('Google Sign-In Unavailable', friendlyAuthError(e));
     }
   };
 
@@ -123,9 +110,7 @@ export default function LoginScreen() {
           </Animated.View>
 
           <Animated.View entering={FadeInUp.delay(180).duration(500)} style={styles.socialRow}>
-            <SocialButton provider="google" onPress={() => handleOAuth('google')} />
-            <View style={styles.socialGap} />
-            <SocialButton provider="apple" onPress={() => handleOAuth('apple')} />
+            <SocialButton provider="google" onPress={handleGoogle} />
           </Animated.View>
 
           <Animated.View entering={FadeInUp.delay(240).duration(500)}>
