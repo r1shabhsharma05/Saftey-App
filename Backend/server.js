@@ -215,7 +215,16 @@ app.get("/health", (req, res) => {
 
 // 🧪 TEST ALERT (for debugging)
 // Rate-limited (10/hour per IP — debugging only, no reason to hammer it).
-app.post("/test-alert", testLimiter, requireApiKey, async (req, res) => {
+// Debug endpoints stay OFF in production: every hit spams the user's
+// Telegram emergency chats, so a forgotten test route is an abuse vector.
+// Re-enable on a staging deploy with ENABLE_TEST_ALERT=1.
+const testAlertGate = (req, res, next) => {
+  if (process.env.NODE_ENV === "production" && process.env.ENABLE_TEST_ALERT !== "1") {
+    return res.status(404).json({ success: false, error: "Not found" });
+  }
+  next();
+};
+app.post("/test-alert", testAlertGate, testLimiter, requireApiKey, async (req, res) => {
   const testLat = "28.6139";
   const testLng = "77.2090";
   const message = `🧪 TEST ALERT!
