@@ -265,6 +265,8 @@ app.get("/safe-places", trackingLimiter, async (req, res) => {
   const mirrors = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.nchc.org.tw/api/interpreter",
   ];
   const fetchMirror = async (base) => {
     const resp = await axios.get(base, {
