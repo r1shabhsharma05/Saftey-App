@@ -61,7 +61,11 @@ const sendTelegramMessage = async (message) => {
         {
           chat_id,
           text: message,
-        }
+        },
+        // Axios's default timeout is 0 (never). /alert awaits delivery,
+        // so a stalled Telegram API would hang the SOS request until the
+        // platform kills the function — fail fast and honestly instead.
+        { timeout: 8000 }
       );
       if (resp.data.ok) {
         console.log(`✅ Message successfully sent to Telegram ID: ${chat_id}`);
@@ -183,7 +187,12 @@ app.post("/location-update", trackingLimiter, requireApiKey, async (req, res) =>
     const { sent } = await sendTelegramMessage(message);
     if (sent === 0) {
       console.log("❌ Live location failed for all recipients");
-      return res.json({ success: false });
+      // Same contract as /alert: a delivery failure is a 502, not a
+      // 200 — clients that check the HTTP status must not read a total
+      // failure as delivered.
+      return res
+        .status(502)
+        .json({ success: false, error: "Location update could not be delivered." });
     }
 
     console.log("📡 Live location sent");
@@ -191,7 +200,7 @@ app.post("/location-update", trackingLimiter, requireApiKey, async (req, res) =>
     res.json({ success: true });
   } catch (err) {
     console.log("❌ ERROR:", err.message);
-    res.json({ success: false });
+    res.status(502).json({ success: false, error: "Location update could not be delivered." });
   }
 });
 
@@ -201,12 +210,8 @@ app.get("/", (req, res) => {
     service: "SafeLife AI — Emergency Backend",
     status: "online",
     time: new Date().toISOString(),
-    endpoints: {
-      health: "GET /health",
-      alert: "POST /alert",
-      locationUpdate: "POST /location-update",
-      testAlert: "POST /test-alert",
-    },
+    // No endpoint map here: this route is unauthenticated, and listing
+    // every route (incl. the debug one) is free reconnaissance.
   });
 });
 
@@ -224,7 +229,10 @@ app.get("/health", (req, res) => {
 // Telegram emergency chats, so a forgotten test route is an abuse vector.
 // Re-enable on a staging deploy with ENABLE_TEST_ALERT=1.
 const testAlertGate = (req, res, next) => {
-  if (process.env.NODE_ENV === "production" && process.env.ENABLE_TEST_ALERT !== "1") {
+  // Default-deny: the route is OFF unless explicitly enabled, whatever
+  // NODE_ENV says — a deploy where NODE_ENV is unset/different must not
+  // silently re-expose a debug endpoint.
+  if (process.env.ENABLE_TEST_ALERT !== "1") {
     return res.status(404).json({ success: false, error: "Not found" });
   }
   next();
