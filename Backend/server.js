@@ -54,38 +54,45 @@ const sendTelegramMessage = async (message) => {
     result.failed = 1;
     return result;
   }
-  for (let chat_id of CHAT_IDS) {
-    try {
-      const resp = await axios.post(
-        `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
-        {
-          chat_id,
-          text: message,
-        },
-        // Axios's default timeout is 0 (never). /alert awaits delivery,
-        // so a stalled Telegram API would hang the SOS request until the
-        // platform kills the function — fail fast and honestly instead.
-        { timeout: 8000 }
-      );
-      if (resp.data.ok) {
-        console.log(`✅ Message successfully sent to Telegram ID: ${chat_id}`);
-        result.sent += 1;
-      } else {
-        console.log(`❌ Telegram rejected message for ${chat_id}:`, resp.data.description);
+  // Parallel, not serial: awaiting chats one by one stacked an 8s
+  // timeout per recipient inside the SOS request, and with Vercel's
+  // default function cap the platform could kill /alert mid-flight —
+  // the phone then saw a dropped connection instead of an answer.
+  await Promise.all(
+    CHAT_IDS.map(async (chat_id) => {
+      try {
+        const resp = await axios.post(
+          `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
+          {
+            chat_id,
+            text: message,
+          },
+          // Axios's default timeout is 0 (never). /alert awaits delivery,
+          // so a stalled Telegram API would hang the SOS request until
+          // the platform kills the function — fail fast and honestly.
+          { timeout: 6000 }
+        );
+        if (resp.data && resp.data.ok) {
+          console.log(`✅ Message successfully sent to Telegram ID: ${chat_id}`);
+          result.sent += 1;
+        } else {
+          console.log(`❌ Telegram rejected message for ${chat_id}:`, resp.data && resp.data.description);
+          result.failed += 1;
+        }
+      } catch (err) {
+        console.log(`❌ Failed for ${chat_id}:`, err.response?.data?.description || err.message);
         result.failed += 1;
       }
-    } catch (err) {
-      console.log(`❌ Failed for ${chat_id}:`, err.response?.data?.description || err.message);
-      result.failed += 1;
-    }
-  }
+    })
+  );
   return result;
 };
 
 // 🚨 SOS ALERT
-// Rate-limited (5/15min per IP — each hit spams the user's Telegram
-// contacts) + API-key gated. Coordinates are strictly validated; free-text
-// fields are sanitized before they reach the Telegram message and logs.
+// Rate-limited (30/15min per IP — see middleware/rateLimit.js for why
+// the ceiling is generous: carrier NAT shares IPs and emergencies get
+// repeat presses) + API-key gated. Coordinates are strictly validated;
+// free-text fields are sanitized before they reach Telegram and logs.
 app.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
   const { lat, lng } = req.body;
 
@@ -221,6 +228,55 @@ app.get("/health", (req, res) => {
     status: "OK",
     time: new Date().toISOString(),
   });
+});
+
+// 🛡️ SAFE PLACES PROXY — the app used to query Overpass directly from
+// the phone; on flaky mobile data those heavy queries timed out and
+// Safe Hubs / Police Radar sat on an error. Server-side the same query
+// runs from a fast network (Mumbai region), mirrors race with a bounded
+// timeout, and results are cached per ~100m grid cell for 5 minutes —
+// the phone gets one small, fast JSON response instead. The response
+// keeps Overpass's shape ({ elements: [...] }) so the app's existing
+// parser works unchanged.
+const safePlacesCache = new Map();
+app.get("/safe-places", trackingLimiter, async (req, res) => {
+  const lat = parseFloat(req.query.lat);
+  const lng = parseFloat(req.query.lng);
+  if (
+    !Number.isFinite(lat) || !Number.isFinite(lng) ||
+    lat < -90 || lat > 90 || lng < -180 || lng > 180
+  ) {
+    return res.status(400).json({ success: false, error: "Invalid coordinates" });
+  }
+  const key = `${lat.toFixed(3)},${lng.toFixed(3)}`;
+  const hit = safePlacesCache.get(key);
+  if (hit && Date.now() - hit.ts < 5 * 60 * 1000) {
+    return res.json(hit.data);
+  }
+  const query =
+    `[out:json];(nwr["amenity"="police"](around:50000,${lat},${lng});` +
+    `nwr["amenity"~"hospital|clinic|mall|cafe|bank|pharmacy|university|college"](around:10000,${lat},${lng});` +
+    `nwr["tourism"~"hostel|hotel"](around:10000,${lat},${lng});` +
+    `nwr["shop"~"mall|supermarket|department_store"](around:10000,${lat},${lng}););out center;`;
+  const mirrors = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+  ];
+  let lastErr = null;
+  for (const base of mirrors) {
+    try {
+      const resp = await axios.get(base, { params: { data: query }, timeout: 12000 });
+      if (resp.data && Array.isArray(resp.data.elements)) {
+        safePlacesCache.set(key, { ts: Date.now(), data: resp.data });
+        return res.json(resp.data);
+      }
+      lastErr = new Error("Unexpected Overpass response shape");
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  console.log("❌ SAFE-PLACES ERROR:", lastErr && lastErr.message);
+  return res.status(502).json({ success: false, error: "Safe places lookup failed" });
 });
 
 // 🧪 TEST ALERT (for debugging)

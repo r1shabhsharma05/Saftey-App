@@ -34,13 +34,15 @@ const baseOptions = {
   handler: jsonHandler,
 };
 
-// 🚨 SOS alerts: each hit spams the user's Telegram contacts. A real user
-// almost never fires more than a couple of SOS presses in 15 minutes —
-// 5 leaves room for accidental double-taps; anything beyond that is abuse.
+// 🚨 SOS alerts: each hit spams the user's Telegram contacts, so a cap
+// must exist — but 5/15min was an emergency hazard: Indian carriers put
+// many subscribers behind one NAT egress IP (trust proxy keys the bucket
+// on that shared IP), and a panicking user re-presses SOS. 30/15min per
+// IP still stops floods while never locking out a real emergency.
 const sosLimiter = rateLimit({
   ...baseOptions,
   windowMs: 15 * 60 * 1000,
-  limit: 5,
+  limit: 30,
 });
 
 // 📡 Live location updates: no client sends these yet, but live tracking

@@ -1,1 +1,1 @@
-{"rewrites":[{"destination":"/api/index","source":"/(.*)"}]}
+{"functions":{"api/index.js":{"maxDuration":30}},"regions":["bom1"],"rewrites":[{"destination":"/api/index","source":"/(.*)"}]}
