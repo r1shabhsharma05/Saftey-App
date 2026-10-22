@@ -254,29 +254,42 @@ app.get("/safe-places", trackingLimiter, async (req, res) => {
     return res.json(hit.data);
   }
   const query =
-    `[out:json];(nwr["amenity"="police"](around:50000,${lat},${lng});` +
+    `[out:json][timeout:25];(nwr["amenity"="police"](around:50000,${lat},${lng});` +
     `nwr["amenity"~"hospital|clinic|mall|cafe|bank|pharmacy|university|college"](around:10000,${lat},${lng});` +
     `nwr["tourism"~"hostel|hotel"](around:10000,${lat},${lng});` +
     `nwr["shop"~"mall|supermarket|department_store"](around:10000,${lat},${lng}););out center;`;
+  // Race both public mirrors in parallel and take the first good answer:
+  // sequentially trying a slow mirror first burned the whole budget
+  // (observed live 2026-10-23: kumi timing out after api.de failed ->
+  // 502 for the user). Overpass also rejects requests with no UA.
   const mirrors = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
   ];
-  let lastErr = null;
-  for (const base of mirrors) {
-    try {
-      const resp = await axios.get(base, { params: { data: query }, timeout: 12000 });
-      if (resp.data && Array.isArray(resp.data.elements)) {
-        safePlacesCache.set(key, { ts: Date.now(), data: resp.data });
-        return res.json(resp.data);
-      }
-      lastErr = new Error("Unexpected Overpass response shape");
-    } catch (err) {
-      lastErr = err;
-    }
+  const fetchMirror = async (base) => {
+    const resp = await axios.get(base, {
+      params: { data: query },
+      timeout: 20000,
+      headers: {
+        "User-Agent": "SafeLifeAI/1.0 (personal safety app)",
+        Accept: "application/json",
+      },
+    });
+    if (resp.data && Array.isArray(resp.data.elements)) return resp.data;
+    throw new Error(`Unexpected Overpass response shape from ${base}`);
+  };
+  try {
+    const data = await Promise.any(mirrors.map(fetchMirror));
+    safePlacesCache.set(key, { ts: Date.now(), data });
+    return res.json(data);
+  } catch (err) {
+    const msgs =
+      err && err.errors
+        ? err.errors.map((e) => e && e.message).join(" | ")
+        : err && err.message;
+    console.log("❌ SAFE-PLACES ERROR:", msgs);
+    return res.status(502).json({ success: false, error: "Safe places lookup failed" });
   }
-  console.log("❌ SAFE-PLACES ERROR:", lastErr && lastErr.message);
-  return res.status(502).json({ success: false, error: "Safe places lookup failed" });
 });
 
 // 🧪 TEST ALERT (for debugging)
