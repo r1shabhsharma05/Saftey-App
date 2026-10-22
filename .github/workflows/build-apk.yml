@@ -28,6 +28,7 @@ jobs:
         run: |
           cat > mobile-app/.env <<'EOF'
           EXPO_PUBLIC_BACKEND_URL=https://safelife-backend-rish0000-dots-projects.vercel.app
+          EXPO_PUBLIC_API_SECRET=${{ secrets.EXPO_PUBLIC_API_SECRET }}
           EOF
 
       - name: Install dependencies
