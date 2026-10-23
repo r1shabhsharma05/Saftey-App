@@ -106,7 +106,7 @@ export default function RootLayout() {
     if (!initialized || (!fontsLoaded && !fontError)) return;
 
     const inTabsGroup = segments[0] === '(tabs)';
-    const inAuthGroup = ['login', 'register', 'onboarding', 'verify-email', 'reset-password'].includes(
+    const inAuthGroup = ['login', 'register', 'onboarding', 'verify-email', 'reset-password', 'auth-callback'].includes(
       segments[0] as string
     );
 
