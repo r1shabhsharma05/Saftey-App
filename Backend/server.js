@@ -1,7 +1,7 @@
 const express = require("express");
 const axios = require("axios");
 const requireApiKey = require("./middleware/requireApiKey");
-const { sosLimiter, trackingLimiter, testLimiter } = require("./middleware/rateLimit");
+const { sosLimiter, trackingLimiter, testLimiter, safePlacesLimiter } = require("./middleware/rateLimit");
 const corsMiddleware = require("./middleware/cors");
 const {
   isValidLatitude,
@@ -239,7 +239,7 @@ app.get("/health", (req, res) => {
 // keeps Overpass's shape ({ elements: [...] }) so the app's existing
 // parser works unchanged.
 const safePlacesCache = new Map();
-app.get("/safe-places", trackingLimiter, async (req, res) => {
+app.get("/safe-places", safePlacesLimiter, async (req, res) => {
   const lat = parseFloat(req.query.lat);
   const lng = parseFloat(req.query.lng);
   if (

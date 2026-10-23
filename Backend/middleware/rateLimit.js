@@ -61,4 +61,17 @@ const testLimiter = rateLimit({
   limit: 10,
 });
 
-module.exports = { sosLimiter, trackingLimiter, testLimiter };
+// 🛡️ Safe-places proxy: the only unauthenticated route that fans out to
+// shared upstream services — every cache MISS fires up to 4 Overpass
+// mirror requests in parallel. On the shared 60/min tracking bucket one IP
+// could burn 240 upstream hits/min; Overpass throttles aggressive IPs,
+// which would break Safe Hubs for everyone. The app's own client cooldown
+// is 30s (2/min worst case), so 30/min keeps 15x headroom for legit use
+// while halving the upstream-burn ceiling.
+const safePlacesLimiter = rateLimit({
+  ...baseOptions,
+  windowMs: 60 * 1000,
+  limit: 30,
+});
+
+module.exports = { sosLimiter, trackingLimiter, testLimiter, safePlacesLimiter };
