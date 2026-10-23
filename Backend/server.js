@@ -290,6 +290,10 @@ app.get("/safe-places", trackingLimiter, async (req, res) => {
         ? err.errors.map((e) => e && e.message).join(" | ")
         : err && err.message;
     console.log("❌ SAFE-PLACES ERROR:", msgs);
+    // Every mirror failed. If this grid cell was ever fetched
+    // successfully, serve the stale copy instead of an error — for a
+    // safety lookup, slightly old station data beats none.
+    if (hit) return res.json(hit.data);
     return res.status(502).json({ success: false, error: "Safe places lookup failed" });
   }
 });

@@ -24,7 +24,7 @@ import { getBackendUrl } from '../../utils/backendUrl';
 import { Theme } from '../../constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import AlertActiveView from '../../components/AlertActiveView';
-import { rankSafePlaces, calculateBearing, getCardinalDirection } from '../../utils/escapeLogic';
+import { rankSafePlaces, calculateBearing, calculateDistance, getCardinalDirection } from '../../utils/escapeLogic';
 import ScreenBackground from '../../components/ui/ScreenBackground';
 import GlassCard from '../../components/ui/GlassCard';
 import TiltCard from '../../components/ui/TiltCard';
@@ -59,6 +59,9 @@ export default function TacticalDashboard() {
   };
   // Double-tap guard for SOS (see sendSOSAlert).
   const sosInFlightRef = useRef(false);
+  // Last live-tracking update sent to the backend (F2): position +
+  // timestamp, so updates go out on movement, not on every GPS tick.
+  const lastTrackRef = useRef<{ lat: number; lng: number; at: number } | null>(null);
   // Drives the Safe Hubs card: without it a failed Overpass fetch left the
   // "Scanning…" spinner on screen forever.
   const [safePlacesState, setSafePlacesState] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
@@ -120,11 +123,14 @@ export default function TacticalDashboard() {
           /* cache is best-effort */
         }
 
+        // getBatteryLevelAsync returns -1 on devices/emulators where
+        // the battery API is unsupported — Math.round(-1 * 100) put
+        // "Battery: -100%" into SOS messages. Clamp unknowns to 0.
         const level = await Battery.getBatteryLevelAsync();
-        setBatteryLevel(Math.round(level * 100));
+        setBatteryLevel(level >= 0 ? Math.round(level * 100) : 0);
 
         batSubRef.current = Battery.addBatteryLevelListener(({ batteryLevel }) => {
-          setBatteryLevel(Math.round(batteryLevel * 100));
+          setBatteryLevel(batteryLevel >= 0 ? Math.round(batteryLevel * 100) : 0);
         });
 
         const { data: { user } } = await supabase.auth.getUser();
@@ -262,7 +268,7 @@ export default function TacticalDashboard() {
     setSafePlacesState('loading');
 
     try {
-      const query = `[out:json];(nwr["amenity"="police"](around:50000,${lat},${lng});nwr["amenity"~"hospital|clinic|mall|cafe|bank|pharmacy|university|college"](around:10000,${lat},${lng});nwr["tourism"~"hostel|hotel"](around:10000,${lat},${lng});nwr["shop"~"mall|supermarket|department_store"](around:10000,${lat},${lng}););out center;`;
+      const query = `[out:json];(nwr["amenity"="police"](around:20000,${lat},${lng});nwr["amenity"~"hospital|clinic|mall|cafe|bank|pharmacy|university|college"](around:10000,${lat},${lng});nwr["tourism"~"hostel|hotel"](around:10000,${lat},${lng});nwr["shop"~"mall|supermarket|department_store"](around:10000,${lat},${lng}););out center;`;
       // First try our own backend's /safe-places proxy: it runs the
       // Overpass query server-side (fast region, cached, bounded
       // timeouts) and returns the same JSON shape — a phone on flaky
@@ -320,17 +326,21 @@ export default function TacticalDashboard() {
         setSafePlacesState(parsedPlaces.length > 0 ? 'ready' : 'empty');
         AsyncStorage.setItem('safePlacesCache', JSON.stringify(parsedPlaces));
 
-        const policeStations = parsedPlaces.filter((p: any) => p.category === 'police');
-        if (policeStations.length > 0) {
-          setNearestStation(policeStations[0].name || 'Police Station Nearby');
-        } else if (parsedPlaces.length > 0) {
-          setNearestStation(parsedPlaces[0].name || 'Safe Zone Nearby');
+        // Nearest by actual distance from the user. Overpass returns
+        // elements in arbitrary order, so taking [0] named farther
+        // stations "nearest" in the SOS Telegram message.
+        const rankedAll = rankSafePlaces(parsedPlaces, parseFloat(lat), parseFloat(lng));
+        const rankedPolice = rankedAll.filter((p) => p.category === 'police');
+        if (rankedPolice.length > 0) {
+          setNearestStation(rankedPolice[0].name || 'Police Station Nearby');
+        } else if (rankedAll.length > 0) {
+          setNearestStation(rankedAll[0].name || 'Safe Zone Nearby');
         } else {
-          setNearestStation('No station found in 3km');
+          setNearestStation('No station found nearby');
         }
       } else {
         setSafePlacesState('empty');
-        setNearestStation('No station found in 3km');
+        setNearestStation('No station found nearby');
       }
     } catch (err) {
       setSafePlacesState('error');
@@ -380,6 +390,52 @@ export default function TacticalDashboard() {
     }
     return false;
   };
+
+  // One live-tracking update while an alert is active. Fire-and-
+  // forget: a failed update must never disturb the SOS screen.
+  const postLocationUpdate = async (uLat: string, uLng: string): Promise<void> => {
+    try {
+      await fetch(`${BACKEND_URL}/location-update`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.EXPO_PUBLIC_API_SECRET
+            ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
+            : {}),
+        },
+        body: JSON.stringify({ lat: uLat, lng: uLng }),
+      });
+    } catch {
+      /* best-effort */
+    }
+  };
+
+  // Live tracking (F2): the backend's /location-update endpoint had
+  // zero callers, so the "LIVE LOCATION TRACKING" link in the SOS
+  // Telegram message pointed at the static trigger-time pin while
+  // claiming real-time updates. While an alert is active, send an
+  // update whenever the user has moved ≥25m and ≥30s have passed
+  // since the last one. The first fix after activation only seeds
+  // the baseline — /alert already delivered that position.
+  useEffect(() => {
+    if (status !== 'ALERT ACTIVE') {
+      lastTrackRef.current = null;
+      return;
+    }
+    const la = parseFloat(lat);
+    const ln = parseFloat(lng);
+    if (!Number.isFinite(la) || !Number.isFinite(ln)) return;
+    const last = lastTrackRef.current;
+    const now = Date.now();
+    if (!last) {
+      lastTrackRef.current = { lat: la, lng: ln, at: now };
+      return;
+    }
+    if (now - last.at < 30000) return;
+    if (calculateDistance(last.lat, last.lng, la, ln) < 25) return;
+    lastTrackRef.current = { lat: la, lng: ln, at: now };
+    postLocationUpdate(lat, lng);
+  }, [status, lat, lng]);
 
   // Send a previously queued SOS (stored when every retry failed).
   const flushPendingSOS = async () => {
@@ -699,7 +755,7 @@ export default function TacticalDashboard() {
         <Reanimated.View entering={FadeInUp.delay(320).duration(500)}>
           <SectionHeader
             icon={<MaterialCommunityIcons name="police-badge" size={18} color={Theme.colors.police} />}
-            title="Police Radar · 50km"
+            title="Police Radar · 20km"
           />
           {policeStations.length > 0 ? (
             policeStations.map((station: any, idx: number) => {

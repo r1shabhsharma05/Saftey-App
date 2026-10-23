@@ -159,9 +159,17 @@ export default function EmergencyContactsScreen() {
       // true removals are deleted — a failure at any step leaves the
       // previously saved set intact. (Keyed by phone: a name edit on
       // an already-saved number is not re-written.)
+      //
+      // "True removals" means contacts THIS device can see: a server
+      // row whose phone is in this phone's address book but no longer
+      // selected. Rows saved from another phone (or for numbers no
+      // longer in this address book) are invisible here — deleting
+      // them on an unrelated Save silently dropped SOS recipients
+      // after a phone switch, so they are kept and stay in the local
+      // SOS cache below.
       const { data: existingRows, error: fetchError } = await supabase
         .from('emergency_contacts')
-        .select('id, phone')
+        .select('id, name, phone')
         .eq('user_id', userId);
       if (fetchError) throw fetchError;
 
@@ -169,6 +177,7 @@ export default function EmergencyContactsScreen() {
         (existingRows ?? []).map((r: any) => phoneKey(String(r.phone ?? '')))
       );
       const chosenKeys = new Set(chosen.map((c) => phoneKey(c.phone)));
+      const deviceKeys = new Set(deviceContacts.map((c) => phoneKey(c.phone)));
 
       const toInsert = chosen.filter((c) => !existingKeys.has(phoneKey(c.phone)));
       if (toInsert.length > 0) {
@@ -179,7 +188,10 @@ export default function EmergencyContactsScreen() {
       }
 
       const toDeleteIds = (existingRows ?? [])
-        .filter((r: any) => !chosenKeys.has(phoneKey(String(r.phone ?? ''))))
+        .filter((r: any) => {
+          const key = phoneKey(String(r.phone ?? ''));
+          return deviceKeys.has(key) && !chosenKeys.has(key);
+        })
         .map((r: any) => r.id);
       if (toDeleteIds.length > 0) {
         const { error: deleteError } = await supabase
@@ -189,16 +201,20 @@ export default function EmergencyContactsScreen() {
         if (deleteError) throw deleteError;
       }
 
+      // Contacts saved on other devices stay SOS recipients too —
+      // they remain in the local cache the SOS screen reads.
+      const foreignRows = (existingRows ?? [])
+        .filter((r: any) => !deviceKeys.has(phoneKey(String(r.phone ?? ''))))
+        .map((r: any) => ({ name: String(r.name ?? ''), phone: String(r.phone ?? '') }));
+      const savedSet = [...chosen.map((c) => ({ name: c.name, phone: c.phone })), ...foreignRows];
+
       // Local cache — the SOS screen reads this at send time.
-      await AsyncStorage.setItem(
-        'emergencyContacts',
-        JSON.stringify(chosen.map((c) => ({ name: c.name, phone: c.phone })))
-      );
+      await AsyncStorage.setItem('emergencyContacts', JSON.stringify(savedSet));
 
       showAppDialog(
         'Contacts saved',
-        chosen.length > 0
-          ? `${chosen.length} contact${chosen.length === 1 ? '' : 's'} will receive your SOS.`
+        savedSet.length > 0
+          ? `${savedSet.length} contact${savedSet.length === 1 ? '' : 's'} will receive your SOS.`
           : 'Your SOS contact list is now empty.'
       );
     } catch (err: any) {

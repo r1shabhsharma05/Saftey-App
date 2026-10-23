@@ -1,5 +1,5 @@
-import { Alert } from 'react-native';
 import { supabase } from './supabase';
+import { showAppDialog } from './dialog';
 import type { User } from '@supabase/supabase-js';
 
 export interface ProfileData {
@@ -120,9 +120,9 @@ export async function ensureProfile(user: User): Promise<void> {
 export async function resendConfirmation(email: string): Promise<void> {
   const { error } = await supabase.auth.resend({ type: 'signup', email });
   if (error) {
-    Alert.alert('Resend Failed', friendlyAuthError(error));
+    showAppDialog('Resend Failed', friendlyAuthError(error));
   } else {
-    Alert.alert(
+    showAppDialog(
       'Email Sent',
       'A fresh confirmation link is on its way. Check your inbox (and spam).'
     );
