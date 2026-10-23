@@ -16,6 +16,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../utils/supabase';
 import { showAppDialog } from '../../utils/dialog';
 import { ensureProfile } from '../../utils/auth';
+import { MAX_AVATAR_BYTES, detectImageMime } from '../../utils/mediaValidation';
 
 // The avatars bucket is PRIVATE (locked down 2026-10-22): profiles.avatar_url
 // stores the storage PATH ("<uid>/avatar.jpg"), never a URL. Display needs a
@@ -97,14 +98,38 @@ export default function PremiumProfileScreen() {
       });
       if (result.canceled || !result.assets?.length) return;
 
+      const asset = result.assets[0];
+      // Cap the upload BEFORE reading the file into memory: a panorama
+      // from the library can be tens of MB, and the old code buffered the
+      // whole thing. fileSize may be absent on some platforms, so the
+      // buffer length is re-checked after the read.
+      if ((asset.fileSize ?? 0) > MAX_AVATAR_BYTES) {
+        showAppDialog('Photo too large', 'Please choose a photo under 5 MB.');
+        return;
+      }
+
       setUploadingPhoto(true);
       // Upload to the private `avatars` bucket under the user's own uid
       // folder (storage RLS only allows writes there).
-      const arrayBuffer = await (await fetch(result.assets[0].uri)).arrayBuffer();
+      const arrayBuffer = await (await fetch(asset.uri)).arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      // The picker's mime/extension claim proves nothing — verify the
+      // actual bytes, or a renamed binary lands in the bucket as avatar.jpg.
+      const mime = detectImageMime(bytes);
+      if (bytes.byteLength > MAX_AVATAR_BYTES || !mime) {
+        setUploadingPhoto(false);
+        showAppDialog(
+          'Upload failed',
+          !mime
+            ? 'That file is not a photo we can use. Please pick a JPEG, PNG, WebP or GIF image.'
+            : 'Please choose a photo under 5 MB.'
+        );
+        return;
+      }
       const path = `${userId}/avatar.jpg`;
       const { error: uploadError } = await supabase.storage
         .from('avatars')
-        .upload(path, arrayBuffer, { contentType: 'image/jpeg', upsert: true });
+        .upload(path, arrayBuffer, { contentType: mime, upsert: true });
       if (uploadError) throw uploadError;
 
       // Private bucket: profiles.avatar_url stores the PATH (never a URL);
