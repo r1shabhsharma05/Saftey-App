@@ -20,6 +20,8 @@ COPY server.js ./
 COPY api ./api
 COPY middleware ./middleware
 COPY lib ./lib
+COPY services ./services
+COPY routes ./routes
 # api/ holds the Vercel serverless entry; harmless in the container.
 EXPOSE 5000
 CMD ["node", "server.js"]

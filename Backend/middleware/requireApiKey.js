@@ -12,6 +12,7 @@
 // warning at startup) so existing app builds keep working. Set API_SECRET in
 // the hosting dashboard to activate enforcement.
 const crypto = require("crypto");
+const { audit } = require("../services/audit");
 
 let warned = false;
 
@@ -36,6 +37,10 @@ const requireApiKey = (req, res, next) => {
   const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
 
   if (!ok) {
+    // Audit the rejection — a wrong-key walk against /alert is exactly the
+    // probe an attacker runs before finding an open debug route. The key
+    // itself is never logged (audit stores a fingerprint only).
+    audit("api_key.rejected", { actorKey: provided, ip: req.ip });
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
   next();
