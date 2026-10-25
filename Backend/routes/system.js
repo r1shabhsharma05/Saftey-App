@@ -3,6 +3,8 @@
 const express = require("express");
 const { telegramStatus } = require("../services/telegram");
 const { getCacheStats } = require("../services/safePlaces");
+const { redisStatus } = require("../services/redis");
+const { qstashStatus } = require("../services/qstash");
 
 const router = express.Router();
 
@@ -29,6 +31,8 @@ router.get("/health", (req, res) => {
     config: {
       telegram: telegramStatus(),
       apiKeyEnforced: Boolean(process.env.API_SECRET),
+      upstash: redisStatus(),
+      qstash: qstashStatus(),
     },
     safePlacesCache: getCacheStats(),
   });

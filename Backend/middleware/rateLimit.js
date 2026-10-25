@@ -10,10 +10,17 @@
 // single-instance local case. A shared store (e.g. Redis/Upstash) is the
 // documented next step if abuse ever warrants it.
 //
+// D2: that next step is now wired for the SOS limiter (amendment A3 —
+// only the cross-instance-critical SOS bucket migrates; tracking/test/
+// safe-places buckets stay local, they don't spam contacts). When
+// Upstash env is set, the SOS bucket is shared across all instances;
+// without it, the memory store applies exactly as before.
+//
 // IMPORTANT: server.js sets `trust proxy` (1 hop) so req.ip is the real
 // client IP behind Vercel's edge. Without it every request would share a
 // single bucket and one bad actor could lock out all users.
 const { rateLimit } = require("express-rate-limit");
+const { redisStatus, createUpstashStore } = require("../services/redis");
 
 // The API speaks JSON everywhere, so 429s are JSON too (with Retry-After).
 const jsonHandler = (req, res) => {
@@ -39,10 +46,13 @@ const baseOptions = {
 // many subscribers behind one NAT egress IP (trust proxy keys the bucket
 // on that shared IP), and a panicking user re-presses SOS. 30/15min per
 // IP still stops floods while never locking out a real emergency.
+// Store: Upstash-backed when configured (shared across instances),
+// otherwise the library's memory store (unchanged behavior).
 const sosLimiter = rateLimit({
   ...baseOptions,
   windowMs: 15 * 60 * 1000,
   limit: 30,
+  ...(redisStatus().configured ? { store: createUpstashStore() } : {}),
 });
 
 // 📡 Live location updates: no client sends these yet, but live tracking
