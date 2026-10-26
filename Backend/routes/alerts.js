@@ -15,6 +15,8 @@ const {
 const { buildSosMessage, dispatchSos } = require("../services/sos");
 const { sendTelegramMessage } = require("../services/telegram");
 const { audit } = require("../services/audit");
+const { createAlert, transition } = require("../services/alertLifecycle");
+const alertStore = require("../services/alertStore");
 
 const router = express.Router();
 
@@ -64,33 +66,91 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
     contacts,
   });
 
+  // Declared outside try so the catch path can mark the alert failed
+  // instead of leaving it stuck in "dispatching" when dispatch throws.
+  let alert = null;
   try {
+    // D3 lifecycle: every SOS is an alert record now, not just a Telegram
+    // send. created → dispatching → delivered/failed, with the audit
+    // trail carrying the alert id (no PII in audit lines, as before).
+    alert = createAlert({ contactsCount: contacts.length });
+    audit("alert.created", {
+      actorKey: req.header("x-api-key"),
+      ip: req.ip,
+      meta: { alertId: alert.id, contacts: contacts.length },
+    });
+    transition(alert, "dispatching", "telegram fan-out started");
+    alertStore.save(alert);
+
     // AWAIT delivery before answering. On Vercel serverless the function
     // can freeze as soon as the response is sent, so the old
     // fire-and-forget call often died before Telegram received anything —
     // while the app still showed "Alert Sent". Success now means Telegram
     // actually accepted the message for at least one configured chat.
     const { sent, failed } = await dispatchSos(message);
+    alert.sent = sent;
+    alert.failed = failed;
     console.log(`📨 SOS for ${name} at ${latNum},${lngNum}: telegram sent=${sent} failed=${failed}`);
-    // Audit: counts + contact count only — no PII (names, phones,
-    // coordinates, message text) ever lands in an audit line.
-    audit("alert.dispatched", {
-      actorKey: req.header("x-api-key"),
-      ip: req.ip,
-      meta: { sent, failed, contacts: contacts.length },
-    });
     if (sent === 0) {
+      transition(alert, "failed", "all channels failed");
+      alertStore.save(alert);
+      audit("alert.failed", {
+        actorKey: req.header("x-api-key"),
+        ip: req.ip,
+        meta: { alertId: alert.id, sent, failed, contacts: contacts.length },
+      });
       return res
         .status(502)
-        .json({ success: false, error: "Alert could not be delivered. Please try again." });
+        .json({ success: false, error: "Alert could not be delivered. Please try again.", alertId: alert.id, state: alert.state });
     }
-    res.json({ success: true, message: "Alert delivered successfully" });
+    transition(alert, "delivered", "telegram accepted");
+    alertStore.save(alert);
+    // Audit: counts + contact count only — no PII (names, phones,
+    // coordinates, message text) ever lands in an audit line.
+    audit("alert.delivered", {
+      actorKey: req.header("x-api-key"),
+      ip: req.ip,
+      meta: { alertId: alert.id, sent, failed, contacts: contacts.length },
+    });
+    res.json({ success: true, message: "Alert delivered successfully", alertId: alert.id, state: alert.state });
   } catch (err) {
     console.log("❌ ERROR:", err.message);
+    // A thrown dispatch must not leave the alert in "dispatching": mark
+    // it failed (legal from dispatching only — hence the guard) so the
+    // record and the audit trail agree the SOS did not go out.
+    if (alert && alert.state === "dispatching") {
+      try {
+        transition(alert, "failed", "dispatch threw");
+        alertStore.save(alert);
+        audit("alert.failed", {
+          actorKey: req.header("x-api-key"),
+          ip: req.ip,
+          meta: { alertId: alert.id },
+        });
+      } catch {
+        // The failure response below matters more than the bookkeeping.
+      }
+    }
     // Generic message — err.message can leak internals (Telegram API
     // errors, stack fragments). Details stay in the server logs.
     res.status(500).json({ success: false, error: "Failed to send alert" });
   }
+});
+
+// 🔍 ALERT STATUS (D3 read path for the lifecycle)
+// API-key gated + tracking limiter (a read, not an SOS — it must not eat
+// the SOS budget). Returns the alert's current state and delivery
+// counters, or 404. This is what D5's in-app delivery-status UI polls,
+// and what the D6 phase test asserts against. Serverless caveat: an id
+// created on another instance is only visible here once Supabase is
+// configured (the shared store); unconfigured, only same-instance
+// memory answers — a miss then is "not found here", reported as 404.
+router.get("/alert/:id", trackingLimiter, requireApiKey, async (req, res) => {
+  const alert = await alertStore.get(req.params.id);
+  if (!alert) {
+    return res.status(404).json({ success: false, error: "Alert not found" });
+  }
+  res.json({ success: true, alert: alertStore.toPublic(alert) });
 });
 
 // 📡 LIVE LOCATION UPDATE

@@ -5,6 +5,7 @@ const { telegramStatus } = require("../services/telegram");
 const { getCacheStats } = require("../services/safePlaces");
 const { redisStatus } = require("../services/redis");
 const { qstashStatus } = require("../services/qstash");
+const { dbStatus } = require("../services/supabaseDb");
 
 const router = express.Router();
 
@@ -33,6 +34,7 @@ router.get("/health", (req, res) => {
       apiKeyEnforced: Boolean(process.env.API_SECRET),
       upstash: redisStatus(),
       qstash: qstashStatus(),
+      supabase: dbStatus(),
     },
     safePlacesCache: getCacheStats(),
   });

@@ -46,3 +46,41 @@ test("audit never throws, even with a broken sink", () => {
     _setWriteSink((l) => process.stdout.write(l + "\n"));
   }
 });
+
+test("when Supabase is configured, audit mirrors the line to audit_events", async () => {
+  const { _setDbTransport } = require("../services/supabaseDb");
+  const OLD_URL = process.env.SUPABASE_URL;
+  const OLD_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.SUPABASE_URL = "https://example.supabase.co";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-key";
+  const calls = [];
+  _setDbTransport(async (call) => {
+    calls.push(call);
+    return { data: null };
+  });
+  const lines = [];
+  _setWriteSink((l) => lines.push(l));
+  try {
+    audit("alert.delivered", {
+      actorKey: "k",
+      ip: "1.2.3.4",
+      meta: { alertId: "alert-1", sent: 1, failed: 0 },
+    });
+    // Fire-and-forget mirror: let the microtask run before asserting.
+    await new Promise((r) => setImmediate(r));
+    assert.equal(lines.length, 1);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.includes("/rest/v1/audit_events"));
+    assert.ok(!calls[0].url.includes("on_conflict"), "identity-PK table must be a plain insert");
+    assert.equal(calls[0].body.action, "alert.delivered");
+    assert.equal(calls[0].body.alert_id, "alert-1");
+    assert.equal(calls[0].body.meta.alertId, "alert-1");
+  } finally {
+    _setDbTransport(null);
+    _setWriteSink((l) => process.stdout.write(l + "\n"));
+    if (OLD_URL !== undefined) process.env.SUPABASE_URL = OLD_URL;
+    else delete process.env.SUPABASE_URL;
+    if (OLD_KEY !== undefined) process.env.SUPABASE_SERVICE_ROLE_KEY = OLD_KEY;
+    else delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  }
+});
