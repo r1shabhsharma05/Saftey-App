@@ -77,8 +77,10 @@ test("toPublic strips history and internal fields", () => {
   assert.deepEqual(Object.keys(pub).sort(), [
     "contacts",
     "createdAt",
+    "delivery",
     "failed",
     "id",
+    "retry",
     "sent",
     "state",
     "updatedAt",

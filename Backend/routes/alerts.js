@@ -12,7 +12,15 @@ const {
   toNumber,
   sanitizeText,
 } = require("../lib/validate");
-const { buildSosMessage, dispatchSos } = require("../services/sos");
+const { buildSosMessage } = require("../services/sos");
+const {
+  deliverAlert,
+  receiptsSummary,
+  applyRetryReceipts,
+  verifyRetryToken,
+  scheduleRetry,
+  MAX_RETRIES,
+} = require("../services/delivery");
 const { sendTelegramMessage } = require("../services/telegram");
 const { audit } = require("../services/audit");
 const { createAlert, transition } = require("../services/alertLifecycle");
@@ -85,25 +93,32 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
     // AWAIT delivery before answering. On Vercel serverless the function
     // can freeze as soon as the response is sent, so the old
     // fire-and-forget call often died before Telegram received anything —
-    // while the app still showed "Alert Sent". Success now means Telegram
-    // actually accepted the message for at least one configured chat.
-    const { sent, failed } = await dispatchSos(message);
+    // while the app still showed "Alert Sent". D4: fan-out runs through
+    // the delivery engine (all channels in parallel, per-channel
+    // receipts); success means at least one channel actually accepted
+    // the message. On TOTAL failure a QStash retry is scheduled (D4
+    // policy: partial delivery is delivered — retrying its failed
+    // channels is D10's escalation ladder, not this route's job).
+    const receipts = await deliverAlert({ message });
+    const { sent, failed } = receiptsSummary(receipts);
+    alert.delivery = receipts;
     alert.sent = sent;
     alert.failed = failed;
-    console.log(`📨 SOS for ${name} at ${latNum},${lngNum}: telegram sent=${sent} failed=${failed}`);
+    console.log(`📨 SOS for ${name} at ${latNum},${lngNum}: delivery sent=${sent} failed=${failed}`);
     if (sent === 0) {
       transition(alert, "failed", "all channels failed");
+      alert.retry = await scheduleRetry({ alertId: alert.id, attempt: 1, message });
       alertStore.save(alert);
       audit("alert.failed", {
         actorKey: req.header("x-api-key"),
         ip: req.ip,
-        meta: { alertId: alert.id, sent, failed, contacts: contacts.length },
+        meta: { alertId: alert.id, sent, failed, contacts: contacts.length, retryQueued: alert.retry.queued },
       });
       return res
         .status(502)
-        .json({ success: false, error: "Alert could not be delivered. Please try again.", alertId: alert.id, state: alert.state });
+        .json({ success: false, error: "Alert could not be delivered. Please try again.", alertId: alert.id, state: alert.state, delivery: receipts, retry: alert.retry });
     }
-    transition(alert, "delivered", "telegram accepted");
+    transition(alert, "delivered", "channel accepted");
     alertStore.save(alert);
     // Audit: counts + contact count only — no PII (names, phones,
     // coordinates, message text) ever lands in an audit line.
@@ -112,7 +127,7 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
       ip: req.ip,
       meta: { alertId: alert.id, sent, failed, contacts: contacts.length },
     });
-    res.json({ success: true, message: "Alert delivered successfully", alertId: alert.id, state: alert.state });
+    res.json({ success: true, message: "Alert delivered successfully", alertId: alert.id, state: alert.state, delivery: receipts });
   } catch (err) {
     console.log("❌ ERROR:", err.message);
     // A thrown dispatch must not leave the alert in "dispatching": mark
@@ -151,6 +166,64 @@ router.get("/alert/:id", trackingLimiter, requireApiKey, async (req, res) => {
     return res.status(404).json({ success: false, error: "Alert not found" });
   }
   res.json({ success: true, alert: alertStore.toPublic(alert) });
+});
+
+// 🔁 DELIVERY RETRY (QStash callback — D4)
+// Auth is NOT requireApiKey: QStash cannot carry our x-api-key header,
+// so the job body carries an HMAC token over (alertId, attempt) keyed
+// by API_SECRET (services/delivery.js). A bad token is a 401 and an
+// audit line; a missing/unknown alert is a 404. Rate-limited like a
+// tracking read — retries are sparse by construction (max 3 per alert).
+// Idempotent: only a "failed" alert retries. A duplicate QStash
+// delivery (or a retry arriving after a later success) returns 200
+// with ignored:true instead of re-firing the alert — re-sending an SOS
+// because a queue redelivered would be a false alarm to every contact.
+router.post("/delivery-retry", trackingLimiter, async (req, res) => {
+  const alertId = typeof req.body.alertId === "string" ? req.body.alertId : "";
+  const attempt = req.body.attempt;
+  const message = typeof req.body.message === "string" ? req.body.message : "";
+  if (!alertId || !Number.isInteger(attempt) || attempt < 1 || attempt > MAX_RETRIES || !message || message.length > 4000) {
+    return res.status(400).json({ success: false, error: "Invalid retry job" });
+  }
+  if (!verifyRetryToken(alertId, attempt, req.body.token)) {
+    audit("delivery.retry_denied", { ip: req.ip, meta: { alertId, attempt } });
+    return res.status(401).json({ success: false, error: "Invalid retry token" });
+  }
+  const alert = await alertStore.get(alertId);
+  if (!alert) {
+    return res.status(404).json({ success: false, error: "Alert not found" });
+  }
+  if (alert.state !== "failed") {
+    return res.json({ success: true, ignored: true, state: alert.state });
+  }
+  try {
+    transition(alert, "dispatching", `delivery retry attempt ${attempt}`);
+  } catch {
+    return res.json({ success: true, ignored: true, state: alert.state });
+  }
+  // The retry re-sends the ORIGINAL SOS message, carried in the job
+  // body by scheduleRetry: the callback instance shares no memory with
+  // the instance that took the SOS, and a location-less retry notice
+  // would be a neutered alert. The body message is only ever sent to
+  // our own configured channels, never reflected or logged.
+  const receipts = await deliverAlert({ message });
+  const { sent, failed } = receiptsSummary(receipts);
+  alert.delivery = applyRetryReceipts(alert.delivery, receipts);
+  alert.sent = sent;
+  alert.failed = failed;
+  if (sent > 0) {
+    transition(alert, "delivered", `retry attempt ${attempt} accepted`);
+    alert.retry = { queued: false, reason: "delivered" };
+  } else {
+    transition(alert, "failed", `retry attempt ${attempt} failed`);
+    alert.retry = await scheduleRetry({ alertId: alert.id, attempt: attempt + 1, message });
+  }
+  alertStore.save(alert);
+  audit("delivery.retry", {
+    ip: req.ip,
+    meta: { alertId: alert.id, attempt, sent, failed, state: alert.state, retryQueued: alert.retry.queued },
+  });
+  res.json({ success: true, alertId: alert.id, state: alert.state, delivery: alert.delivery, retry: alert.retry });
 });
 
 // 📡 LIVE LOCATION UPDATE

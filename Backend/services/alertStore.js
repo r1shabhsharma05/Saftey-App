@@ -22,6 +22,8 @@ const toRow = (alert) => ({
   contacts_count: alert.contacts,
   created_at: alert.createdAt,
   updated_at: alert.updatedAt,
+  delivery: alert.delivery || [],
+  retry: alert.retry || null,
 });
 
 const fromRow = (row) => ({
@@ -33,9 +35,13 @@ const fromRow = (row) => ({
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   history: [],
+  delivery: row.delivery || [],
+  retry: row.retry || null,
 });
 
-// Public shape for GET /alert/:id — no history, no internals.
+// Public shape for GET /alert/:id — no history, no internals. Delivery
+// receipts ARE public to the key-holding caller: this is what D5's
+// status UI polls, and hiding it would defeat the receipt feature.
 const toPublic = (alert) => ({
   id: alert.id,
   state: alert.state,
@@ -44,6 +50,8 @@ const toPublic = (alert) => ({
   contacts: alert.contacts,
   createdAt: alert.createdAt,
   updatedAt: alert.updatedAt,
+  delivery: alert.delivery || [],
+  retry: alert.retry || null,
 });
 
 const save = (alert) => {
