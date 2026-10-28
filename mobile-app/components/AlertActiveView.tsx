@@ -23,9 +23,14 @@ interface Props {
   lat: string;
   lng: string;
   cachedSafePlaces?: any[];
+  // D5: per-channel receipts from D4's delivery engine
+  // ({channel, state: delivered|partial|failed, attempts, reason?}).
+  // Null until the SOS has reached the server — no card then, and
+  // never a faked "all delivered" state.
+  delivery?: any[] | null;
 }
 
-export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [] }: Props) {
+export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [], delivery = null }: Props) {
   const [timer, setTimer] = useState(0);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const [bestPlace, setBestPlace] = useState<SafePlace | null>(null);
@@ -157,6 +162,50 @@ export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [
           </Reanimated.View>
         )}
 
+        {/* D5 delivery status — per-channel truth from the server,
+            refreshed every 30s while the alert is active. A channel
+            that has not landed yet says so; it is never shown as
+            delivered. `channel-not-configured` (SMS/WhatsApp/push
+            until D7–D9) reads as "Not connected yet", not "Failed". */}
+        {delivery && delivery.length > 0 && (
+          <Reanimated.View entering={FadeInUp.delay(260).duration(500)} style={styles.deliverySection}>
+            <SectionHeader
+              icon={<MaterialCommunityIcons name="email-check" size={18} color={Theme.colors.primary} />}
+              title="Delivery Status"
+            />
+            <GlassCard style={styles.deliveryCard}>
+              {delivery.map((receipt: any, idx: number) => {
+                const state = receipt.state === 'delivered'
+                  ? 'Delivered'
+                  : receipt.state === 'partial'
+                    ? 'Partially delivered'
+                    : receipt.reason === 'channel-not-configured'
+                      ? 'Not connected yet'
+                      : 'Failed';
+                const color = receipt.state === 'delivered'
+                  ? Theme.colors.success
+                  : receipt.state === 'partial'
+                    ? Theme.colors.warning
+                    : receipt.reason === 'channel-not-configured'
+                      ? Theme.colors.onSurfaceVariant
+                      : Theme.colors.error;
+                return (
+                  <View key={`${receipt.channel}-${idx}`} style={styles.deliveryRow}>
+                    <Text style={styles.deliveryChannel}>
+                      {String(receipt.channel || 'channel').replace(/^\w/, (c) => c.toUpperCase())}
+                    </Text>
+                    <Text style={[styles.deliveryState, { color }]}>
+                      {state}
+                      {receipt.attempts > 1 ? ` · attempt ${receipt.attempts}` : ''}
+                    </Text>
+                  </View>
+                );
+              })}
+              <Text style={styles.deliveryHint}>Updates every 30 seconds while this alert is active.</Text>
+            </GlassCard>
+          </Reanimated.View>
+        )}
+
         {/* Stop */}
         <Reanimated.View entering={FadeInUp.delay(300).duration(500)} style={styles.stopWrap}>
           <GlowButton
@@ -198,6 +247,12 @@ const styles = StyleSheet.create({
   fallbackTitle: { fontFamily: Theme.fonts.headline, fontSize: 19, color: Theme.colors.tertiary, textAlign: 'center' },
   fallbackSub: { fontFamily: Theme.fonts.body, fontSize: 14, color: Theme.colors.onSurfaceVariant, textAlign: 'center', lineHeight: 21 },
   altSection: { marginTop: 26 },
+  deliverySection: { marginTop: 26 },
+  deliveryCard: { padding: 18, gap: 12 },
+  deliveryRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  deliveryChannel: { fontFamily: Theme.fonts.headline, fontSize: 14, color: Theme.colors.onSurface },
+  deliveryState: { fontFamily: Theme.fonts.label, fontSize: 12, letterSpacing: 0.5 },
+  deliveryHint: { fontFamily: Theme.fonts.body, fontSize: 11, color: Theme.colors.onSurfaceVariant, marginTop: 2 },
   altRow: { gap: 12, paddingRight: 20 },
   stopWrap: { marginTop: 30, alignItems: 'center', gap: 10 },
   stopBtn: { width: 250 },

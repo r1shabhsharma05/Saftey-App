@@ -23,6 +23,7 @@ import { ensureProfile } from '../../utils/auth';
 import { getBackendUrl } from '../../utils/backendUrl';
 import { Theme } from '../../constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import AlertActiveView from '../../components/AlertActiveView';
 import { rankSafePlaces, calculateBearing, calculateDistance, getCardinalDirection } from '../../utils/escapeLogic';
 import ScreenBackground from '../../components/ui/ScreenBackground';
@@ -78,6 +79,41 @@ export default function TacticalDashboard() {
     }
   };
   const [locationError, setLocationError] = useState<string | null>(null);
+  // D5 outbox hardening — what the D4 engine returns for one SOS:
+  // `reached` (the server accepted the alert, even on total delivery
+  // failure) vs a transport failure (the alert never left the phone).
+  // The distinction decides whether the phone may re-send: a reached
+  // alert is server-owned (its QStash retry is the server's job), so
+  // re-POSTing it would create a duplicate SOS. Only a never-reached
+  // alert goes into the local queue.
+  type AlertPostResult = {
+    reached: boolean;
+    success: boolean;
+    alertId: string | null;
+    delivery: any[] | null;
+    retry: { queued?: boolean; reason?: string } | null;
+  };
+  type QueuedSOS = {
+    payload: Record<string, unknown>;
+    queuedAt: number;
+    attempts: number;
+    nextRetryAt: number;
+  };
+  // Local-queue backoff between flush attempts (30s → 2m → 5m → 15m,
+  // capped): the queue must not hammer a flaky link, and a flush
+  // attempt is only meaningful when connectivity has returned.
+  const QUEUE_BACKOFF_MS = [30000, 120000, 300000, 900000];
+  // The alert the delivery-status UI polls (D4 GET /alert/:id) and the
+  // receipts it shows. Null until an SOS has reached the server.
+  const [activeAlertId, setActiveAlertId] = useState<string | null>(null);
+  const [deliveryReceipts, setDeliveryReceipts] = useState<any[] | null>(null);
+  // Whether a never-reached SOS sits in the local queue — drives the
+  // persistent "SOS queued" pill (a dismissed banner must not hide
+  // that an SOS is still unsent).
+  const [queuedSOS, setQueuedSOS] = useState(false);
+  // NetInfo + AppState can fire flushes at the same moment; without
+  // this guard the same queued SOS would be POSTed twice.
+  const flushInFlightRef = useRef(false);
   const lastFetchTime = useRef<number>(0);
   const locSubRef = useRef<Location.LocationSubscription | null>(null);
   const batSubRef = useRef<{ remove: () => void } | null>(null);
@@ -156,6 +192,18 @@ export default function TacticalDashboard() {
     const appStateSub = AppState.addEventListener('change', (state) => {
       if (state === 'active') flushPendingSOS();
     });
+    // D5 net-state awareness: flush the moment connectivity returns,
+    // instead of only on foreground — and never attempt a flush while
+    // offline (flushPendingSOS itself still backoff-gates each try).
+    // The listener also fires once immediately with the current state.
+    const netInfoSub = NetInfo.addEventListener((state) => {
+      if (state.isConnected && state.isInternetReachable !== false) flushPendingSOS();
+    });
+    // Seed the queued pill from storage: a queued SOS must stay
+    // visible across restarts until it is delivered or expires.
+    AsyncStorage.getItem('pendingSOS')
+      .then((raw) => setQueuedSOS(!!raw))
+      .catch(() => {});
 
     Animated.loop(
       Animated.sequence([
@@ -168,6 +216,7 @@ export default function TacticalDashboard() {
       locSubRef.current?.remove();
       batSubRef.current?.remove();
       appStateSub.remove();
+      netInfoSub();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -348,9 +397,15 @@ export default function TacticalDashboard() {
     }
   };
 
-  // One SOS POST with a hard timeout. Resolves true only when the
-  // backend confirms Telegram delivery — never on a blind 200.
-  const postAlertOnce = async (payload: Record<string, unknown>): Promise<boolean> => {
+  // One SOS POST with a hard timeout. Returns the full server answer,
+  // not just a boolean — D5 needs the alertId and delivery receipts
+  // for the status UI, and the reached/success split for the queue:
+  // a 502 still carries alertId + receipts (the server owns that
+  // alert and its retry), while a transport failure carries nothing
+  // (the alert never left the phone). Success is still only ever
+  // claimed on the backend's own success flag — never on a blind 200.
+  const postAlertOnce = async (payload: Record<string, unknown>): Promise<AlertPostResult> => {
+    const notReached: AlertPostResult = { reached: false, success: false, alertId: null, delivery: null, retry: null };
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
     try {
@@ -370,9 +425,16 @@ export default function TacticalDashboard() {
         signal: controller.signal,
       });
       const data = await response.json().catch(() => null);
-      return !!(data && data.success);
+      if (!data) return notReached;
+      return {
+        reached: true,
+        success: !!data.success,
+        alertId: typeof data.alertId === 'string' ? data.alertId : null,
+        delivery: Array.isArray(data.delivery) ? data.delivery : null,
+        retry: data.retry && typeof data.retry === 'object' ? data.retry : null,
+      };
     } catch {
-      return false;
+      return notReached;
     } finally {
       clearTimeout(timeout);
     }
@@ -381,14 +443,41 @@ export default function TacticalDashboard() {
   // An SOS must be stubborn: one failed attempt on a flaky mobile link
   // used to be the end of it (the old code gave up after a single try
   // and showed a grey system dialog). Three attempts with backoff —
-  // then the caller queues the alert for auto-delivery.
-  const postAlertWithRetry = async (payload: Record<string, unknown>): Promise<boolean> => {
+  // then the caller decides (queue vs server-owned) from the result.
+  // Returns the first success, else the last attempt's result, so a
+  // reached-but-failed alert is never mistaken for a transport failure.
+  const postAlertWithRetry = async (payload: Record<string, unknown>): Promise<AlertPostResult> => {
     const delays = [0, 2500, 7000];
+    let last: AlertPostResult = { reached: false, success: false, alertId: null, delivery: null, retry: null };
     for (const delay of delays) {
       if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
-      if (await postAlertOnce(payload)) return true;
+      last = await postAlertOnce(payload);
+      if (last.success) return last;
     }
-    return false;
+    return last;
+  };
+
+  // Poll D4's GET /alert/:id for fresh receipts (a server retry can
+  // flip a channel after the first response). A 404 keeps the last
+  // known receipts: on serverless without Supabase configured, an id
+  // created on another instance reads as "not found here" — blanking
+  // the UI on that would be a lie about a delivered alert.
+  const fetchAlertStatus = async (alertId: string): Promise<void> => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/alert/${encodeURIComponent(alertId)}`, {
+        headers: {
+          ...(process.env.EXPO_PUBLIC_API_SECRET
+            ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
+            : {}),
+        },
+      });
+      const data = await response.json().catch(() => null);
+      if (data && data.success && data.alert && Array.isArray(data.alert.delivery)) {
+        setDeliveryReceipts(data.alert.delivery);
+      }
+    } catch {
+      /* polling is best-effort; the last receipts stay on screen */
+    }
   };
 
   // One live-tracking update while an alert is active. Fire-and-
@@ -437,25 +526,79 @@ export default function TacticalDashboard() {
     postLocationUpdate(lat, lng);
   }, [status, lat, lng]);
 
-  // Send a previously queued SOS (stored when every retry failed).
-  const flushPendingSOS = async () => {
+  // D5 delivery-status polling: while an alert is active, refresh its
+  // receipts every 30s (the live-tracking cadence) so a server-side
+  // retry shows up in the AlertActiveView without a manual refresh.
+  // Stops the moment the alert stops — no background polling.
+  useEffect(() => {
+    if (status !== 'ALERT ACTIVE' || !activeAlertId) return;
+    const id = setInterval(() => fetchAlertStatus(activeAlertId), 30000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, activeAlertId]);
+
+  // Send a previously queued SOS (stored only when the alert never
+  // reached the server — a reached alert is server-owned, never
+  // queued, so this can never duplicate an SOS). Backoff-gated
+  // unless `force` (the queued pill's RETRY NOW): a flush that fails
+  // to reach the server pushes nextRetryAt out by the backoff table
+  // instead of retrying on every foreground event. A flush that
+  // reaches the server drops the queue item even when delivery
+  // itself failed — the server's retry owns that alert from here.
+  const flushPendingSOS = async (force = false) => {
+    if (flushInFlightRef.current) return;
+    flushInFlightRef.current = true;
     try {
       const raw = await AsyncStorage.getItem('pendingSOS');
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      // A queued alert older than a day is history, not an emergency —
-      // drop it instead of retrying it on every foreground forever.
-      if (parsed && Date.now() - (parsed.queuedAt || 0) > 24 * 60 * 60 * 1000) {
-        await AsyncStorage.removeItem('pendingSOS');
+      if (!raw) {
+        setQueuedSOS(false);
         return;
       }
-      if (parsed && parsed.payload && (await postAlertOnce(parsed.payload))) {
+      const parsed = JSON.parse(raw) as QueuedSOS;
+      // A queued alert older than a day is history, not an emergency —
+      // drop it instead of retrying it on every foreground forever.
+      if (!parsed || Date.now() - (parsed.queuedAt || 0) > 24 * 60 * 60 * 1000) {
         await AsyncStorage.removeItem('pendingSOS');
+        setQueuedSOS(false);
+        return;
+      }
+      if (!force && Date.now() < (parsed.nextRetryAt || 0)) return;
+      if (!parsed.payload) {
+        await AsyncStorage.removeItem('pendingSOS');
+        setQueuedSOS(false);
+        return;
+      }
+      const result = await postAlertOnce(parsed.payload);
+      if (!result.reached) {
+        // Still never reached the server: keep it queued, back off.
+        const attempts = (parsed.attempts || 0) + 1;
+        const delay = QUEUE_BACKOFF_MS[Math.min(attempts - 1, QUEUE_BACKOFF_MS.length - 1)];
+        await AsyncStorage.setItem(
+          'pendingSOS',
+          JSON.stringify({ ...parsed, attempts, nextRetryAt: Date.now() + delay })
+        ).catch(() => {});
+        setQueuedSOS(true);
+        return;
+      }
+      await AsyncStorage.removeItem('pendingSOS');
+      setQueuedSOS(false);
+      if (result.alertId) {
+        setActiveAlertId(result.alertId);
+        AsyncStorage.setItem('lastAlertId', result.alertId).catch(() => {});
+      }
+      if (result.delivery) setDeliveryReceipts(result.delivery);
+      if (result.success) {
         showBanner('success', 'Queued SOS delivered — your earlier alert just reached SafeLife on Telegram.');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else if (result.retry?.queued) {
+        showBanner('error', 'Queued SOS reached SafeLife but delivery failed — the server will keep retrying it.');
+      } else {
+        showBanner('error', 'Queued SOS reached SafeLife but could not be delivered, and automatic retry is not configured — tap SOS again if you are still in danger.');
       }
     } catch {
       /* the queue is best-effort */
+    } finally {
+      flushInFlightRef.current = false;
     }
   };
 
@@ -521,19 +664,39 @@ export default function TacticalDashboard() {
     };
 
     try {
-      const delivered = await postAlertWithRetry(payload);
-      if (delivered) {
-        // Success needs no dialog: the screen switches to the ALERT
-        // ACTIVE view, which is the confirmation.
+      const result = await postAlertWithRetry(payload);
+      if (result.reached) {
+        // The server owns this alert now — even on total delivery
+        // failure. Never queue a reached alert: re-POSTing it later
+        // would be a second SOS, not a retry.
+        if (result.alertId) {
+          setActiveAlertId(result.alertId);
+          AsyncStorage.setItem('lastAlertId', result.alertId).catch(() => {});
+        }
+        if (result.delivery) setDeliveryReceipts(result.delivery);
         await AsyncStorage.removeItem('pendingSOS').catch(() => {});
+        setQueuedSOS(false);
+        if (!result.success) {
+          // Success needs no dialog: the screen switches to the ALERT
+          // ACTIVE view, which is the confirmation. Failure drops
+          // back to SAFE with an honest reason, not a queue promise
+          // the server already covers (or honestly does not).
+          setStatus('SAFE');
+          showBanner(
+            'error',
+            result.retry?.queued
+              ? 'SOS reached SafeLife but delivery failed — the server will keep retrying it. Send it by SMS now if you need another channel.'
+              : 'SOS reached SafeLife but could not be delivered, and automatic retry is not configured yet — tap SOS again, or send it by SMS now.'
+          );
+        }
       } else {
-        // Queue it — flushPendingSOS auto-sends when connectivity
-        // returns — and tell the user honestly, with an SMS escape
-        // hatch that works with zero data connection.
-        await AsyncStorage.setItem(
-          'pendingSOS',
-          JSON.stringify({ payload, queuedAt: Date.now() })
-        ).catch(() => {});
+        // Never reached the server — the only case the local queue
+        // is for. flushPendingSOS auto-sends when connectivity
+        // returns, with backoff; tell the user honestly, with an SMS
+        // escape hatch that works with zero data connection.
+        const queued: QueuedSOS = { payload, queuedAt: Date.now(), attempts: 0, nextRetryAt: Date.now() };
+        await AsyncStorage.setItem('pendingSOS', JSON.stringify(queued)).catch(() => {});
+        setQueuedSOS(true);
         setStatus('SAFE');
         showBanner(
           'error',
@@ -593,6 +756,7 @@ export default function TacticalDashboard() {
       <AlertActiveView
         lat={lat}
         lng={lng}
+        delivery={deliveryReceipts}
         cachedSafePlaces={cachedSafePlaces}
         onStop={() => {
           setStatus('SAFE');
@@ -654,6 +818,25 @@ export default function TacticalDashboard() {
                 </TouchableOpacity>
               </View>
             )}
+          </View>
+        )}
+
+        {/* D5 queued-SOS pill: persistent (unlike the banner, which
+            dismisses) so an unsent SOS stays visible until it is
+            delivered, expires, or the user retries it now. */}
+        {queuedSOS && (
+          <View style={[styles.sosBanner, styles.queuedBanner]}>
+            <Text style={styles.sosBannerText}>
+              SOS queued — it never reached SafeLife. It will auto-send when the network returns.
+            </Text>
+            <View style={styles.sosBannerActions}>
+              <TouchableOpacity onPress={() => flushPendingSOS(true)}>
+                <Text style={styles.sosBannerAction}>RETRY NOW</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={sendSOSviaSMS}>
+                <Text style={styles.sosBannerAction}>SEND VIA SMS</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
 
@@ -975,6 +1158,7 @@ const styles = StyleSheet.create({
   },
   loaderText: { fontFamily: Theme.fonts.headline, color: Theme.colors.primary, letterSpacing: 4, fontSize: 14 },
   sosBanner: { borderRadius: 16, padding: 14, marginBottom: 14, borderWidth: 1 },
+  queuedBanner: { backgroundColor: 'rgba(255, 193, 7, 0.10)', borderColor: 'rgba(255, 193, 7, 0.45)' },
   sosBannerSuccess: { backgroundColor: 'rgba(46, 204, 140, 0.13)', borderColor: 'rgba(46, 204, 140, 0.5)' },
   sosBannerError: { backgroundColor: 'rgba(255, 113, 108, 0.12)', borderColor: 'rgba(255, 113, 108, 0.5)' },
   sosBannerText: { fontFamily: Theme.fonts.body, fontSize: 13, lineHeight: 18, color: Theme.colors.onSurface },
