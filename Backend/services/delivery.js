@@ -7,10 +7,10 @@
 // cannot retry anything after the response is sent.
 //
 // Receipt granularity is per CHANNEL, not per contact: Telegram sends
-// to fixed bot chat IDs, and contact→address mapping (phones for SMS)
-// does not exist until D7. Per-contact receipts land with the SMS
-// adapter, which is the first channel with per-contact addresses.
-// Claiming per-contact receipts today would be a lie about the data.
+// to fixed bot chat IDs. D7 adds the exception: SMS sends per contact
+// phone, so the SMS receipt's sent/failed counts ARE per-contact
+// counts (services/sms.js). Full per-contact receipt rows land with
+// the D10 escalation ladder's tracking, not here.
 //
 // Retry policy: 3 attempts, backoff 30s → 120s → 300s, only on TOTAL
 // failure (sent === 0). A partial delivery (Telegram accepted, other
@@ -24,6 +24,7 @@
 // — an unsigned callback must never be able to re-fire an SOS.
 const crypto = require("crypto");
 const { dispatchSos } = require("./sos");
+const { sendSmsAlert } = require("./sms");
 const { publishDelayed } = require("./qstash");
 
 const CHANNELS = ["telegram", "sms", "whatsapp", "push"];
@@ -34,24 +35,27 @@ const MAX_RETRIES = RETRY_DELAYS.length;
 const nextRetryDelay = (attempt) => RETRY_DELAYS[attempt - 1] ?? null;
 
 // Honest stub: a channel whose day has not landed reports failure with
-// a reason, never fake success. D7 (sms), D8 (whatsapp), D9 (push)
-// replace their stub with a real adapter.
+// a reason, never fake success. D8 (whatsapp) and D9 (push) still
+// await their adapter; D7 wired SMS to the real httpSMS adapter below.
 const notConfigured = async () => ({ sent: 0, failed: 1, reason: "channel-not-configured" });
 
 const defaultSenders = {
   telegram: ({ message }) => dispatchSos(message),
-  sms: notConfigured,
+  sms: ({ message, contacts }) => sendSmsAlert({ message, contacts }),
   whatsapp: notConfigured,
   push: notConfigured,
 };
 
 // Parallel fan-out over every channel. Never throws: a throwing adapter
 // becomes a failed receipt, so one broken channel cannot kill the rest.
-const deliverAlert = async ({ message, senders = defaultSenders } = {}) => {
+// Contacts flow through so per-contact channels (SMS, from D7) can
+// address them; channel senders that ignore contacts (Telegram) are
+// unaffected by the extra argument.
+const deliverAlert = async ({ message, contacts = [], senders = defaultSenders } = {}) => {
   const receipts = await Promise.all(
     CHANNELS.map(async (channel) => {
       try {
-        const r = await senders[channel]({ message });
+        const r = await senders[channel]({ message, contacts });
         const sent = r.sent || 0;
         const failed = r.failed || 0;
         return {
@@ -118,9 +122,11 @@ const publicBaseUrl = () => {
 // share memory with the instance that took the SOS (serverless), and
 // a retry without the location would be a neutered alert. The message
 // travels only to our own callback, authenticated by the HMAC token.
-// Returns { queued: true, ... } or { queued: false, reason } —
-// callers must surface queued:false, never treat it as scheduled.
-const scheduleRetry = async ({ alertId, attempt, message }) => {
+// D7: contact phones ride along too (phones only, no names — the
+// retry needs them to re-fire SMS; names would be PII the job does
+// not need). Returns { queued: true, ... } or { queued: false, reason }
+// — callers must surface queued:false, never treat it as scheduled.
+const scheduleRetry = async ({ alertId, attempt, message, contacts = [] }) => {
   const delay = nextRetryDelay(attempt);
   if (!delay) return { queued: false, reason: "no-more-retries" };
   const token = retryToken(alertId, attempt);
@@ -130,9 +136,13 @@ const scheduleRetry = async ({ alertId, attempt, message }) => {
   if (typeof message !== "string" || message.length === 0) {
     return { queued: false, reason: "no-message" };
   }
+  const phones = (Array.isArray(contacts) ? contacts : [])
+    .slice(0, 10)
+    .map((c) => (typeof c?.phone === "string" ? c.phone.slice(0, 20) : ""))
+    .filter(Boolean);
   const res = await publishDelayed({
     url: `${base}/delivery-retry`,
-    body: { alertId, attempt, token, message },
+    body: { alertId, attempt, token, message, contacts: phones },
     delaySeconds: delay,
     deduplicationId: `delivery-retry:${alertId}:${attempt}`,
   });

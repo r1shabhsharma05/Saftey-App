@@ -2,6 +2,7 @@
 // "is the service up" and carry no sensitive data.
 const express = require("express");
 const { telegramStatus } = require("../services/telegram");
+const { smsStatus } = require("../services/sms");
 const { getCacheStats } = require("../services/safePlaces");
 const { redisStatus } = require("../services/redis");
 const { qstashStatus } = require("../services/qstash");
@@ -31,6 +32,7 @@ router.get("/health", (req, res) => {
     time: new Date().toISOString(),
     config: {
       telegram: telegramStatus(),
+      sms: smsStatus(),
       apiKeyEnforced: Boolean(process.env.API_SECRET),
       upstash: redisStatus(),
       qstash: qstashStatus(),

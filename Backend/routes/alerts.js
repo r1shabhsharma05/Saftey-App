@@ -99,7 +99,7 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
     // the message. On TOTAL failure a QStash retry is scheduled (D4
     // policy: partial delivery is delivered — retrying its failed
     // channels is D10's escalation ladder, not this route's job).
-    const receipts = await deliverAlert({ message });
+    const receipts = await deliverAlert({ message, contacts });
     const { sent, failed } = receiptsSummary(receipts);
     alert.delivery = receipts;
     alert.sent = sent;
@@ -107,7 +107,7 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
     console.log(`📨 SOS for ${name} at ${latNum},${lngNum}: delivery sent=${sent} failed=${failed}`);
     if (sent === 0) {
       transition(alert, "failed", "all channels failed");
-      alert.retry = await scheduleRetry({ alertId: alert.id, attempt: 1, message });
+      alert.retry = await scheduleRetry({ alertId: alert.id, attempt: 1, message, contacts });
       alertStore.save(alert);
       audit("alert.failed", {
         actorKey: req.header("x-api-key"),
@@ -182,7 +182,15 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
   const alertId = typeof req.body.alertId === "string" ? req.body.alertId : "";
   const attempt = req.body.attempt;
   const message = typeof req.body.message === "string" ? req.body.message : "";
-  if (!alertId || !Number.isInteger(attempt) || attempt < 1 || attempt > MAX_RETRIES || !message || message.length > 4000) {
+  // D7: retry jobs carry contact phones (strings only, no names) so a
+  // retry can re-fire SMS. Strictly typed like the rest of the job:
+  // an array of ≤10 short strings, anything else is a 400.
+  const jobPhones = req.body.contacts;
+  const contacts = Array.isArray(jobPhones)
+    ? jobPhones.slice(0, 10).map((p) => (typeof p === "string" ? p.slice(0, 20) : ""))
+    : [];
+  if (!alertId || !Number.isInteger(attempt) || attempt < 1 || attempt > MAX_RETRIES || !message || message.length > 4000 ||
+      (jobPhones !== undefined && !Array.isArray(jobPhones))) {
     return res.status(400).json({ success: false, error: "Invalid retry job" });
   }
   if (!verifyRetryToken(alertId, attempt, req.body.token)) {
@@ -206,7 +214,7 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
   // the instance that took the SOS, and a location-less retry notice
   // would be a neutered alert. The body message is only ever sent to
   // our own configured channels, never reflected or logged.
-  const receipts = await deliverAlert({ message });
+  const receipts = await deliverAlert({ message, contacts: contacts.map((phone) => ({ phone })) });
   const { sent, failed } = receiptsSummary(receipts);
   alert.delivery = applyRetryReceipts(alert.delivery, receipts);
   alert.sent = sent;
@@ -216,7 +224,7 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
     alert.retry = { queued: false, reason: "delivered" };
   } else {
     transition(alert, "failed", `retry attempt ${attempt} failed`);
-    alert.retry = await scheduleRetry({ alertId: alert.id, attempt: attempt + 1, message });
+    alert.retry = await scheduleRetry({ alertId: alert.id, attempt: attempt + 1, message, contacts: contacts.map((phone) => ({ phone })) });
   }
   alertStore.save(alert);
   audit("delivery.retry", {
