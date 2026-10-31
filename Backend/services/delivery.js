@@ -7,10 +7,11 @@
 // cannot retry anything after the response is sent.
 //
 // Receipt granularity is per CHANNEL, not per contact: Telegram sends
-// to fixed bot chat IDs. D7 adds the exception: SMS sends per contact
-// phone, so the SMS receipt's sent/failed counts ARE per-contact
-// counts (services/sms.js). Full per-contact receipt rows land with
-// the D10 escalation ladder's tracking, not here.
+// to fixed bot chat IDs. D7/D8 add the exception: SMS and WhatsApp
+// send per contact phone, so their receipts' sent/failed counts ARE
+// per-contact counts (services/sms.js, services/whatsapp.js). Full
+// per-contact receipt rows land with the D10 escalation ladder's
+// tracking, not here.
 //
 // Retry policy: 3 attempts, backoff 30s → 120s → 300s, only on TOTAL
 // failure (sent === 0). A partial delivery (Telegram accepted, other
@@ -25,6 +26,7 @@
 const crypto = require("crypto");
 const { dispatchSos } = require("./sos");
 const { sendSmsAlert } = require("./sms");
+const { sendWhatsAppAlert } = require("./whatsapp");
 const { publishDelayed } = require("./qstash");
 
 const CHANNELS = ["telegram", "sms", "whatsapp", "push"];
@@ -35,14 +37,14 @@ const MAX_RETRIES = RETRY_DELAYS.length;
 const nextRetryDelay = (attempt) => RETRY_DELAYS[attempt - 1] ?? null;
 
 // Honest stub: a channel whose day has not landed reports failure with
-// a reason, never fake success. D8 (whatsapp) and D9 (push) still
-// await their adapter; D7 wired SMS to the real httpSMS adapter below.
+// a reason, never fake success. D9 (push) still awaits its adapter;
+// D7 wired SMS and D8 wired WhatsApp to their real adapters below.
 const notConfigured = async () => ({ sent: 0, failed: 1, reason: "channel-not-configured" });
 
 const defaultSenders = {
   telegram: ({ message }) => dispatchSos(message),
   sms: ({ message, contacts }) => sendSmsAlert({ message, contacts }),
-  whatsapp: notConfigured,
+  whatsapp: ({ contacts }) => sendWhatsAppAlert({ contacts }),
   push: notConfigured,
 };
 
