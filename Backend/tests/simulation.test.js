@@ -54,6 +54,9 @@ for (const v of [
   "WHATSAPP_PHONE_NUMBER_ID",
   "WHATSAPP_TEMPLATE_NAME",
   "WHATSAPP_TEMPLATE_LANGUAGE",
+  "FCM_PROJECT_ID",
+  "FCM_CLIENT_EMAIL",
+  "FCM_PRIVATE_KEY",
   "QSTASH_TOKEN",
   "UPSTASH_REDIS_REST_URL",
   "UPSTASH_REDIS_REST_TOKEN",
@@ -69,6 +72,7 @@ const app = require("../server");
 const alertStore = require("../services/alertStore");
 const { createAlert, transition } = require("../services/alertLifecycle");
 const { retryToken } = require("../services/delivery");
+const { viewToken } = require("../services/alertView");
 
 const KEY = "d6-sim-secret";
 const SOS_BODY = {
@@ -131,6 +135,11 @@ test("offline: all channels down → 502, failed state, honest receipts", async 
   assert.equal(
     body.delivery.find((r) => r.channel === "sms").reason,
     "channel-not-configured"
+  );
+  assert.equal(
+    body.delivery.find((r) => r.channel === "push").reason,
+    "channel-not-configured",
+    "D9 adapter keeps the stub's reason when FCM is unconfigured"
   );
   // No signing path is complete without a public URL, and the response
   // must say that instead of pretending a retry is scheduled.
@@ -200,6 +209,57 @@ test("retry: forged token 401, valid token re-fires, delivered alert ignored", a
   const ignoredBody = await ignored.json();
   assert.equal(ignoredBody.ignored, true);
   assert.equal(ignoredBody.state, "delivered");
+});
+
+test("alert view: token-gated page + live position, closed alerts 410", async () => {
+  const alert = createAlert({ contactsCount: 0, lat: 28.6139, lng: 77.209 });
+  transition(alert, "dispatching");
+  transition(alert, "delivered");
+  alertStore.save(alert);
+  const token = viewToken(alert.id);
+  assert.ok(token);
+
+  const noToken = await fetch(`${base}/alert/${alert.id}/view`);
+  assert.equal(noToken.status, 401);
+  const wrong = await fetch(`${base}/alert/${alert.id}/view?token=${"0".repeat(64)}`);
+  assert.equal(wrong.status, 401);
+  const unknown = await fetch(
+    `${base}/alert/00000000-0000-0000-0000-000000000000/view?token=${viewToken("00000000-0000-0000-0000-000000000000")}`
+  );
+  assert.equal(unknown.status, 404);
+
+  const page = await fetch(`${base}/alert/${alert.id}/view?token=${token}`);
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-type"), /text\/html/);
+  assert.equal(page.headers.get("referrer-policy"), "no-referrer");
+  assert.match(page.headers.get("content-security-policy"), /frame-src/);
+  const html = await page.text();
+  assert.ok(html.includes("28.6139, 77.209"));
+  assert.ok(html.includes("maps.google.com"));
+  assert.ok(!html.includes(token), "the page must never echo its own token");
+
+  const loc = await fetch(`${base}/alert/${alert.id}/location?token=${token}`);
+  assert.equal(loc.status, 200);
+  const locBody = await loc.json();
+  assert.equal(locBody.lat, 28.6139);
+  assert.equal(locBody.lng, 77.209);
+
+  // A location-update naming this alert moves the page (Telegram is
+  // unconfigured, so the update itself answers 502 — the store move
+  // is what this asserts).
+  const moved = await post("/location-update", {
+    lat: 28.7,
+    lng: 77.3,
+    alertId: alert.id,
+  });
+  assert.equal(moved.status, 502);
+  const loc2 = await (await fetch(`${base}/alert/${alert.id}/location?token=${token}`)).json();
+  assert.equal(loc2.lat, 28.7);
+  assert.equal(loc2.lng, 77.3);
+
+  transition(alert, "closed");
+  const closed = await fetch(`${base}/alert/${alert.id}/view?token=${token}`);
+  assert.equal(closed.status, 410);
 });
 
 // --- Server-kill test: a real child process, SIGKILLed and restarted. ---

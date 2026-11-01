@@ -29,3 +29,15 @@ test("SOS message works with no contacts and defaults", () => {
   assert.ok(msg.includes("Unknown User"));
   assert.ok(msg.includes("https://maps.google.com/?q=0,0"));
 });
+
+test("SOS message embeds the alert-view link only when given one", () => {
+  const withLink = buildSosMessage({
+    lat: 28.6139,
+    lng: 77.209,
+    viewUrl: "https://example.invalid/alert/abc/view?token=tok",
+  });
+  assert.ok(withLink.includes("LIVE ALERT PAGE"));
+  assert.ok(withLink.includes("https://example.invalid/alert/abc/view?token=tok"));
+  const without = buildSosMessage({ lat: 28.6139, lng: 77.209 });
+  assert.ok(!without.includes("LIVE ALERT PAGE"));
+});

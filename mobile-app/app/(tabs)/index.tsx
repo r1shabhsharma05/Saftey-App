@@ -482,7 +482,9 @@ export default function TacticalDashboard() {
 
   // One live-tracking update while an alert is active. Fire-and-
   // forget: a failed update must never disturb the SOS screen.
-  const postLocationUpdate = async (uLat: string, uLng: string): Promise<void> => {
+  // D9: the active alert id rides along so the server can move the
+  // contacts-side alert page to this position.
+  const postLocationUpdate = async (uLat: string, uLng: string, uAlertId?: string | null): Promise<void> => {
     try {
       await fetch(`${BACKEND_URL}/location-update`, {
         method: 'POST',
@@ -492,7 +494,7 @@ export default function TacticalDashboard() {
             ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
             : {}),
         },
-        body: JSON.stringify({ lat: uLat, lng: uLng }),
+        body: JSON.stringify({ lat: uLat, lng: uLng, ...(uAlertId ? { alertId: uAlertId } : {}) }),
       });
     } catch {
       /* best-effort */
@@ -523,8 +525,8 @@ export default function TacticalDashboard() {
     if (now - last.at < 30000) return;
     if (calculateDistance(last.lat, last.lng, la, ln) < 25) return;
     lastTrackRef.current = { lat: la, lng: ln, at: now };
-    postLocationUpdate(lat, lng);
-  }, [status, lat, lng]);
+    postLocationUpdate(lat, lng, activeAlertId);
+  }, [status, lat, lng, activeAlertId]);
 
   // D5 delivery-status polling: while an alert is active, refresh its
   // receipts every 30s (the live-tracking cadence) so a server-side

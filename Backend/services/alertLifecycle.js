@@ -21,9 +21,9 @@ const ALLOWED_TRANSITIONS = {
   closed: [],
 };
 
-const createAlert = ({ contactsCount = 0 } = {}) => {
+const createAlert = ({ contactsCount = 0, lat, lng } = {}) => {
   const now = new Date().toISOString();
-  return {
+  const alert = {
     id: crypto.randomUUID(),
     state: "created",
     sent: 0,
@@ -33,6 +33,31 @@ const createAlert = ({ contactsCount = 0 } = {}) => {
     updatedAt: now,
     history: [{ state: "created", at: now }],
   };
+  // D9: the SOS trigger position rides on the alert record so the
+  // contacts-side alert page has a location to show before any
+  // /location-update arrives. Only finite numbers are stored —
+  // callers validate ranges; this guard keeps a bad caller from
+  // persisting NaN into the Postgres mirror.
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    alert.lat = lat;
+    alert.lng = lng;
+    alert.locationAt = now;
+  }
+  return alert;
+};
+
+// Records a newer live position on an existing alert. This is NOT a
+// lifecycle transition (it must not move created→dispatching or
+// disturb the delivery accounting): location updates are orthogonal
+// to the state machine, and the route decides whether a closed alert
+// still accepts them (it does not).
+const setAlertLocation = (alert, lat, lng) => {
+  const now = new Date().toISOString();
+  alert.lat = lat;
+  alert.lng = lng;
+  alert.locationAt = now;
+  alert.updatedAt = now;
+  return alert;
 };
 
 // Moves the alert, records the step, and returns it. Throws on an
@@ -50,4 +75,4 @@ const transition = (alert, to, note) => {
   return alert;
 };
 
-module.exports = { ALERT_STATES, ALLOWED_TRANSITIONS, createAlert, transition };
+module.exports = { ALERT_STATES, ALLOWED_TRANSITIONS, createAlert, transition, setAlertLocation };

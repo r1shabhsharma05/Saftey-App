@@ -165,8 +165,9 @@ export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [
         {/* D5 delivery status — per-channel truth from the server,
             refreshed every 30s while the alert is active. A channel
             that has not landed yet says so; it is never shown as
-            delivered. `channel-not-configured` (SMS/WhatsApp/push
-            until D7–D9) reads as "Not connected yet", not "Failed". */}
+            delivered. `channel-not-configured` (a channel whose
+            server credentials are not set yet) reads as
+            "Not connected yet", not "Failed". */}
         {delivery && delivery.length > 0 && (
           <Reanimated.View entering={FadeInUp.delay(260).duration(500)} style={styles.deliverySection}>
             <SectionHeader

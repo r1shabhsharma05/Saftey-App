@@ -19,11 +19,13 @@ const {
   applyRetryReceipts,
   verifyRetryToken,
   scheduleRetry,
+  publicBaseUrl,
   MAX_RETRIES,
 } = require("../services/delivery");
 const { sendTelegramMessage } = require("../services/telegram");
 const { audit } = require("../services/audit");
-const { createAlert, transition } = require("../services/alertLifecycle");
+const { createAlert, transition, setAlertLocation } = require("../services/alertLifecycle");
+const { viewToken, verifyViewToken } = require("../services/alertView");
 const alertStore = require("../services/alertStore");
 
 const router = express.Router();
@@ -54,25 +56,17 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
   // 👥 Optional emergency contacts picked by the user in the app's
   // Contacts tab and sent with the SOS. Capped at 10 and sanitized like
   // every other field; listed in the message so the Telegram receiver
-  // can see who else the user chose to alert.
+  // can see who else the user chose to alert. D9: a contact may also
+  // carry a pushToken (the app will send it once token collection
+  // lands); it is sanitized like any field and never logged.
   const contacts = (Array.isArray(req.body.contacts) ? req.body.contacts : [])
     .slice(0, 10)
     .map((c) => ({
       name: sanitizeText(c?.name, 60),
       phone: sanitizeText(c?.phone, 20),
+      pushToken: sanitizeText(c?.pushToken, 1024),
     }))
-    .filter((c) => c.name || c.phone);
-
-  const message = buildSosMessage({
-    name,
-    phone,
-    battery,
-    status,
-    nearestStation,
-    lat: latNum,
-    lng: lngNum,
-    contacts,
-  });
+    .filter((c) => c.name || c.phone || c.pushToken);
 
   // Declared outside try so the catch path can mark the alert failed
   // instead of leaving it stuck in "dispatching" when dispatch throws.
@@ -81,7 +75,10 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
     // D3 lifecycle: every SOS is an alert record now, not just a Telegram
     // send. created → dispatching → delivered/failed, with the audit
     // trail carrying the alert id (no PII in audit lines, as before).
-    alert = createAlert({ contactsCount: contacts.length });
+    // D9: the record is created BEFORE the message is built, carrying
+    // the trigger position, so the message can embed the contacts-side
+    // alert-view link for this exact alert.
+    alert = createAlert({ contactsCount: contacts.length, lat: latNum, lng: lngNum });
     audit("alert.created", {
       actorKey: req.header("x-api-key"),
       ip: req.ip,
@@ -89,6 +86,28 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
     });
     transition(alert, "dispatching", "telegram fan-out started");
     alertStore.save(alert);
+
+    // D9 alert-view link: only when both halves exist — a public base
+    // URL to point at, and a signing secret to mint the per-alert
+    // token with. Without either, no link is emitted (a link that
+    // 401s for every contact would be worse than none: it would look
+    // like the system is broken rather than unconfigured).
+    const viewBase = publicBaseUrl();
+    const token = viewToken(alert.id);
+    const viewUrl =
+      viewBase && token ? `${viewBase}/alert/${alert.id}/view?token=${token}` : null;
+
+    const message = buildSosMessage({
+      name,
+      phone,
+      battery,
+      status,
+      nearestStation,
+      lat: latNum,
+      lng: lngNum,
+      contacts,
+      viewUrl: viewUrl || "",
+    });
 
     // AWAIT delivery before answering. On Vercel serverless the function
     // can freeze as soon as the response is sent, so the old
@@ -116,7 +135,7 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
       });
       return res
         .status(502)
-        .json({ success: false, error: "Alert could not be delivered. Please try again.", alertId: alert.id, state: alert.state, delivery: receipts, retry: alert.retry });
+        .json({ success: false, error: "Alert could not be delivered. Please try again.", alertId: alert.id, state: alert.state, delivery: receipts, retry: alert.retry, viewUrl });
     }
     transition(alert, "delivered", "channel accepted");
     alertStore.save(alert);
@@ -127,7 +146,7 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
       ip: req.ip,
       meta: { alertId: alert.id, sent, failed, contacts: contacts.length },
     });
-    res.json({ success: true, message: "Alert delivered successfully", alertId: alert.id, state: alert.state, delivery: receipts });
+    res.json({ success: true, message: "Alert delivered successfully", alertId: alert.id, state: alert.state, delivery: receipts, viewUrl });
   } catch (err) {
     console.log("❌ ERROR:", err.message);
     // A thrown dispatch must not leave the alert in "dispatching": mark
@@ -168,6 +187,123 @@ router.get("/alert/:id", trackingLimiter, requireApiKey, async (req, res) => {
   res.json({ success: true, alert: alertStore.toPublic(alert) });
 });
 
+// 📍 CONTACTS-SIDE ALERT PAGE (D9 — plan §6 D9, "contact ko app na
+// ho to browser me live location").
+//
+// Auth is the per-alert view token (services/alertView.js), NOT the
+// API key: contacts have no app and no key. The token is minted at
+// SOS time and travels inside the SOS message to the victim's chosen
+// contacts only. A missing/wrong token is 401, an unknown id 404, a
+// closed alert 410 (its location is stale history, not a live
+// emergency — serving it would mislead a contact into rushing to
+// an old pin). Rate-limited on the tracking bucket: the token is
+// 256-bit HMAC over a UUID, so guessing is infeasible, but an open
+// browser endpoint still gets a bucket.
+//
+// The page reflects ONLY numbers (coordinates), an enum state and an
+// ISO timestamp — no name, phone or message text — so there is
+// nothing user-controlled left to escape. It carries
+// Referrer-Policy: no-referrer plus rel="noreferrer" on every
+// outbound link: the token lives in this page's URL query, and a
+// normal link click would otherwise leak it to Google/OSM in the
+// Referer header. Auto-refresh is a meta refresh (no JavaScript):
+// the refreshed URL is this same URL, token included.
+const escapeHtml = (s) =>
+  String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+const loadViewableAlert = async (req, res) => {
+  const alertId = req.params.id;
+  const token = typeof req.query.token === "string" ? req.query.token : "";
+  if (!verifyViewToken(alertId, token)) {
+    audit("alert.view_denied", { ip: req.ip, meta: { alertId } });
+    res.status(401).json({ success: false, error: "Invalid or missing view token" });
+    return null;
+  }
+  const alert = await alertStore.get(alertId);
+  if (!alert) {
+    res.status(404).json({ success: false, error: "Alert not found" });
+    return null;
+  }
+  if (alert.state === "closed") {
+    res.status(410).json({ success: false, error: "This alert is closed" });
+    return null;
+  }
+  audit("alert.view", { ip: req.ip, meta: { alertId } });
+  return alert;
+};
+
+const renderAlertPage = (alert) => {
+  const lat = Number(alert.lat);
+  const lng = Number(alert.lng);
+  const hasFix = Number.isFinite(lat) && Number.isFinite(lng);
+  const at = escapeHtml(alert.locationAt || alert.updatedAt || "");
+  const state = escapeHtml(alert.state || "");
+  const mapsUrl = hasFix
+    ? `https://maps.google.com/?q=${encodeURIComponent(`${lat},${lng}`)}`
+    : "";
+  // OSM embed is progressive enhancement: if the embed host refuses
+  // framing, the Maps link + coordinates above still carry the page.
+  const embedUrl = hasFix
+    ? `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(
+        `${lng - 0.02},${lat - 0.02},${lng + 0.02},${lat + 0.02}`
+      )}&layer=mapnik&marker=${encodeURIComponent(`${lat},${lng}`)}`
+    : "";
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="30">
+<title>SafeLife live alert</title>
+<style>body{font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;color:#111}h1{font-size:1.4rem}.pin{font-size:1.1rem}.muted{color:#555}iframe{width:100%;height:320px;border:1px solid #ccc}</style>
+</head>
+<body>
+<h1>🚨 SafeLife live alert</h1>
+<p>Status: <strong>${state}</strong></p>
+<p class="muted">Last location update: ${at}</p>
+${
+  hasFix
+    ? `<p class="pin">📍 ${lat}, ${lng}</p>
+<p><a href="${mapsUrl}" rel="noreferrer" target="_blank">Open in Google Maps</a></p>
+<iframe title="Live location map" src="${embedUrl}"></iframe>`
+    : `<p>No location is available for this alert yet.</p>`
+}
+<p class="muted">This page refreshes every 30 seconds. If this is an emergency, call the person directly — do not rely on this page alone.</p>
+</body>
+</html>`;
+};
+
+router.get("/alert/:id/view", trackingLimiter, async (req, res) => {
+  const alert = await loadViewableAlert(req, res);
+  if (!alert) return;
+  res.set("Referrer-Policy", "no-referrer");
+  res.set(
+    "Content-Security-Policy",
+    "default-src 'none'; style-src 'unsafe-inline'; frame-src https://www.openstreetmap.org; base-uri 'none'"
+  );
+  res.type("html").send(renderAlertPage(alert));
+});
+
+// 📍 LIVE POSITION (JSON twin of the view page, same token auth).
+// Lets a future client poll without scraping HTML; the page itself
+// uses meta refresh and never calls this.
+router.get("/alert/:id/location", trackingLimiter, async (req, res) => {
+  const alert = await loadViewableAlert(req, res);
+  if (!alert) return;
+  res.json({
+    success: true,
+    alertId: alert.id,
+    state: alert.state,
+    lat: alert.lat ?? null,
+    lng: alert.lng ?? null,
+    locationAt: alert.locationAt ?? null,
+  });
+});
+
 // 🔁 DELIVERY RETRY (QStash callback — D4)
 // Auth is NOT requireApiKey: QStash cannot carry our x-api-key header,
 // so the job body carries an HMAC token over (alertId, attempt) keyed
@@ -184,15 +320,25 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
   const message = typeof req.body.message === "string" ? req.body.message : "";
   // D7: retry jobs carry contact phones (strings only, no names) so a
   // retry can re-fire SMS. Strictly typed like the rest of the job:
-  // an array of ≤10 short strings, anything else is a 400.
+  // an array of ≤10 short strings, anything else is a 400. D9: push
+  // tokens ride in a parallel array, paired BY INDEX with the phones
+  // (see scheduleRetry) — a token without a phone still re-fires push.
   const jobPhones = req.body.contacts;
   const contacts = Array.isArray(jobPhones)
     ? jobPhones.slice(0, 10).map((p) => (typeof p === "string" ? p.slice(0, 20) : ""))
     : [];
+  const jobTokens = req.body.pushTokens;
+  const pushTokens = Array.isArray(jobTokens)
+    ? jobTokens.slice(0, 10).map((t) => (typeof t === "string" ? t.slice(0, 1024) : ""))
+    : [];
   if (!alertId || !Number.isInteger(attempt) || attempt < 1 || attempt > MAX_RETRIES || !message || message.length > 4000 ||
-      (jobPhones !== undefined && !Array.isArray(jobPhones))) {
+      (jobPhones !== undefined && !Array.isArray(jobPhones)) ||
+      (jobTokens !== undefined && !Array.isArray(jobTokens))) {
     return res.status(400).json({ success: false, error: "Invalid retry job" });
   }
+  const retryContacts = contacts
+    .map((phone, i) => ({ phone, pushToken: pushTokens[i] || "" }))
+    .filter((c) => c.phone || c.pushToken);
   if (!verifyRetryToken(alertId, attempt, req.body.token)) {
     audit("delivery.retry_denied", { ip: req.ip, meta: { alertId, attempt } });
     return res.status(401).json({ success: false, error: "Invalid retry token" });
@@ -214,7 +360,7 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
   // the instance that took the SOS, and a location-less retry notice
   // would be a neutered alert. The body message is only ever sent to
   // our own configured channels, never reflected or logged.
-  const receipts = await deliverAlert({ message, contacts: contacts.map((phone) => ({ phone })) });
+  const receipts = await deliverAlert({ message, contacts: retryContacts });
   const { sent, failed } = receiptsSummary(receipts);
   alert.delivery = applyRetryReceipts(alert.delivery, receipts);
   alert.sent = sent;
@@ -224,7 +370,7 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
     alert.retry = { queued: false, reason: "delivered" };
   } else {
     transition(alert, "failed", `retry attempt ${attempt} failed`);
-    alert.retry = await scheduleRetry({ alertId: alert.id, attempt: attempt + 1, message, contacts: contacts.map((phone) => ({ phone })) });
+    alert.retry = await scheduleRetry({ alertId: alert.id, attempt: attempt + 1, message, contacts: retryContacts });
   }
   alertStore.save(alert);
   audit("delivery.retry", {
@@ -245,6 +391,25 @@ router.post("/location-update", trackingLimiter, requireApiKey, async (req, res)
   }
   const latNum = toNumber(lat);
   const lngNum = toNumber(lng);
+
+  // D9: when the app names the alert this update belongs to, record
+  // the live position on it so the contacts-side page moves. Best
+  // effort and never fatal: an unknown/stale alertId, a closed alert,
+  // or a store error must not break the Telegram leg below (the
+  // update's original job). No state transition — location is
+  // orthogonal to the lifecycle (services/alertLifecycle.js).
+  const alertId = sanitizeText(req.body.alertId, 64);
+  if (alertId) {
+    try {
+      const alert = await alertStore.get(alertId);
+      if (alert && alert.state !== "closed") {
+        setAlertLocation(alert, latNum, lngNum);
+        alertStore.save(alert);
+      }
+    } catch {
+      // Telegram leg below still runs.
+    }
+  }
 
   const message = `📡 LIVE TRACKING UPDATE
 📍 https://maps.google.com/?q=${latNum},${lngNum}`;

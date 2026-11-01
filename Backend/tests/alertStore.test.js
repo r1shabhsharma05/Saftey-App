@@ -80,10 +80,32 @@ test("toPublic strips history and internal fields", () => {
     "delivery",
     "failed",
     "id",
+    "lat",
+    "lng",
+    "locationAt",
     "retry",
     "sent",
     "state",
     "updatedAt",
   ]);
   assert.ok(!("history" in pub));
+  assert.equal(pub.lat, null);
+  assert.equal(pub.locationAt, null);
+});
+
+test("toPublic carries the live position once set", async () => {
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  try {
+    _clearMemory();
+    const alert = createAlert({ contactsCount: 1, lat: 28.6139, lng: 77.209 });
+    await save(alert);
+    const pub = toPublic(await get(alert.id));
+    assert.equal(pub.lat, 28.6139);
+    assert.equal(pub.lng, 77.209);
+    assert.equal(pub.locationAt, alert.createdAt);
+  } finally {
+    if (OLD_URL !== undefined) process.env.SUPABASE_URL = OLD_URL;
+    if (OLD_KEY !== undefined) process.env.SUPABASE_SERVICE_ROLE_KEY = OLD_KEY;
+  }
 });

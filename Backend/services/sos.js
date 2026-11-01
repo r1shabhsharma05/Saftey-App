@@ -15,6 +15,7 @@ const buildSosMessage = ({
   lat,
   lng,
   contacts = [],
+  viewUrl = "",
   when = new Date(),
 }) => {
   const contactsSection = contacts.length
@@ -34,7 +35,10 @@ Phone: ${phone}
 https://maps.google.com/?q=${lat},${lng}
 
 📡 LIVE LOCATION TRACKING (Real-Time Updates):
-https://maps.google.com/?q=${lat},${lng}
+https://maps.google.com/?q=${lat},${lng}${viewUrl ? `
+
+🔗 LIVE ALERT PAGE (no app needed — live location in your browser):
+${viewUrl}` : ""}
 
 🕒 Time: ${when.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })} | ${when.toLocaleDateString('en-GB')}
 

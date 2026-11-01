@@ -7,9 +7,10 @@
 // cannot retry anything after the response is sent.
 //
 // Receipt granularity is per CHANNEL, not per contact: Telegram sends
-// to fixed bot chat IDs. D7/D8 add the exception: SMS and WhatsApp
-// send per contact phone, so their receipts' sent/failed counts ARE
-// per-contact counts (services/sms.js, services/whatsapp.js). Full
+// to fixed bot chat IDs. D7/D8/D9 add the exception: SMS, WhatsApp
+// and push send per contact (phone / phone / device token), so their
+// receipts' sent/failed counts ARE per-contact counts
+// (services/sms.js, services/whatsapp.js, services/push.js). Full
 // per-contact receipt rows land with the D10 escalation ladder's
 // tracking, not here.
 //
@@ -27,6 +28,7 @@ const crypto = require("crypto");
 const { dispatchSos } = require("./sos");
 const { sendSmsAlert } = require("./sms");
 const { sendWhatsAppAlert } = require("./whatsapp");
+const { sendPushAlert } = require("./push");
 const { publishDelayed } = require("./qstash");
 
 const CHANNELS = ["telegram", "sms", "whatsapp", "push"];
@@ -37,15 +39,16 @@ const MAX_RETRIES = RETRY_DELAYS.length;
 const nextRetryDelay = (attempt) => RETRY_DELAYS[attempt - 1] ?? null;
 
 // Honest stub: a channel whose day has not landed reports failure with
-// a reason, never fake success. D9 (push) still awaits its adapter;
-// D7 wired SMS and D8 wired WhatsApp to their real adapters below.
+// a reason, never fake success. All four channels are wired now
+// (D7 SMS, D8 WhatsApp, D9 push); this stub survives only as the
+// fallback shape for an injected-sender gap in tests.
 const notConfigured = async () => ({ sent: 0, failed: 1, reason: "channel-not-configured" });
 
 const defaultSenders = {
   telegram: ({ message }) => dispatchSos(message),
   sms: ({ message, contacts }) => sendSmsAlert({ message, contacts }),
   whatsapp: ({ contacts }) => sendWhatsAppAlert({ contacts }),
-  push: notConfigured,
+  push: ({ message, contacts }) => sendPushAlert({ message, contacts }),
 };
 
 // Parallel fan-out over every channel. Never throws: a throwing adapter
@@ -126,8 +129,13 @@ const publicBaseUrl = () => {
 // travels only to our own callback, authenticated by the HMAC token.
 // D7: contact phones ride along too (phones only, no names — the
 // retry needs them to re-fire SMS; names would be PII the job does
-// not need). Returns { queued: true, ... } or { queued: false, reason }
-// — callers must surface queued:false, never treat it as scheduled.
+// not need). D9: push tokens ride alongside, paired with their phone
+// BY INDEX (phones[i] ↔ pushTokens[i]) — the retry route rebuilds
+// contacts from the pair, so a token without a phone still re-fires
+// push. Empty-string placeholders preserve the pairing when one side
+// of a pair is absent; both adapters skip empty values. Returns
+// { queued: true, ... } or { queued: false, reason } — callers must
+// surface queued:false, never treat it as scheduled.
 const scheduleRetry = async ({ alertId, attempt, message, contacts = [] }) => {
   const delay = nextRetryDelay(attempt);
   if (!delay) return { queued: false, reason: "no-more-retries" };
@@ -138,13 +146,23 @@ const scheduleRetry = async ({ alertId, attempt, message, contacts = [] }) => {
   if (typeof message !== "string" || message.length === 0) {
     return { queued: false, reason: "no-message" };
   }
-  const phones = (Array.isArray(contacts) ? contacts : [])
+  const pairs = (Array.isArray(contacts) ? contacts : [])
     .slice(0, 10)
-    .map((c) => (typeof c?.phone === "string" ? c.phone.slice(0, 20) : ""))
-    .filter(Boolean);
+    .map((c) => ({
+      phone: typeof c?.phone === "string" ? c.phone.slice(0, 20) : "",
+      pushToken: typeof c?.pushToken === "string" ? c.pushToken.slice(0, 1024) : "",
+    }))
+    .filter((p) => p.phone || p.pushToken);
   const res = await publishDelayed({
     url: `${base}/delivery-retry`,
-    body: { alertId, attempt, token, message, contacts: phones },
+    body: {
+      alertId,
+      attempt,
+      token,
+      message,
+      contacts: pairs.map((p) => p.phone),
+      pushTokens: pairs.map((p) => p.pushToken),
+    },
     delaySeconds: delay,
     deduplicationId: `delivery-retry:${alertId}:${attempt}`,
   });

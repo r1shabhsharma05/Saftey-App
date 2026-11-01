@@ -11,6 +11,7 @@ const {
   ALLOWED_TRANSITIONS,
   createAlert,
   transition,
+  setAlertLocation,
 } = require("../services/alertLifecycle");
 
 test("createAlert starts in created with history and counters", () => {
@@ -76,4 +77,27 @@ test("every state in the machine is reachable from the transition map", () => {
     assert.ok(state in ALLOWED_TRANSITIONS, `${state} missing from transition map`);
   }
   assert.equal(ALERT_STATES.length, 6);
+});
+
+test("createAlert stores the SOS position; non-finite coords store nothing", () => {
+  const alert = createAlert({ lat: 28.6139, lng: 77.209 });
+  assert.equal(alert.lat, 28.6139);
+  assert.equal(alert.lng, 77.209);
+  assert.equal(alert.locationAt, alert.createdAt);
+  const bare = createAlert({ lat: NaN, lng: 77.209 });
+  assert.equal(bare.lat, undefined);
+  assert.equal(bare.locationAt, undefined);
+  assert.equal(createAlert().lat, undefined);
+});
+
+test("setAlertLocation updates the position without moving the state machine", () => {
+  const alert = createAlert({ lat: 28.6, lng: 77.2 });
+  transition(alert, "dispatching");
+  const before = alert.history.length;
+  setAlertLocation(alert, 28.7, 77.3);
+  assert.equal(alert.lat, 28.7);
+  assert.equal(alert.lng, 77.3);
+  assert.ok(alert.locationAt);
+  assert.equal(alert.state, "dispatching");
+  assert.equal(alert.history.length, before, "location is not a transition");
 });

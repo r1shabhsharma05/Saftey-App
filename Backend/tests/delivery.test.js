@@ -122,3 +122,49 @@ test("scheduleRetry: no-more-retries past the last attempt", async () => {
   const res = await scheduleRetry({ alertId: "alert-1", attempt: 99, message: "SOS" });
   assert.deepEqual(res, { queued: false, reason: "no-more-retries" });
 });
+
+// Last in file by design: it installs a fake QStash transport for the
+// rest of this file's process (node:test runs each file isolated).
+test("scheduleRetry: phones and push tokens ride paired by index", async () => {
+  const { _setQstashTransport } = require("../services/qstash");
+  const bodies = [];
+  _setQstashTransport(async (job) => {
+    bodies.push(job.body);
+    return { messageId: "qstash-1" };
+  });
+  const prevSecret = process.env.API_SECRET;
+  const prevBase = process.env.PUBLIC_BASE_URL;
+  const prevVercel = process.env.VERCEL_URL;
+  const prevQstash = process.env.QSTASH_TOKEN;
+  process.env.API_SECRET = "d9-retry-secret";
+  process.env.PUBLIC_BASE_URL = "https://example.invalid";
+  delete process.env.VERCEL_URL;
+  process.env.QSTASH_TOKEN = "qstash-token";
+  try {
+    const res = await scheduleRetry({
+      alertId: "alert-1",
+      attempt: 1,
+      message: "SOS",
+      contacts: [
+        { phone: "+919999999999", pushToken: "tok-a" },
+        { phone: "", pushToken: "tok-b" },
+        { phone: "+918888888888", pushToken: "" },
+        { name: "Neither", phone: "", pushToken: "" },
+      ],
+    });
+    assert.deepEqual(res, { queued: true, attempt: 1, delaySeconds: 30 });
+    assert.equal(bodies.length, 1);
+    assert.deepEqual(bodies[0].contacts, ["+919999999999", "", "+918888888888"]);
+    assert.deepEqual(bodies[0].pushTokens, ["tok-a", "tok-b", ""]);
+    assert.equal(bodies[0].contacts.length, bodies[0].pushTokens.length);
+  } finally {
+    if (prevSecret === undefined) delete process.env.API_SECRET;
+    else process.env.API_SECRET = prevSecret;
+    if (prevBase === undefined) delete process.env.PUBLIC_BASE_URL;
+    else process.env.PUBLIC_BASE_URL = prevBase;
+    if (prevVercel === undefined) delete process.env.VERCEL_URL;
+    else process.env.VERCEL_URL = prevVercel;
+    if (prevQstash === undefined) delete process.env.QSTASH_TOKEN;
+    else process.env.QSTASH_TOKEN = prevQstash;
+  }
+});
