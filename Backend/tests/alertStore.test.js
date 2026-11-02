@@ -75,9 +75,11 @@ test("toPublic strips history and internal fields", () => {
   const alert = createAlert({ contactsCount: 1 });
   const pub = toPublic(alert);
   assert.deepEqual(Object.keys(pub).sort(), [
+    "acks",
     "contacts",
     "createdAt",
     "delivery",
+    "escalation",
     "failed",
     "id",
     "lat",

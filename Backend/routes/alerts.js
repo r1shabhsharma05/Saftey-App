@@ -1,8 +1,12 @@
 // 🚨 Alert routes — SOS dispatch, live tracking, and the debug test alert.
 //
 // Guard matrix (explicit, in one place): every mutating route here is
-// API-key gated + rate-limited. requireApiKey audits rejected keys, so a
-// brute-force walk leaves a trail.
+// API-key gated + rate-limited, with two deliberate exceptions:
+// POST /alert/:id/ack also accepts the per-alert view token (contacts
+// have no API key — D10), and POST /escalate / /delivery-retry are
+// QStash callbacks authenticated by HMAC job tokens (D4/D10), since
+// QStash cannot carry our x-api-key header. requireApiKey audits
+// rejected keys, so a brute-force walk leaves a trail.
 const express = require("express");
 const requireApiKey = require("../middleware/requireApiKey");
 const { sosLimiter, trackingLimiter, testLimiter } = require("../middleware/rateLimit");
@@ -23,8 +27,18 @@ const {
   MAX_RETRIES,
 } = require("../services/delivery");
 const { sendTelegramMessage } = require("../services/telegram");
+const { sendVoiceAlert } = require("../services/voice");
+const {
+  ACK_THRESHOLD,
+  ESCALATION_STEPS,
+  verifyEscalationToken,
+  shouldEscalate,
+  failedChannels,
+  unackedContacts,
+  scheduleEscalation,
+} = require("../services/escalation");
 const { audit } = require("../services/audit");
-const { createAlert, transition, setAlertLocation } = require("../services/alertLifecycle");
+const { createAlert, transition, setAlertLocation, recordAck } = require("../services/alertLifecycle");
 const { viewToken, verifyViewToken } = require("../services/alertView");
 const alertStore = require("../services/alertStore");
 
@@ -138,6 +152,15 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
         .json({ success: false, error: "Alert could not be delivered. Please try again.", alertId: alert.id, state: alert.state, delivery: receipts, retry: alert.retry, viewUrl });
     }
     transition(alert, "delivered", "channel accepted");
+    // D10: the escalation ladder is scheduled now, for this alert, and
+    // each QStash callback re-checks the ACK stop condition before
+    // sending anything. A failed schedule is recorded on the alert
+    // (queued:false + reason) — never silently dropped, and never a
+    // reason to fail an SOS that already delivered.
+    alert.escalation = {
+      scheduled: (await scheduleEscalation({ alertId: alert.id, message, contacts })).steps,
+      runs: [],
+    };
     alertStore.save(alert);
     // Audit: counts + contact count only — no PII (names, phones,
     // coordinates, message text) ever lands in an audit line.
@@ -146,7 +169,7 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
       ip: req.ip,
       meta: { alertId: alert.id, sent, failed, contacts: contacts.length },
     });
-    res.json({ success: true, message: "Alert delivered successfully", alertId: alert.id, state: alert.state, delivery: receipts, viewUrl });
+    res.json({ success: true, message: "Alert delivered successfully", alertId: alert.id, state: alert.state, delivery: receipts, viewUrl, escalation: alert.escalation });
   } catch (err) {
     console.log("❌ ERROR:", err.message);
     // A thrown dispatch must not leave the alert in "dispatching": mark
@@ -185,6 +208,146 @@ router.get("/alert/:id", trackingLimiter, requireApiKey, async (req, res) => {
     return res.status(404).json({ success: false, error: "Alert not found" });
   }
   res.json({ success: true, alert: alertStore.toPublic(alert) });
+});
+
+// ✅ CONTACT ACKNOWLEDGEMENT (D10 — plan §6 D10 "ACK tracking").
+//
+// A contact saying "I got this" is what stops the escalation ladder
+// (2 distinct acks — plan §6 F1). Auth is EITHER the per-alert view
+// token (a contact with only the SOS link, no app, no API key) OR
+// the API key (the victim's app / a future guardian client). The
+// contact's identifier (phone, or pushToken) is optional: with it,
+// the ack dedupes per contact and the voice step can skip them; the
+// stored record keeps only the one-way hash (services/
+// alertLifecycle.js), never the raw number. Without it the ack
+// counts once, anonymously. A closed alert is 410 (its emergency is
+// over — an ack then would restart nothing, and the view page is
+// 410 too); any other non-live state is 409.
+const ackAuth = (req, res, next) => {
+  const token = typeof req.query.token === "string" ? req.query.token : "";
+  if (verifyViewToken(req.params.id, token)) return next();
+  return requireApiKey(req, res, next);
+};
+
+router.post("/alert/:id/ack", trackingLimiter, ackAuth, async (req, res) => {
+  const alert = await alertStore.get(req.params.id);
+  if (!alert) {
+    return res.status(404).json({ success: false, error: "Alert not found" });
+  }
+  if (alert.state === "closed") {
+    audit("alert.ack_denied", { ip: req.ip, meta: { alertId: alert.id } });
+    return res.status(410).json({ success: false, error: "This alert is closed" });
+  }
+  if (alert.state !== "delivered" && alert.state !== "acked") {
+    return res.status(409).json({ success: false, error: "Alert is not awaiting confirmation" });
+  }
+  const body = req.body || {};
+  const { isNew } = recordAck(alert, {
+    phone: sanitizeText(body.contact || body.phone, 20),
+    pushToken: sanitizeText(body.pushToken, 1024),
+  });
+  if (isNew && alert.state === "delivered") {
+    transition(alert, "acked", "contact acknowledged");
+  }
+  alertStore.save(alert);
+  const ackCount = (alert.acks || []).length;
+  audit("alert.ack", { ip: req.ip, meta: { alertId: alert.id, ackCount, isNew } });
+  // The no-JavaScript view page posts this form: answer with a
+  // redirect back to the page (token preserved) instead of JSON the
+  // contact's browser would dump as raw text. The redirect is only
+  // offered when the token that authorized this ack is a valid view
+  // token — an API-key ack without one has no page to return to.
+  const token = typeof req.query.token === "string" ? req.query.token : "";
+  if (req.is("application/x-www-form-urlencoded") && verifyViewToken(alert.id, token)) {
+    return res.redirect(303, `/alert/${alert.id}/view?token=${encodeURIComponent(token)}`);
+  }
+  res.json({ success: true, alertId: alert.id, state: alert.state, ackCount, acked: isNew });
+});
+
+// 🪜 ESCALATION CALLBACK (QStash — D10)
+//
+// Auth is the HMAC token over (alertId, step) keyed by API_SECRET
+// (services/escalation.js), the same pattern as /delivery-retry:
+// QStash cannot carry our x-api-key header. The body carries the
+// original SOS message + contact phones/pushTokens (same pairing as
+// D7/D9 retries). Idempotent per step: a QStash redelivery of a step
+// that already ran returns ignored:true instead of re-firing —
+// re-sending an SOS because a queue redelivered would be a false
+// alarm. The ladder stops early when 2 distinct contacts have ACKed,
+// when the alert closed, or when it is not in a live state (a failed
+// alert belongs to the D4 retry chain, not this ladder).
+router.post("/escalate", trackingLimiter, async (req, res) => {
+  const alertId = typeof req.body.alertId === "string" ? req.body.alertId : "";
+  const step = req.body.step;
+  const message = typeof req.body.message === "string" ? req.body.message : "";
+  const jobPhones = req.body.contacts;
+  const contacts = Array.isArray(jobPhones)
+    ? jobPhones.slice(0, 10).map((p) => (typeof p === "string" ? p.slice(0, 20) : ""))
+    : [];
+  const jobTokens = req.body.pushTokens;
+  const pushTokens = Array.isArray(jobTokens)
+    ? jobTokens.slice(0, 10).map((t) => (typeof t === "string" ? t.slice(0, 1024) : ""))
+    : [];
+  if (!alertId || !Number.isInteger(step) || !ESCALATION_STEPS.some((s) => s.step === step) || !message || message.length > 4000 ||
+      (jobPhones !== undefined && !Array.isArray(jobPhones)) ||
+      (jobTokens !== undefined && !Array.isArray(jobTokens))) {
+    return res.status(400).json({ success: false, error: "Invalid escalation job" });
+  }
+  const jobContacts = contacts
+    .map((phone, i) => ({ phone, pushToken: pushTokens[i] || "" }))
+    .filter((c) => c.phone || c.pushToken);
+  if (!verifyEscalationToken(alertId, step, req.body.token)) {
+    audit("escalation.denied", { ip: req.ip, meta: { alertId, step } });
+    return res.status(401).json({ success: false, error: "Invalid escalation token" });
+  }
+  const alert = await alertStore.get(alertId);
+  if (!alert) {
+    return res.status(404).json({ success: false, error: "Alert not found" });
+  }
+  const ackCount = (alert.acks || []).length;
+  const runs = alert.escalation?.runs || [];
+  if (runs.some((r) => r.step === step) || !shouldEscalate(alert)) {
+    return res.json({ success: true, ignored: true, state: alert.state, ackCount });
+  }
+  const now = new Date().toISOString();
+  let run;
+  if (step === 3) {
+    // Voice step: call only contacts who have not ACKed, with the
+    // original SOS message for the agent to speak. No channel
+    // re-fire here — the channels have had two attempts each.
+    const targets = unackedContacts(alert, jobContacts);
+    const voice = await sendVoiceAlert({ message, contacts: targets });
+    run = { step, at: now, action: "voice-call", sent: voice.sent, failed: voice.failed, voice };
+  } else {
+    const channels = failedChannels(alert.delivery);
+    const fresh = channels.length
+      ? await deliverAlert({ message, contacts: jobContacts, channels })
+      : [];
+    const merged = applyRetryReceipts(alert.delivery, fresh);
+    alert.delivery = merged;
+    const totals = receiptsSummary(merged);
+    alert.sent = totals.sent;
+    alert.failed = totals.failed;
+    const freshTotals = receiptsSummary(fresh);
+    run = { step, at: now, action: "refire-failed-channels", channels, sent: freshTotals.sent, failed: freshTotals.failed };
+  }
+  alert.escalation = {
+    scheduled: alert.escalation?.scheduled ?? alert.escalation?.steps ?? null,
+    runs: [...runs, run],
+  };
+  alertStore.save(alert);
+  audit("escalation.run", {
+    ip: req.ip,
+    meta: { alertId: alert.id, step, sent: run.sent, failed: run.failed, state: alert.state, ackCount },
+  });
+  res.json({
+    success: true,
+    alertId: alert.id,
+    state: alert.state,
+    ackCount,
+    delivery: alert.delivery,
+    escalation: alert.escalation,
+  });
 });
 
 // 📍 CONTACTS-SIDE ALERT PAGE (D9 — plan §6 D9, "contact ko app na
@@ -236,12 +399,15 @@ const loadViewableAlert = async (req, res) => {
   return alert;
 };
 
-const renderAlertPage = (alert) => {
+const renderAlertPage = (alert, token) => {
   const lat = Number(alert.lat);
   const lng = Number(alert.lng);
   const hasFix = Number.isFinite(lat) && Number.isFinite(lng);
   const at = escapeHtml(alert.locationAt || alert.updatedAt || "");
   const state = escapeHtml(alert.state || "");
+  const ackCount = (alert.acks || []).length;
+  const canAck = alert.state === "delivered" || alert.state === "acked";
+  const ackAction = `/alert/${escapeHtml(alert.id)}/ack?token=${encodeURIComponent(token || "")}`;
   const mapsUrl = hasFix
     ? `https://maps.google.com/?q=${encodeURIComponent(`${lat},${lng}`)}`
     : "";
@@ -264,6 +430,7 @@ const renderAlertPage = (alert) => {
 <body>
 <h1>🚨 SafeLife live alert</h1>
 <p>Status: <strong>${state}</strong></p>
+<p>Confirmations received: <strong>${ackCount} of ${ACK_THRESHOLD} needed</strong> — when 2 contacts confirm, automatic escalation calls stop.</p>
 <p class="muted">Last location update: ${at}</p>
 ${
   hasFix
@@ -273,6 +440,17 @@ ${
     : `<p>No location is available for this alert yet.</p>`
 }
 <p class="muted">This page refreshes every 30 seconds. If this is an emergency, call the person directly — do not rely on this page alone.</p>
+${
+  canAck
+    ? `<form method="POST" action="${ackAction}">
+<p><strong>Did you receive this alert?</strong> Confirming tells SafeLife help is on the way, and stops further escalation calls to you.</p>
+<p><label>Your phone number (optional — lets SafeLife skip calling you again):<br>
+<input type="tel" name="contact" autocomplete="tel" placeholder="+91..."></label></p>
+<p><button type="submit">I received this alert</button></p>
+<p class="muted">Your number is stored only as a one-way hash, never shown to anyone.</p>
+</form>`
+    : ``
+}
 </body>
 </html>`;
 };
@@ -283,9 +461,12 @@ router.get("/alert/:id/view", trackingLimiter, async (req, res) => {
   res.set("Referrer-Policy", "no-referrer");
   res.set(
     "Content-Security-Policy",
-    "default-src 'none'; style-src 'unsafe-inline'; frame-src https://www.openstreetmap.org; base-uri 'none'"
+    // form-action 'self': the D10 confirm form posts back to this
+    // same origin; without it default-src 'none' would block the
+    // POST and the form would silently do nothing.
+    "default-src 'none'; style-src 'unsafe-inline'; frame-src https://www.openstreetmap.org; form-action 'self'; base-uri 'none'"
   );
-  res.type("html").send(renderAlertPage(alert));
+  res.type("html").send(renderAlertPage(alert, req.query.token));
 });
 
 // 📍 LIVE POSITION (JSON twin of the view page, same token auth).
@@ -368,6 +549,12 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
   if (sent > 0) {
     transition(alert, "delivered", `retry attempt ${attempt} accepted`);
     alert.retry = { queued: false, reason: "delivered" };
+    // D10: a retry-delivered alert gets the same ladder as a
+    // first-try delivery — its contacts still need the ACK check.
+    alert.escalation = {
+      scheduled: (await scheduleEscalation({ alertId: alert.id, message, contacts: retryContacts })).steps,
+      runs: [],
+    };
   } else {
     transition(alert, "failed", `retry attempt ${attempt} failed`);
     alert.retry = await scheduleRetry({ alertId: alert.id, attempt: attempt + 1, message, contacts: retryContacts });

@@ -5,6 +5,7 @@ const { telegramStatus } = require("../services/telegram");
 const { smsStatus } = require("../services/sms");
 const { whatsappStatus } = require("../services/whatsapp");
 const { pushStatus } = require("../services/push");
+const { voiceStatus } = require("../services/voice");
 const { getCacheStats } = require("../services/safePlaces");
 const { redisStatus } = require("../services/redis");
 const { qstashStatus } = require("../services/qstash");
@@ -37,6 +38,7 @@ router.get("/health", (req, res) => {
       sms: smsStatus(),
       whatsapp: whatsappStatus(),
       push: pushStatus(),
+      voice: voiceStatus(),
       apiKeyEnforced: Boolean(process.env.API_SECRET),
       upstash: redisStatus(),
       qstash: qstashStatus(),

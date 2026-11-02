@@ -18,6 +18,10 @@ const app = express();
 app.use(helmet({ contentSecurityPolicy: false }));
 // 🛡️ Cap body size — SOS payloads are tiny; oversized bodies are abuse.
 app.use(express.json({ limit: "32kb" }));
+// D10: the contacts-side alert page is a no-JavaScript HTML form, so
+// its ACK post arrives urlencoded, not JSON. Same cap, no extended
+// parsing — one flat `contact` field is all the form sends.
+app.use(express.urlencoded({ extended: false, limit: "32kb" }));
 
 // 🌐 Trust the first proxy hop (Vercel's edge / local reverse proxies) so
 // req.ip — and therefore rate limiting — sees the real client IP. Without

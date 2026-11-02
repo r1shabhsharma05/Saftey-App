@@ -57,6 +57,8 @@ for (const v of [
   "FCM_PROJECT_ID",
   "FCM_CLIENT_EMAIL",
   "FCM_PRIVATE_KEY",
+  "BOLNA_API_KEY",
+  "BOLNA_AGENT_ID",
   "QSTASH_TOKEN",
   "UPSTASH_REDIS_REST_URL",
   "UPSTASH_REDIS_REST_TOKEN",
@@ -236,7 +238,16 @@ test("alert view: token-gated page + live position, closed alerts 410", async ()
   const html = await page.text();
   assert.ok(html.includes("28.6139, 77.209"));
   assert.ok(html.includes("maps.google.com"));
-  assert.ok(!html.includes(token), "the page must never echo its own token");
+  // D10: the confirm form's same-origin action carries the token (the
+  // page URL itself already bears it — loading the page means holding
+  // it). The token must appear NOWHERE else: strip the form action
+  // and it must be gone, so no outbound link can leak it.
+  assert.ok(html.includes(`/alert/${alert.id}/ack?token=${token}`), "confirm form posts with the view token");
+  const withoutForm = html.replace(/action="[^"]*"/g, "");
+  assert.ok(!withoutForm.includes(token), "the token must not leak outside the same-origin form action");
+  for (const href of html.matchAll(/href="([^"]*)"/g)) {
+    assert.ok(!href[1].includes(token), "no outbound link may carry the token");
+  }
 
   const loc = await fetch(`${base}/alert/${alert.id}/location?token=${token}`);
   assert.equal(loc.status, 200);

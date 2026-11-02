@@ -31,6 +31,13 @@ const createAlert = ({ contactsCount = 0, lat, lng } = {}) => {
     contacts: contactsCount,
     createdAt: now,
     updatedAt: now,
+    // D10: contact acknowledgements. Each entry is {key, at} where key
+    // is the one-way hash of the contact's phone/token (ackKeyFor) —
+    // never the raw identifier. The escalation ladder stops at 2
+    // distinct acks; acks live beside the lifecycle, not in it (an
+    // ack is not a state transition by itself — the route moves
+    // delivered→acked on the first one, and stays acked after).
+    acks: [],
     history: [{ state: "created", at: now }],
   };
   // D9: the SOS trigger position rides on the alert record so the
@@ -64,8 +71,7 @@ const setAlertLocation = (alert, lat, lng) => {
 // illegal transition — callers must never silently record a state the
 // machine cannot be in (a swallowed illegal transition would corrupt
 // the delivery-receipt accounting D4 builds on).
-const transition = (alert, to, note) => {
-  const allowed = ALLOWED_TRANSITIONS[alert.state] || [];
+const transition = (alert, to, note) => {  const allowed = ALLOWED_TRANSITIONS[alert.state] || [];
   if (!allowed.includes(to)) {
     throw new Error(`Illegal alert transition ${alert.state} -> ${to}`);
   }
@@ -75,4 +81,42 @@ const transition = (alert, to, note) => {
   return alert;
 };
 
-module.exports = { ALERT_STATES, ALLOWED_TRANSITIONS, createAlert, transition, setAlertLocation };
+// D10 ACK identity: a stable, one-way key for one contact, used to
+// dedupe acknowledgements without storing the raw phone or token.
+// Phones normalize first (formatting variants of one number are one
+// contact); a pushToken-only contact keys on its token; no identifier
+// at all keys on a single "anonymous" slot, so one contact refreshing
+// the view page cannot ACK twice. The key is a truncated SHA-256 —
+// enough to dedupe, and the raw identifier never reaches the alert
+// record, the Postgres mirror, or an audit line. (A phone-number hash
+// is brute-forceable by design of the phone space; that is accepted
+// — the key carries no location or message, and the alternative,
+// storing raw phones, is strictly worse.)
+const ackKeyFor = ({ phone, pushToken } = {}) => {
+  const cleanedPhone =
+    typeof phone === "string" ? phone.replace(/[\s\-()]/g, "") : "";
+  const id =
+    /^\+?\d{10,15}$/.test(cleanedPhone)
+      ? cleanedPhone
+      : typeof pushToken === "string" && pushToken.trim()
+        ? `token:${pushToken.trim()}`
+        : "anonymous";
+  return crypto.createHash("sha256").update(id).digest("hex").slice(0, 32);
+};
+
+// Records one contact's acknowledgement. Returns {isNew}: a repeat
+// ack from the same contact is a no-op, not a second vote. Pure
+// except for mutating the alert record it is handed — the caller
+// owns the delivered→acked transition (transition() above), so this
+// never throws on state: recording that a human answered must not
+// fail because of a state-machine edge.
+const recordAck = (alert, contact = {}) => {
+  if (!Array.isArray(alert.acks)) alert.acks = [];
+  const key = ackKeyFor(contact);
+  if (alert.acks.some((a) => a.key === key)) return { isNew: false };
+  alert.acks.push({ key, at: new Date().toISOString() });
+  alert.updatedAt = new Date().toISOString();
+  return { isNew: true };
+};
+
+module.exports = { ALERT_STATES, ALLOWED_TRANSITIONS, createAlert, transition, setAlertLocation, recordAck, ackKeyFor };

@@ -107,6 +107,11 @@ export default function TacticalDashboard() {
   // receipts it shows. Null until an SOS has reached the server.
   const [activeAlertId, setActiveAlertId] = useState<string | null>(null);
   const [deliveryReceipts, setDeliveryReceipts] = useState<any[] | null>(null);
+  // D10: distinct contact confirmations + escalation schedule/runs,
+  // polled with the receipts — the victim sees whether anyone has
+  // confirmed and whether the ladder is still running.
+  const [ackCount, setAckCount] = useState<number>(0);
+  const [escalation, setEscalation] = useState<any | null>(null);
   // Whether a never-reached SOS sits in the local queue — drives the
   // persistent "SOS queued" pill (a dismissed banner must not hide
   // that an SOS is still unsent).
@@ -474,6 +479,8 @@ export default function TacticalDashboard() {
       const data = await response.json().catch(() => null);
       if (data && data.success && data.alert && Array.isArray(data.alert.delivery)) {
         setDeliveryReceipts(data.alert.delivery);
+        setAckCount(Array.isArray(data.alert.acks) ? data.alert.acks.length : 0);
+        setEscalation(data.alert.escalation ?? null);
       }
     } catch {
       /* polling is best-effort; the last receipts stay on screen */
@@ -759,6 +766,8 @@ export default function TacticalDashboard() {
         lat={lat}
         lng={lng}
         delivery={deliveryReceipts}
+        ackCount={ackCount}
+        escalation={escalation}
         cachedSafePlaces={cachedSafePlaces}
         onStop={() => {
           setStatus('SAFE');

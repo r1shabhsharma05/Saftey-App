@@ -24,6 +24,10 @@ const toRow = (alert) => ({
   updated_at: alert.updatedAt,
   delivery: alert.delivery || [],
   retry: alert.retry || null,
+  // D10 ACKs + escalation runs (migration 20261102080000_alert_escalation.sql).
+  // acks are {key, at} hashes only — never raw phones/tokens.
+  acks: alert.acks || [],
+  escalation: alert.escalation || null,
   // D9 live position (migration 20261101080000_alert_location.sql).
   // Null when the alert predates D9 or carried no fix — the mirror
   // must never invent a position.
@@ -43,6 +47,8 @@ const fromRow = (row) => ({
   history: [],
   delivery: row.delivery || [],
   retry: row.retry || null,
+  acks: row.acks || [],
+  escalation: row.escalation || null,
   lat: row.lat ?? null,
   lng: row.lng ?? null,
   locationAt: row.location_at ?? null,
@@ -64,6 +70,11 @@ const toPublic = (alert) => ({
   updatedAt: alert.updatedAt,
   delivery: alert.delivery || [],
   retry: alert.retry || null,
+  // D10: ack hashes + escalation schedule/runs — what D5's status UI
+  // polls to show confirmations and ladder progress. Ack keys are
+  // hashes, safe to expose to the key-holding caller.
+  acks: alert.acks || [],
+  escalation: alert.escalation || null,
   lat: alert.lat ?? null,
   lng: alert.lng ?? null,
   locationAt: alert.locationAt ?? null,

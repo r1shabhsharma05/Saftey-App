@@ -10,9 +10,10 @@
 // to fixed bot chat IDs. D7/D8/D9 add the exception: SMS, WhatsApp
 // and push send per contact (phone / phone / device token), so their
 // receipts' sent/failed counts ARE per-contact counts
-// (services/sms.js, services/whatsapp.js, services/push.js). Full
-// per-contact receipt rows land with the D10 escalation ladder's
-// tracking, not here.
+// (services/sms.js, services/whatsapp.js, services/push.js). The
+// per-contact confirmation tracking D4 deferred lands with D10's
+// ACKs (services/alertLifecycle.js recordAck) + escalation ladder
+// (services/escalation.js), not as receipt rows here.
 //
 // Retry policy: 3 attempts, backoff 30s → 120s → 300s, only on TOTAL
 // failure (sent === 0). A partial delivery (Telegram accepted, other
@@ -55,10 +56,14 @@ const defaultSenders = {
 // becomes a failed receipt, so one broken channel cannot kill the rest.
 // Contacts flow through so per-contact channels (SMS, from D7) can
 // address them; channel senders that ignore contacts (Telegram) are
-// unaffected by the extra argument.
-const deliverAlert = async ({ message, contacts = [], senders = defaultSenders } = {}) => {
+// unaffected by the extra argument. D10: `channels` narrows the fan-out
+// (the escalation ladder re-fires only failed/partial channels —
+// re-sending a delivered channel would duplicate every contact's
+// message); omitted means all four, as before.
+const deliverAlert = async ({ message, contacts = [], senders = defaultSenders, channels = CHANNELS } = {}) => {
+  const wanted = CHANNELS.filter((c) => channels.includes(c));
   const receipts = await Promise.all(
-    CHANNELS.map(async (channel) => {
+    wanted.map(async (channel) => {
       try {
         const r = await senders[channel]({ message, contacts });
         const sent = r.sent || 0;

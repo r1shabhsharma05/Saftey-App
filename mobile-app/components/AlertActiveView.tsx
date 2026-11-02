@@ -28,9 +28,14 @@ interface Props {
   // Null until the SOS has reached the server — no card then, and
   // never a faked "all delivered" state.
   delivery?: any[] | null;
+  // D10: distinct contact confirmations (0–2 needed to stop the
+  // escalation ladder) + the ladder's schedule/runs, polled with the
+  // receipts. Defaults keep older callers working.
+  ackCount?: number;
+  escalation?: any | null;
 }
 
-export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [], delivery = null }: Props) {
+export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [], delivery = null, ackCount = 0, escalation = null }: Props) {
   const [timer, setTimer] = useState(0);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const [bestPlace, setBestPlace] = useState<SafePlace | null>(null);
@@ -203,6 +208,28 @@ export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [
                 );
               })}
               <Text style={styles.deliveryHint}>Updates every 30 seconds while this alert is active.</Text>
+              {/* D10 confirmations + escalation: what the server's
+                  ladder knows — never inferred from channel receipts.
+                  A scheduled-but-unconfigured ladder says so instead
+                  of pretending retries are coming. */}
+              <Text style={[styles.deliveryState, { color: ackCount >= 2 ? Theme.colors.success : Theme.colors.onSurfaceVariant }]}>
+                {`Confirmations: ${ackCount} of 2 needed`}
+              </Text>
+              {(() => {
+                const runs = Array.isArray(escalation?.runs) ? escalation.runs : [];
+                const scheduled = Array.isArray(escalation?.scheduled) ? escalation.scheduled : [];
+                if (runs.length > 0) {
+                  const last = runs[runs.length - 1];
+                  return <Text style={styles.deliveryHint}>{`Escalation step ${last.step} ran (${String(last.action || '')}).`}</Text>;
+                }
+                if (scheduled.some((s: any) => s.queued)) {
+                  return <Text style={styles.deliveryHint}>Escalation scheduled: failed channels retry at 30s and 60s; a voice call follows at 2 min if unconfirmed.</Text>;
+                }
+                if (scheduled.length > 0) {
+                  return <Text style={styles.deliveryHint}>Escalation could not be scheduled — the server has no delayed-job service configured yet.</Text>;
+                }
+                return null;
+              })()}
             </GlassCard>
           </Reanimated.View>
         )}
