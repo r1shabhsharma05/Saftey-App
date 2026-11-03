@@ -13,10 +13,12 @@ const { sosLimiter, trackingLimiter, testLimiter } = require("../middleware/rate
 const {
   isValidLatitude,
   isValidLongitude,
+  isFiniteNumber,
   toNumber,
   sanitizeText,
 } = require("../lib/validate");
 const { buildSosMessage } = require("../services/sos");
+const { buildBatteryMessage, isBatteryLevelInBand } = require("../services/battery");
 const {
   deliverAlert,
   receiptsSummary,
@@ -191,6 +193,103 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
     // Generic message — err.message can leak internals (Telegram API
     // errors, stack fragments). Details stay in the server logs.
     res.status(500).json({ success: false, error: "Failed to send alert" });
+  }
+});
+
+// 🔋 BATTERY ALERT (D11 — plan §6 D11, plan §2 S1).
+//
+// A dying phone warns contacts BEFORE it dies: `low` at 15%
+// (last location, explicitly not an SOS) and `final` at 5% while
+// an alert is active (final location burst). Same guards as SOS
+// (API key + SOS rate-limit bucket: each hit fans out to contacts),
+// same fan-out and receipt honesty — but deliberately NOT an SOS:
+// no alert record is created, no D10 escalation is scheduled, and
+// no D4 retry is queued. A battery warning must never trigger
+// voice calls, and a failed one is the app's to re-try, not the
+// server's (the server owns nothing for it). The kind must match
+// the reported level's band (services/battery.js), so a buggy or
+// spoofed client cannot cry "phone may die" at 90%.
+// A `final` burst naming a live (delivered/acked) alert also moves
+// that alert's stored position and embeds its view link, so the
+// contacts-side page shows the final pin. Best-effort, like
+// /location-update: an unknown/closed alert never breaks the send.
+router.post("/battery-alert", sosLimiter, requireApiKey, async (req, res) => {
+  const { lat, lng } = req.body;
+  if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
+    return res.status(400).json({ success: false, error: "Invalid location data" });
+  }
+  const latNum = toNumber(lat);
+  const lngNum = toNumber(lng);
+
+  const kind = req.body.kind;
+  if (kind !== "low" && kind !== "final") {
+    return res.status(400).json({ success: false, error: "Invalid battery alert kind" });
+  }
+  if (!isFiniteNumber(req.body.battery)) {
+    return res.status(400).json({ success: false, error: "Invalid battery level" });
+  }
+  const batteryNum = toNumber(req.body.battery);
+  if (batteryNum < 0 || batteryNum > 100 || !isBatteryLevelInBand(kind, batteryNum)) {
+    return res.status(400).json({ success: false, error: "Battery level does not match alert kind" });
+  }
+
+  const name = sanitizeText(req.body.name, 100) || "Unknown User";
+  const phone = sanitizeText(req.body.phone, 30) || "Not Provided";
+  const contacts = (Array.isArray(req.body.contacts) ? req.body.contacts : [])
+    .slice(0, 10)
+    .map((c) => ({
+      name: sanitizeText(c?.name, 60),
+      phone: sanitizeText(c?.phone, 20),
+      pushToken: sanitizeText(c?.pushToken, 1024),
+    }))
+    .filter((c) => c.name || c.phone || c.pushToken);
+  const alertId = sanitizeText(req.body.alertId, 64);
+
+  try {
+    let viewUrl = null;
+    if (alertId) {
+      try {
+        const alert = await alertStore.get(alertId);
+        if (alert && (alert.state === "delivered" || alert.state === "acked")) {
+          setAlertLocation(alert, latNum, lngNum);
+          alertStore.save(alert);
+          const viewBase = publicBaseUrl();
+          const token = viewToken(alert.id);
+          if (viewBase && token) {
+            viewUrl = `${viewBase}/alert/${alert.id}/view?token=${token}`;
+          }
+        }
+      } catch {
+        // The fan-out below still runs.
+      }
+    }
+
+    const message = buildBatteryMessage({
+      kind,
+      name,
+      phone,
+      battery: batteryNum,
+      lat: latNum,
+      lng: lngNum,
+      contacts,
+      viewUrl: viewUrl || "",
+    });
+    const receipts = await deliverAlert({ message, contacts });
+    const { sent, failed } = receiptsSummary(receipts);
+    audit("battery.alert", {
+      actorKey: req.header("x-api-key"),
+      ip: req.ip,
+      meta: { kind, alertId: alertId || null, sent, failed, contacts: contacts.length },
+    });
+    if (sent === 0) {
+      return res
+        .status(502)
+        .json({ success: false, error: "Battery alert could not be delivered.", delivery: receipts, viewUrl });
+    }
+    res.json({ success: true, message: "Battery alert delivered", kind, alertId: alertId || null, delivery: receipts, viewUrl });
+  } catch (err) {
+    console.log("❌ ERROR:", err.message);
+    res.status(500).json({ success: false, error: "Failed to send battery alert" });
   }
 });
 

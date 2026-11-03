@@ -26,6 +26,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import AlertActiveView from '../../components/AlertActiveView';
 import { rankSafePlaces, calculateBearing, calculateDistance, getCardinalDirection } from '../../utils/escapeLogic';
+import { decideBatteryAlert, BATTERY_LOW_THRESHOLD, BATTERY_FINAL_THRESHOLD, BATTERY_REARM_LEVEL } from '../../utils/batteryAlerts';
 import ScreenBackground from '../../components/ui/ScreenBackground';
 import GlassCard from '../../components/ui/GlassCard';
 import TiltCard from '../../components/ui/TiltCard';
@@ -45,6 +46,31 @@ export default function TacticalDashboard() {
   const [lat, setLat] = useState<string>('Loading...');
   const [lng, setLng] = useState<string>('Loading...');
   const [batteryLevel, setBatteryLevel] = useState(0);
+  // D11: charging state gates battery alerts (a plugged-in phone at
+  // 10% is not dying). null = the OS cannot say; unknown never blocks.
+  const [batteryCharging, setBatteryCharging] = useState<boolean | null>(null);
+  // Ref mirrors for the battery-alert effect and queue flushes, whose
+  // callbacks close over stale state: the level/state/status mirrors
+  // stay current between renders.
+  const batteryLevelRef = useRef(0);
+  const batteryChargingRef = useRef<boolean | null>(null);
+  // expo-battery returns -1 where the level is unknowable; the state
+  // clamps that to 0 (pre-existing SOS behaviour), so D11 gates on
+  // this flag instead of trusting 0% as a real reading.
+  const batteryKnownRef = useRef(false);
+  const statusRef = useRef<'SAFE' | 'ALERT ACTIVE'>('SAFE');
+  const activeAlertIdRef = useRef<string | null>(null);
+  const latRef = useRef('Loading...');
+  const lngRef = useRef('Loading...');
+  // D11 dedupe: low warning sent once per discharge cycle (persisted
+  // so a restart at 12% does not re-warn); final burst sent once per
+  // active alert (in-memory — an alert lives in one session).
+  const lowBatterySentRef = useRef(false);
+  const finalBurstSentRef = useRef<string | null>(null);
+  const batteryAlertInFlightRef = useRef(false);
+  // Drives the one final-burst line in AlertActiveView: sent, failed,
+  // or null (no burst attempted yet / no alert active).
+  const [batteryFinalStatus, setBatteryFinalStatus] = useState<'sent' | 'failed' | null>(null);
   const [isMoving, setIsMoving] = useState(false);
   const [userData, setUserData] = useState<any>(null);
   const [nearestStation, setNearestStation] = useState('Searching...');
@@ -122,6 +148,7 @@ export default function TacticalDashboard() {
   const lastFetchTime = useRef<number>(0);
   const locSubRef = useRef<Location.LocationSubscription | null>(null);
   const batSubRef = useRef<{ remove: () => void } | null>(null);
+  const batStateSubRef = useRef<{ remove: () => void } | null>(null);
 
   // --- Animations ---
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -168,11 +195,37 @@ export default function TacticalDashboard() {
         // the battery API is unsupported — Math.round(-1 * 100) put
         // "Battery: -100%" into SOS messages. Clamp unknowns to 0.
         const level = await Battery.getBatteryLevelAsync();
+        batteryKnownRef.current = level >= 0;
         setBatteryLevel(level >= 0 ? Math.round(level * 100) : 0);
 
         batSubRef.current = Battery.addBatteryLevelListener(({ batteryLevel }) => {
+          batteryKnownRef.current = batteryLevel >= 0;
           setBatteryLevel(batteryLevel >= 0 ? Math.round(batteryLevel * 100) : 0);
         });
+
+        // D11: charging state (gates battery alerts) + the persisted
+        // low-warning flag. A level already above the re-arm line
+        // clears a stale flag left by an earlier discharge cycle.
+        const toCharging = (s: Battery.BatteryState): boolean | null =>
+          s === Battery.BatteryState.CHARGING || s === Battery.BatteryState.FULL
+            ? true
+            : s === Battery.BatteryState.UNPLUGGED
+              ? false
+              : null;
+        const state = await Battery.getBatteryStateAsync();
+        setBatteryCharging(toCharging(state));
+        batStateSubRef.current = Battery.addBatteryStateListener(({ batteryState }) => {
+          setBatteryCharging(toCharging(batteryState));
+        });
+        try {
+          const lowSent = await AsyncStorage.getItem('batteryLowAlertSent');
+          lowBatterySentRef.current = lowSent === '1' && level >= 0 && Math.round(level * 100) <= BATTERY_REARM_LEVEL;
+          if (lowSent === '1' && lowBatterySentRef.current === false) {
+            await AsyncStorage.removeItem('batteryLowAlertSent');
+          }
+        } catch {
+          /* flag is best-effort */
+        }
 
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
@@ -194,15 +247,22 @@ export default function TacticalDashboard() {
     // Deliver any SOS that was queued while the network was down —
     // on launch and every time the app returns to the foreground.
     flushPendingSOS();
+    flushPendingBatteryAlert();
     const appStateSub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') flushPendingSOS();
+      if (state === 'active') {
+        flushPendingSOS();
+        flushPendingBatteryAlert();
+      }
     });
     // D5 net-state awareness: flush the moment connectivity returns,
     // instead of only on foreground — and never attempt a flush while
     // offline (flushPendingSOS itself still backoff-gates each try).
     // The listener also fires once immediately with the current state.
     const netInfoSub = NetInfo.addEventListener((state) => {
-      if (state.isConnected && state.isInternetReachable !== false) flushPendingSOS();
+      if (state.isConnected && state.isInternetReachable !== false) {
+        flushPendingSOS();
+        flushPendingBatteryAlert();
+      }
     });
     // Seed the queued pill from storage: a queued SOS must stay
     // visible across restarts until it is delivered or expires.
@@ -220,11 +280,24 @@ export default function TacticalDashboard() {
     return () => {
       locSubRef.current?.remove();
       batSubRef.current?.remove();
+      batStateSubRef.current?.remove();
       appStateSub.remove();
       netInfoSub();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Ref mirrors for battery-alert checks and queue flushes (see the
+  // D11 refs above): kept current by this effect, read by callbacks
+  // that would otherwise close over stale state.
+  useEffect(() => {
+    batteryLevelRef.current = batteryLevel;
+    batteryChargingRef.current = batteryCharging;
+    statusRef.current = status;
+    activeAlertIdRef.current = activeAlertId;
+    latRef.current = lat;
+    lngRef.current = lng;
+  }, [batteryLevel, batteryCharging, status, activeAlertId, lat, lng]);
 
   const applyCoords = (coords: { latitude: number; longitude: number; speed?: number | null }) => {
     const currentLat = coords.latitude.toFixed(6);
@@ -462,6 +535,183 @@ export default function TacticalDashboard() {
     return last;
   };
 
+  // Emergency contacts cached locally at save time in the Contacts
+  // tab — the same list rides every SOS and every battery alert.
+  const readEmergencyContacts = async (): Promise<{ name: string; phone: string }[]> => {
+    try {
+      const rawContacts = await AsyncStorage.getItem('emergencyContacts');
+      if (!rawContacts) return [];
+      const parsed = JSON.parse(rawContacts);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((c) => c && typeof c.phone === 'string' && c.phone.trim() !== '')
+        .slice(0, 10)
+        .map((c) => ({ name: typeof c.name === 'string' ? c.name : '', phone: c.phone }));
+    } catch {
+      /* contacts are an optional part of the payload */
+      return [];
+    }
+  };
+
+  // One battery-alert POST with a hard timeout, mirroring
+  // postAlertOnce. Reached means the server answered (even with a
+  // 502 — the fan-out was attempted); only a transport failure
+  // means the alert never left the phone.
+  const postBatteryAlertOnce = async (
+    payload: Record<string, unknown>
+  ): Promise<{ reached: boolean; success: boolean }> => {
+    const notReached = { reached: false, success: false };
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(`${BACKEND_URL}/battery-alert`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.EXPO_PUBLIC_API_SECRET
+            ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
+            : {}),
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      const data = await response.json().catch(() => null);
+      if (!data) return notReached;
+      return { reached: true, success: !!data.success };
+    } catch {
+      return notReached;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  // D11: send one battery alert (low warning or final burst). A
+  // failure queues it as pendingBatteryAlert — unlike an SOS, a
+  // battery alert has no server-side retry, so the phone must
+  // re-attempt it when connectivity returns (flushPendingBatteryAlert
+  // re-checks freshness first; a stale warning is dropped, never sent).
+  const sendBatteryAlert = async (kind: 'low' | 'final'): Promise<void> => {
+    if (batteryAlertInFlightRef.current) return;
+    if (lat === 'Loading...' || lng === 'Loading...' || isNaN(parseFloat(lat)) || isNaN(parseFloat(lng))) return;
+    batteryAlertInFlightRef.current = true;
+    try {
+      const contacts = await readEmergencyContacts();
+      const payload: Record<string, unknown> = {
+        kind,
+        lat,
+        lng,
+        name: userData ? `${userData.first_name} ${userData.last_name}` : 'Unknown User',
+        phone: userData ? userData.phone : 'Not Provided',
+        battery: batteryLevel,
+        contacts,
+        ...(kind === 'final' && activeAlertId ? { alertId: activeAlertId } : {}),
+      };
+      const result = await postBatteryAlertOnce(payload);
+      if (result.success) {
+        await AsyncStorage.removeItem('pendingBatteryAlert').catch(() => {});
+        if (kind === 'low') {
+          lowBatterySentRef.current = true;
+          await AsyncStorage.setItem('batteryLowAlertSent', '1').catch(() => {});
+          showBanner('success', 'Low-battery alert sent to your emergency contacts with your last location.');
+        } else {
+          finalBurstSentRef.current = activeAlertId;
+          setBatteryFinalStatus('sent');
+        }
+      } else {
+        await AsyncStorage.setItem(
+          'pendingBatteryAlert',
+          JSON.stringify({ payload, queuedAt: Date.now(), nextRetryAt: Date.now() })
+        ).catch(() => {});
+        if (kind === 'low') {
+          showBanner('error', 'Low-battery alert could not be delivered — it is queued and will retry when the network returns.');
+        } else {
+          setBatteryFinalStatus('failed');
+        }
+      }
+    } finally {
+      batteryAlertInFlightRef.current = false;
+    }
+  };
+
+  // Retry a queued battery alert when connectivity returns. Freshness
+  // is re-checked against live refs before sending: a low warning
+  // whose phone has since charged, or a final burst whose alert has
+  // ended, is dropped as stale history. A still-valid failure is
+  // kept with a 5-minute backoff; anything older than 6 hours is
+  // dropped (a battery warning that old describes a dead phone).
+  const flushPendingBatteryAlert = async (force = false): Promise<void> => {
+    try {
+      const raw = await AsyncStorage.getItem('pendingBatteryAlert');
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const drop = async () => {
+        await AsyncStorage.removeItem('pendingBatteryAlert').catch(() => {});
+      };
+      if (!parsed || !parsed.payload || Date.now() - (parsed.queuedAt || 0) > 6 * 60 * 60 * 1000) {
+        await drop();
+        return;
+      }
+      if (!force && Date.now() < (parsed.nextRetryAt || 0)) return;
+      const p = parsed.payload;
+      if (p.kind === 'low') {
+        if (
+          !batteryKnownRef.current ||
+          batteryLevelRef.current > BATTERY_LOW_THRESHOLD ||
+          batteryChargingRef.current === true ||
+          lowBatterySentRef.current
+        ) {
+          await drop();
+          return;
+        }
+      } else if (p.kind === 'final') {
+        if (
+          !batteryKnownRef.current ||
+          statusRef.current !== 'ALERT ACTIVE' ||
+          p.alertId !== activeAlertIdRef.current ||
+          batteryLevelRef.current > BATTERY_FINAL_THRESHOLD ||
+          finalBurstSentRef.current === p.alertId
+        ) {
+          await drop();
+          return;
+        }
+      } else {
+        await drop();
+        return;
+      }
+      // Refresh position/battery from live refs when a fix exists;
+      // otherwise keep the stored trigger-time values.
+      const fresh = { ...p };
+      if (
+        latRef.current !== 'Loading...' &&
+        lngRef.current !== 'Loading...' &&
+        !isNaN(parseFloat(latRef.current)) &&
+        !isNaN(parseFloat(lngRef.current))
+      ) {
+        fresh.lat = latRef.current;
+        fresh.lng = lngRef.current;
+      }
+      fresh.battery = batteryLevelRef.current;
+      const result = await postBatteryAlertOnce(fresh);
+      if (result.success) {
+        await drop();
+        if (p.kind === 'low') {
+          lowBatterySentRef.current = true;
+          await AsyncStorage.setItem('batteryLowAlertSent', '1').catch(() => {});
+        } else {
+          finalBurstSentRef.current = p.alertId;
+          setBatteryFinalStatus('sent');
+        }
+      } else {
+        await AsyncStorage.setItem(
+          'pendingBatteryAlert',
+          JSON.stringify({ ...parsed, payload: fresh, nextRetryAt: Date.now() + 300000 })
+        ).catch(() => {});
+      }
+    } catch {
+      /* the queue is best-effort */
+    }
+  };
+
   // Poll D4's GET /alert/:id for fresh receipts (a server retry can
   // flip a channel after the first response). A 404 keeps the last
   // known receipts: on serverless without Supabase configured, an id
@@ -545,6 +795,29 @@ export default function TacticalDashboard() {
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, activeAlertId]);
+
+  // D11: fire the battery alert the moment a threshold is crossed —
+  // level, charging state, alert status and position changes all
+  // re-run this. decide() plus the sent refs make it fire once per
+  // cycle; climbing above the re-arm level clears the low flag so a
+  // later drain warns again. Unknown battery readings never fire.
+  useEffect(() => {
+    if (!batteryKnownRef.current) return;
+    if (batteryLevel > BATTERY_REARM_LEVEL && lowBatterySentRef.current) {
+      lowBatterySentRef.current = false;
+      AsyncStorage.removeItem('batteryLowAlertSent').catch(() => {});
+    }
+    const kind = decideBatteryAlert({
+      level: batteryLevel,
+      charging: batteryCharging,
+      alertActive: status === 'ALERT ACTIVE',
+      lowSent: lowBatterySentRef.current,
+      finalSent: !!activeAlertId && finalBurstSentRef.current === activeAlertId,
+    });
+    if (!kind) return;
+    void sendBatteryAlert(kind);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batteryLevel, batteryCharging, status, activeAlertId, lat, lng]);
 
   // Send a previously queued SOS (stored only when the alert never
   // reached the server — a reached alert is server-owned, never
@@ -645,21 +918,7 @@ export default function TacticalDashboard() {
     // Emergency contacts picked in the Contacts tab (cached locally at
     // save time) ride along with every SOS so the backend can list them
     // in the alert message.
-    let sosContacts: { name: string; phone: string }[] = [];
-    try {
-      const rawContacts = await AsyncStorage.getItem('emergencyContacts');
-      if (rawContacts) {
-        const parsed = JSON.parse(rawContacts);
-        if (Array.isArray(parsed)) {
-          sosContacts = parsed
-            .filter((c) => c && typeof c.phone === 'string' && c.phone.trim() !== '')
-            .slice(0, 10)
-            .map((c) => ({ name: typeof c.name === 'string' ? c.name : '', phone: c.phone }));
-        }
-      }
-    } catch {
-      /* contacts are an optional part of the payload */
-    }
+    const sosContacts = await readEmergencyContacts();
 
     const payload = {
       lat,
@@ -683,6 +942,9 @@ export default function TacticalDashboard() {
           AsyncStorage.setItem('lastAlertId', result.alertId).catch(() => {});
         }
         if (result.delivery) setDeliveryReceipts(result.delivery);
+        // D11: a new alert gets a fresh final-burst allowance.
+        finalBurstSentRef.current = null;
+        setBatteryFinalStatus(null);
         await AsyncStorage.removeItem('pendingSOS').catch(() => {});
         setQueuedSOS(false);
         if (!result.success) {
@@ -768,9 +1030,13 @@ export default function TacticalDashboard() {
         delivery={deliveryReceipts}
         ackCount={ackCount}
         escalation={escalation}
+        batteryFinalStatus={batteryFinalStatus}
         cachedSafePlaces={cachedSafePlaces}
         onStop={() => {
           setStatus('SAFE');
+          // D11: the final-burst line belongs to the ended alert.
+          finalBurstSentRef.current = null;
+          setBatteryFinalStatus(null);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         }}
       />
@@ -893,7 +1159,7 @@ export default function TacticalDashboard() {
               <View style={styles.coordBox}>
                 <Text style={styles.coordLabel}>BATTERY</Text>
                 <Text style={[styles.coordValue, { color: batteryLevel < 20 ? Theme.colors.error : Theme.colors.success }]}>
-                  {batteryLevel}%
+                  {batteryLevel}%{batteryCharging ? ' ⚡' : ''}
                 </Text>
               </View>
             </View>

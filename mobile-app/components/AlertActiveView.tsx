@@ -33,9 +33,13 @@ interface Props {
   // receipts. Defaults keep older callers working.
   ackCount?: number;
   escalation?: any | null;
+  // D11: the 5% final-burst outcome for this alert — 'sent' once the
+  // final location reached contacts, 'failed' if it could not be
+  // delivered, null if no burst was attempted yet.
+  batteryFinalStatus?: 'sent' | 'failed' | null;
 }
 
-export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [], delivery = null, ackCount = 0, escalation = null }: Props) {
+export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [], delivery = null, ackCount = 0, escalation = null, batteryFinalStatus = null }: Props) {
   const [timer, setTimer] = useState(0);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const [bestPlace, setBestPlace] = useState<SafePlace | null>(null);
@@ -230,6 +234,14 @@ export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [
                 }
                 return null;
               })()}
+              {/* D11 final burst: one honest line about the 5%
+                  last-location send — never inferred from receipts. */}
+              {batteryFinalStatus === 'sent' && (
+                <Text style={styles.deliveryHint}>Final location sent to your contacts — battery was at 5%.</Text>
+              )}
+              {batteryFinalStatus === 'failed' && (
+                <Text style={styles.deliveryHint}>Final-location alert could not be sent (battery 5%) — it is queued and will retry when the network returns.</Text>
+              )}
             </GlassCard>
           </Reanimated.View>
         )}
