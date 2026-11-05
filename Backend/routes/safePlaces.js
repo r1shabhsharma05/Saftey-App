@@ -4,8 +4,8 @@
 // Deliberately UNAUTHENTICATED: it serves public map data (police
 // stations, hospitals) and the app calls it before login. The abuse
 // surface is bounded by the dedicated rate limiter (see
-// middleware/rateLimit.js) plus the 5-minute grid cache sitting between
-// callers and the upstream Overpass mirrors.
+// middleware/rateLimit.js) plus the 5-minute grid cache (memory, then
+// shared Upstash) sitting between callers and the upstream mirrors.
 const express = require("express");
 const { safePlacesLimiter } = require("../middleware/rateLimit");
 const { lookupSafePlaces } = require("../services/safePlaces");
@@ -22,9 +22,13 @@ router.get("/safe-places", safePlacesLimiter, async (req, res) => {
     return res.status(400).json({ success: false, error: "Invalid coordinates" });
   }
   try {
-    const { data } = await lookupSafePlaces(lat, lng);
-    // Keeps Overpass's shape ({ elements: [...] }) so the app's existing
-    // parser works unchanged.
+    // openNow=1 drops only definitively-closed places (unknown hours
+    // stay); the default response is unchanged, elements annotated.
+    const openNow = req.query.openNow === "1" || req.query.openNow === "true";
+    const { data, source } = await lookupSafePlaces(lat, lng, { openNow });
+    // Cache tier is header-only: the body keeps Overpass's shape
+    // ({ elements: [...] }) so the app's existing parser works unchanged.
+    res.set("X-SafePlaces-Cache", source);
     return res.json(data);
   } catch (err) {
     const status = err && err.status === 502 ? 502 : 500;
