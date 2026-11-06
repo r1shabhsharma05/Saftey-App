@@ -84,4 +84,15 @@ const safePlacesLimiter = rateLimit({
   limit: 30,
 });
 
-module.exports = { sosLimiter, trackingLimiter, testLimiter, safePlacesLimiter };
+// 🗺️ Walking-route proxy (D14): same class as /safe-places —
+// unauthenticated, fans out to two public OSRM hosts raced in parallel
+// (2 upstream hits per request). The app fetches at most once per
+// destination or ~100 m of movement, so 30/min keeps the same headroom
+// shape as the safe-places bucket.
+const routeLimiter = rateLimit({
+  ...baseOptions,
+  windowMs: 60 * 1000,
+  limit: 30,
+});
+
+module.exports = { sosLimiter, trackingLimiter, testLimiter, safePlacesLimiter, routeLimiter };

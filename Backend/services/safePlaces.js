@@ -256,4 +256,4 @@ const getCacheStats = () => ({
   upstashConfigured: redisStatus().configured,
 });
 
-module.exports = { lookupSafePlaces, getCacheStats, isOpenNow };
+module.exports = { lookupSafePlaces, getCacheStats, isOpenNow, haversineKm };

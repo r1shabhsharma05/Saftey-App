@@ -34,6 +34,7 @@ import StatusPill from '../../components/ui/StatusPill';
 import SectionHeader from '../../components/ui/SectionHeader';
 import SafeHubCard from '../../components/ui/SafeHubCard';
 import PoliceStationCard from '../../components/ui/PoliceStationCard';
+import RouteMap from '../../components/RouteMap';
 
 // Backend URL comes from EXPO_PUBLIC_BACKEND_URL (see .env.example).
 // Resolved eagerly: a missing/insecure URL throws a clear config error at
@@ -138,6 +139,15 @@ export default function TacticalDashboard() {
   // confirmed and whether the ladder is still running.
   const [ackCount, setAckCount] = useState<number>(0);
   const [escalation, setEscalation] = useState<any | null>(null);
+  // D14: in-app walking route to the nearest-best safe place (OSRM via
+  // GET /route). routeKeyRef rounds the position to ~100 m so the route
+  // refetches only when the user actually moves, not on every GPS tick;
+  // routeInFlightRef stops a GPS tick mid-fetch from launching a second
+  // identical request.
+  const [route, setRoute] = useState<{ coordinates: [number, number][]; distanceM: number; durationS: number } | null>(null);
+  const [routeState, setRouteState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const routeKeyRef = useRef('');
+  const routeInFlightRef = useRef(false);
   // Whether a never-reached SOS sits in the local queue — drives the
   // persistent "SOS queued" pill (a dismissed banner must not hide
   // that an SOS is still unsent).
@@ -1022,6 +1032,72 @@ export default function TacticalDashboard() {
         ).slice(0, 5)
       : [];
 
+  // D14: the route target is the nearest-best safe place — rankSafePlaces
+  // weighs distance by category (police first), so this is the same
+  // "best" the RESCUE button and the SOS message already use.
+  const rankedPlaces =
+    lat !== 'Loading...'
+      ? rankSafePlaces(cachedSafePlaces, parseFloat(lat), parseFloat(lng))
+      : [];
+  const routePlace = rankedPlaces.length > 0 ? rankedPlaces[0] : null;
+
+  // D14: fetch the walking route to the nearest-best place. The key
+  // rounds the position to 3 decimals (~100 m): the route refetches
+  // when the user actually moves, not on every GPS tick. A failed fetch
+  // is an honest error state with the Google Maps escape hatch — never
+  // a drawn straight line pretending to be a route.
+  useEffect(() => {
+    if (!routePlace || lat === 'Loading...' || lng === 'Loading...') {
+      setRouteState('idle');
+      return;
+    }
+    const key = `${routePlace.id}|${parseFloat(lat).toFixed(3)},${parseFloat(lng).toFixed(3)}`;
+    if (key === routeKeyRef.current && (route || routeInFlightRef.current)) return;
+    routeKeyRef.current = key;
+    routeInFlightRef.current = true;
+    let cancelled = false;
+    setRouteState('loading');
+    (async () => {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 15000);
+        const response = await fetch(
+          `${BACKEND_URL}/route?fromLat=${lat}&fromLng=${lng}&toLat=${routePlace.lat}&toLng=${routePlace.lng}`,
+          { signal: controller.signal }
+        );
+        clearTimeout(timer);
+        const data = await response.json().catch(() => null);
+        if (cancelled) return;
+        if (
+          response.ok &&
+          data &&
+          data.success === true &&
+          Array.isArray(data.coordinates) &&
+          data.coordinates.length >= 2 &&
+          Number.isFinite(data.distanceM) &&
+          Number.isFinite(data.durationS)
+        ) {
+          setRoute({ coordinates: data.coordinates, distanceM: data.distanceM, durationS: data.durationS });
+          setRouteState('ready');
+        } else {
+          setRoute(null);
+          setRouteState('error');
+        }
+      } catch {
+        if (!cancelled) {
+          setRoute(null);
+          setRouteState('error');
+        }
+      } finally {
+        routeInFlightRef.current = false;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routePlace?.id, routePlace?.lat, routePlace?.lng, lat, lng]);
+
   if (status === 'ALERT ACTIVE') {
     return (
       <AlertActiveView
@@ -1210,6 +1286,46 @@ export default function TacticalDashboard() {
             </TouchableOpacity>
           ))}
         </Reanimated.View>
+
+        {/* D14: in-app walking route to the nearest-best safe place */}
+        {lat !== 'Loading...' && rankedPlaces.length > 0 && (
+          <Reanimated.View entering={FadeInUp.delay(300).duration(500)} style={styles.routeSection}>
+            <SectionHeader
+              icon={<MaterialCommunityIcons name="routes" size={18} color={Theme.colors.primary} />}
+              title="Route to Safety · Walking"
+            />
+            {routeState === 'ready' && route && routePlace ? (
+              <RouteMap
+                coordinates={route.coordinates}
+                distanceM={route.distanceM}
+                durationS={route.durationS}
+                destinationName={routePlace.name}
+                isBest
+                onOpenExternal={() =>
+                  Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${routePlace.lat},${routePlace.lng}`)
+                }
+              />
+            ) : routeState === 'error' ? (
+              <GlassCard style={styles.scanningCard}>
+                <Text style={styles.scanningText}>Walking route unavailable right now.</Text>
+                <TouchableOpacity
+                  onPress={() =>
+                    routePlace &&
+                    Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${routePlace.lat},${routePlace.lng}`)
+                  }
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={styles.retryText}>OPEN IN GOOGLE MAPS</Text>
+                </TouchableOpacity>
+              </GlassCard>
+            ) : (
+              <GlassCard style={styles.scanningCard}>
+                <ActivityIndicator size="small" color={Theme.colors.primary} />
+                <Text style={styles.scanningText}>Finding your walking route…</Text>
+              </GlassCard>
+            )}
+          </Reanimated.View>
+        )}
 
         {/* Police radar */}
         <Reanimated.View entering={FadeInUp.delay(320).duration(500)}>
@@ -1419,6 +1535,7 @@ const styles = StyleSheet.create({
   },
   actionLabel: { fontFamily: Theme.fonts.label, fontSize: 10, color: Theme.colors.onSurface, fontWeight: 'bold', letterSpacing: 1.5 },
   bannerCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, marginBottom: 8 },
+  routeSection: { marginBottom: 10 },
   bannerText: { fontFamily: Theme.fonts.body, fontSize: 13, color: Theme.colors.onSurface, flex: 1 },
   hubsSection: { marginTop: 6 },
   hubsRow: { gap: 12, paddingBottom: 8, paddingRight: 20 },

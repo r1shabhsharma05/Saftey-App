@@ -11,6 +11,7 @@ const helmet = require("helmet");
 const systemRoutes = require("./routes/system");
 const alertRoutes = require("./routes/alerts");
 const safePlacesRoutes = require("./routes/safePlaces");
+const routeRoutes = require("./routes/route");
 
 const app = express();
 
@@ -38,6 +39,7 @@ app.use(corsMiddleware);
 app.use(systemRoutes);
 app.use(alertRoutes);
 app.use(safePlacesRoutes);
+app.use(routeRoutes);
 
 // 🚫 404 — every response from this API is JSON. Express's default 404
 // is an HTML page ("Cannot POST /…"), which leaks framework details
