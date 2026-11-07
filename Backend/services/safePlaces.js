@@ -21,6 +21,7 @@
 // definitively say closed — unknown hours never hide a police station.
 const axios = require("axios");
 const { cacheGet, cacheSet, redisStatus } = require("./redis");
+const { scorePlace, categoryFromTags } = require("./safetyScore");
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_TTL_SEC = 300;
@@ -145,13 +146,22 @@ const annotate = (raw, lat, lng, now) => ({
   elements: (raw.elements || []).map((el) => {
     const elLat = el.lat !== undefined ? el.lat : el.center && el.center.lat;
     const elLng = el.lon !== undefined ? el.lon : el.center && el.center.lon;
+    const distanceKm =
+      elLat !== undefined && elLng !== undefined
+        ? Math.round(haversineKm(lat, lng, elLat, elLng) * 100) / 100
+        : null;
+    const openNow = isOpenNow(el.tags && el.tags.opening_hours, now);
     return {
       ...el,
-      distanceKm:
-        elLat !== undefined && elLng !== undefined
-          ? Math.round(haversineKm(lat, lng, elLat, elLng) * 100) / 100
-          : null,
-      openNow: isOpenNow(el.tags && el.tags.opening_hours, now),
+      distanceKm,
+      openNow,
+      // D15: v1 safety score from the same two annotations — the
+      // cache stays raw, so the score is recomputed per request too.
+      safety: scorePlace({
+        category: categoryFromTags(el.tags),
+        distanceKm,
+        openNow,
+      }),
     };
   }),
 });

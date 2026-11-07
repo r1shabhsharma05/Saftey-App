@@ -3,6 +3,8 @@ import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native'
 import { Ionicons, FontAwesome5 } from '@expo/vector-icons';
 import { Theme } from '../../constants/theme';
 import GlassCard from './GlassCard';
+import SafetyBadge from './SafetyBadge';
+import type { SafetyScore } from '../../utils/escapeLogic';
 
 interface Props {
   name: string;
@@ -11,10 +13,11 @@ interface Props {
   direction: string;
   lat: number;
   lng: number;
+  safety?: SafetyScore;
 }
 
 /** Premium police-station row: glass card, call + navigation actions. */
-export default function PoliceStationCard({ name, phone, distanceLabel, direction, lat, lng }: Props) {
+export default function PoliceStationCard({ name, phone, distanceLabel, direction, lat, lng, safety }: Props) {
   const dialNumber = phone !== 'N/A' ? phone : '100';
 
   return (
@@ -23,6 +26,7 @@ export default function PoliceStationCard({ name, phone, distanceLabel, directio
         <Text style={styles.name} numberOfLines={1}>
           {name}
         </Text>
+        {safety && <SafetyBadge safety={safety} />}
         <View style={styles.distBadge}>
           <Ionicons name="compass" size={12} color={Theme.colors.success} />
           <Text style={styles.distText}>

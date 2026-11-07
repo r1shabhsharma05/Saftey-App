@@ -13,6 +13,7 @@
 // shortcut: no server-side geometry decimation; a 10 km walk is ~15–35 KB
 // of coordinates. Revisit only if a payload ever exceeds ~100 KB.
 const axios = require("axios");
+const { scoreRoute } = require("./safetyScore");
 
 const OSRM_TIMEOUT_MS = 10000;
 
@@ -53,10 +54,15 @@ const fetchHost = async (base, fromLng, fromLat, toLng, toLat) => {
     err.code = "UPSTREAM";
     throw err;
   }
+  const distanceM = Math.round(r.distance);
+  const durationS = Math.round(r.duration);
   return {
-    distanceM: Math.round(r.distance),
-    durationS: Math.round(r.duration),
+    distanceM,
+    durationS,
     coordinates: coords,
+    // D15: walking-time exposure score for the route (the app blends
+    // this with the destination place's score for the route badge).
+    safety: scoreRoute({ distanceM, durationS }),
   };
 };
 

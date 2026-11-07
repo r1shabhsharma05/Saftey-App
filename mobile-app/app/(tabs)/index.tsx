@@ -25,7 +25,8 @@ import { Theme } from '../../constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import AlertActiveView from '../../components/AlertActiveView';
-import { rankSafePlaces, calculateBearing, calculateDistance, getCardinalDirection } from '../../utils/escapeLogic';
+import { rankSafePlaces, calculateBearing, calculateDistance, getCardinalDirection, withSafety, isValidSafety, scoreRouteLocal, combineRouteSafety } from '../../utils/escapeLogic';
+import type { SafetyScore } from '../../utils/escapeLogic';
 import { decideBatteryAlert, BATTERY_LOW_THRESHOLD, BATTERY_FINAL_THRESHOLD, BATTERY_REARM_LEVEL } from '../../utils/batteryAlerts';
 import ScreenBackground from '../../components/ui/ScreenBackground';
 import GlassCard from '../../components/ui/GlassCard';
@@ -82,8 +83,11 @@ export default function TacticalDashboard() {
   // a forever-stale [] and refetched on the 30s cadence all session.
   const cachedPlacesRef = useRef<any[]>([]);
   const updateCachedPlaces = (places: any[]) => {
-    cachedPlacesRef.current = places;
-    setCachedSafePlaces(places);
+    // D15: every place carries a safety score — restored pre-D15 cache
+    // entries (no safety yet) get a local one; valid scores pass through.
+    const scored = places.map((p) => withSafety(p));
+    cachedPlacesRef.current = scored;
+    setCachedSafePlaces(scored);
   };
   // Double-tap guard for SOS (see sendSOSAlert).
   const sosInFlightRef = useRef(false);
@@ -144,7 +148,7 @@ export default function TacticalDashboard() {
   // refetches only when the user actually moves, not on every GPS tick;
   // routeInFlightRef stops a GPS tick mid-fetch from launching a second
   // identical request.
-  const [route, setRoute] = useState<{ coordinates: [number, number][]; distanceM: number; durationS: number } | null>(null);
+  const [route, setRoute] = useState<{ coordinates: [number, number][]; distanceM: number; durationS: number; safety?: SafetyScore } | null>(null);
   const [routeState, setRouteState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const routeKeyRef = useRef('');
   const routeInFlightRef = useRef(false);
@@ -449,14 +453,27 @@ export default function TacticalDashboard() {
           else if (tourism.includes('hostel') || name.includes('hostel')) category = 'hostel';
           else if (amenity.includes('mall') || amenity.includes('cafe') || shop !== '') category = 'crowd';
 
-          return {
+          const pLat = el.lat || el.center?.lat;
+          const pLng = el.lon || el.center?.lon;
+          // D15: the backend annotates distanceKm/openNow/safety; the
+          // direct-Overpass fallback has none of them, so distance is
+          // computed here and openNow stays unknown (never guessed).
+          const distanceKm =
+            typeof el.distanceKm === 'number' && Number.isFinite(el.distanceKm)
+              ? el.distanceKm
+              : Math.round((calculateDistance(parseFloat(lat), parseFloat(lng), pLat, pLng) / 1000) * 100) / 100;
+          const openNow = typeof el.openNow === 'boolean' ? el.openNow : null;
+          return withSafety({
             id: el.id,
-            lat: el.lat || el.center?.lat,
-            lng: el.lon || el.center?.lon,
+            lat: pLat,
+            lng: pLng,
             name: el.tags?.name || category.toUpperCase(),
             phone: el.tags?.phone || el.tags?.['contact:phone'] || 'N/A',
             category,
-          };
+            distanceKm,
+            openNow,
+            safety: isValidSafety(el.safety) ? el.safety : undefined,
+          });
         }).filter((p: any) => p.lat && p.lng);
 
         updateCachedPlaces(parsedPlaces);
@@ -1041,6 +1058,14 @@ export default function TacticalDashboard() {
       : [];
   const routePlace = rankedPlaces.length > 0 ? rankedPlaces[0] : null;
 
+  // D15: the route badge blends the destination's safety with the
+  // walk's exposure (0.6 / 0.4) — a short walk to a closed cafe is not
+  // "safe" just because it is short.
+  const routeSafety =
+    route && routePlace && routePlace.safety && route.safety
+      ? combineRouteSafety(routePlace.safety, route.safety)
+      : null;
+
   // D14: fetch the walking route to the nearest-best place. The key
   // rounds the position to 3 decimals (~100 m): the route refetches
   // when the user actually moves, not on every GPS tick. A failed fetch
@@ -1077,7 +1102,13 @@ export default function TacticalDashboard() {
           Number.isFinite(data.distanceM) &&
           Number.isFinite(data.durationS)
         ) {
-          setRoute({ coordinates: data.coordinates, distanceM: data.distanceM, durationS: data.durationS });
+          // D15: the backend scores the walk's exposure; an unusable or
+          // missing score is computed locally from the same rule table
+          // instead of hiding the badge.
+          const exposure = isValidSafety(data.safety)
+            ? data.safety
+            : scoreRouteLocal({ distanceM: data.distanceM, durationS: data.durationS });
+          setRoute({ coordinates: data.coordinates, distanceM: data.distanceM, durationS: data.durationS, safety: exposure });
           setRouteState('ready');
         } else {
           setRoute(null);
@@ -1301,6 +1332,7 @@ export default function TacticalDashboard() {
                 durationS={route.durationS}
                 destinationName={routePlace.name}
                 isBest
+                safety={routeSafety ?? undefined}
                 onOpenExternal={() =>
                   Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${routePlace.lat},${routePlace.lng}`)
                 }
@@ -1348,6 +1380,7 @@ export default function TacticalDashboard() {
                   direction={direction}
                   lat={station.lat}
                   lng={station.lng}
+                  safety={station.safety}
                 />
               );
             })

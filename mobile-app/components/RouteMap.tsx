@@ -3,6 +3,8 @@ import { View, Text, StyleSheet, Image, TouchableOpacity } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Theme } from '../constants/theme';
 import GlassCard from './ui/GlassCard';
+import SafetyBadge from './ui/SafetyBadge';
+import type { SafetyScore } from '../utils/escapeLogic';
 import {
   fitRoute,
   decimateCoordinates,
@@ -19,6 +21,8 @@ interface Props {
   destinationName: string;
   /** The destination is the top-ranked (nearest-best) safe place. */
   isBest?: boolean;
+  /** D15: combined place + route safety score for this destination. */
+  safety?: SafetyScore;
   onOpenExternal: () => void;
 }
 
@@ -37,6 +41,7 @@ export default function RouteMap({
   durationS,
   destinationName,
   isBest,
+  safety,
   onOpenExternal,
 }: Props) {
   const [width, setWidth] = useState(0);
@@ -86,6 +91,7 @@ export default function RouteMap({
             <Text style={styles.bestText}>BEST</Text>
           </View>
         )}
+        {safety && <SafetyBadge safety={safety} />}
       </View>
 
       <View

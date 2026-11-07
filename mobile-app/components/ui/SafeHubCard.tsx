@@ -3,6 +3,8 @@ import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native'
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Theme, categoryMeta } from '../../constants/theme';
 import GlassCard from './GlassCard';
+import SafetyBadge from './SafetyBadge';
+import type { SafetyScore } from '../../utils/escapeLogic';
 
 export interface SafePlace {
   id: number | string;
@@ -11,6 +13,7 @@ export interface SafePlace {
   distance?: number;
   lat: number;
   lng: number;
+  safety?: SafetyScore;
 }
 
 interface Props {
@@ -39,6 +42,7 @@ export default function SafeHubCard({ place, width = 148, ctaLabel = 'GET DIRECT
       <Text style={styles.name} numberOfLines={2}>
         {place.name}
       </Text>
+      {place.safety && <SafetyBadge safety={place.safety} />}
       <TouchableOpacity
         style={styles.cta}
         activeOpacity={0.7}

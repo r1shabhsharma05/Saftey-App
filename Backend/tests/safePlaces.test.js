@@ -149,6 +149,24 @@ test("live fetch annotates distance + openNow and writes the Upstash cell", asyn
       assert.equal(clinic.openNow, true);
       assert.equal(noCoords.distanceKm, null);
       assert.equal(noCoords.openNow, null);
+      // D15: each element carries its v1 safety score — police 24/7 at
+      // 0 km clamps to 100 SAFE; the clinic (~14.8 km, open) is 75
+      // MODERATE; the coord-less pharmacy is 60 MODERATE, unknown hours.
+      assert.deepEqual(police.safety, {
+        score: 100,
+        band: "SAFE",
+        reasons: ["Police station", "Open now", "0 m away"],
+      });
+      assert.deepEqual(clinic.safety, {
+        score: 75,
+        band: "MODERATE",
+        reasons: ["Hospital", "Open now", "14.8 km away"],
+      });
+      assert.deepEqual(noCoords.safety, {
+        score: 60,
+        band: "MODERATE",
+        reasons: ["Public place"],
+      });
       const set = calls.find((c) => c.command === "set");
       assert.ok(set, "expected an Upstash SET");
       assert.equal(set.args[0], "safe-places:28.100,77.100");

@@ -6,7 +6,129 @@ export interface SafePlace {
   category: 'police' | 'hospital' | 'crowd' | 'university' | 'hostel' | 'other';
   distance?: number;
   priorityScore?: number;
+  /** D15 v1 safety score — from the backend when the proxy answered,
+   *  computed locally (scorePlaceLocal) on the direct-Overpass fallback. */
+  safety?: SafetyScore;
 }
+
+export type SafetyBand = 'SAFE' | 'MODERATE' | 'LOW';
+
+export interface SafetyScore {
+  score: number;
+  band: SafetyBand;
+  reasons: string[];
+}
+
+// D15 — safety scoring v1 (rules). MIRROR of Backend/services/safetyScore.js
+// (the backend is canonical): same bases, same bands, same reasons.
+// tests/safetyScore.test.js pins the fixture values both sides must return.
+const PLACE_BASE: Record<string, number> = {
+  police: 90,
+  hospital: 80,
+  university: 75,
+  hostel: 70,
+  crowd: 60,
+  other: 50,
+};
+
+const PLACE_LABEL: Record<string, string> = {
+  police: 'Police station',
+  hospital: 'Hospital',
+  university: 'University',
+  hostel: 'Hostel',
+  crowd: 'Public place',
+  other: 'Safe place',
+};
+
+export const bandForScore = (score: number): SafetyBand =>
+  score >= 80 ? 'SAFE' : score >= 55 ? 'MODERATE' : 'LOW';
+
+export const scorePlaceLocal = (input: {
+  category?: string;
+  distanceKm?: number | null;
+  openNow?: boolean | null;
+}): SafetyScore => {
+  const category = PLACE_BASE[input.category ?? ''] !== undefined ? (input.category as string) : 'other';
+  let score = PLACE_BASE[category];
+  const reasons = [PLACE_LABEL[category]];
+  if (input.openNow === true) {
+    score += 10;
+    reasons.push('Open now');
+  } else if (input.openNow === false) {
+    score -= 25;
+    reasons.push('Closed now');
+  }
+  const d = input.distanceKm;
+  if (typeof d === 'number' && Number.isFinite(d)) {
+    if (d <= 1) score += 5;
+    else if (d <= 3) score += 0;
+    else if (d <= 5) score -= 5;
+    else if (d <= 10) score -= 10;
+    else score -= 15;
+  }
+  if (typeof d === 'number' && Number.isFinite(d)) {
+    reasons.push(d < 1 ? `${Math.round(d * 1000)} m away` : `${d.toFixed(1)} km away`);
+  }
+  score = Math.max(0, Math.min(100, score));
+  return { score, band: bandForScore(score), reasons };
+};
+
+// Walking-time exposure, same bands as the backend route score.
+export const scoreRouteLocal = (input: { distanceM?: number; durationS?: number }): SafetyScore => {
+  const durationS =
+    typeof input.durationS === 'number' && Number.isFinite(input.durationS)
+      ? Math.max(0, input.durationS)
+      : 0;
+  const score =
+    durationS <= 300 ? 90 : durationS <= 600 ? 80 : durationS <= 900 ? 70 : durationS <= 1800 ? 55 : 40;
+  const minutes = Math.max(1, Math.round(durationS / 60));
+  return { score, band: bandForScore(score), reasons: [`${minutes} min walk`] };
+};
+
+// Route-map badge: the destination's safety matters more than the walk
+// itself, so the place score weighs 0.6 against the route's 0.4.
+// Display rule only — the backend never sees the destination place.
+export const combineRouteSafety = (place: SafetyScore, route: SafetyScore): SafetyScore => {
+  const score = Math.round(0.6 * place.score + 0.4 * route.score);
+  return {
+    score,
+    band: bandForScore(score),
+    reasons: [...place.reasons.slice(0, 2), route.reasons[0]],
+  };
+};
+
+// A safety object is only trusted when it has the full v1 shape — a
+// stale cache or a future backend change must never render a broken
+// badge. Used for backend-supplied scores AND restored cached places.
+export const isValidSafety = (s: unknown): s is SafetyScore =>
+  !!s &&
+  typeof s === 'object' &&
+  Number.isFinite((s as SafetyScore).score) &&
+  (s as SafetyScore).score >= 0 &&
+  (s as SafetyScore).score <= 100 &&
+  ((s as SafetyScore).band === 'SAFE' ||
+    (s as SafetyScore).band === 'MODERATE' ||
+    (s as SafetyScore).band === 'LOW') &&
+  Array.isArray((s as SafetyScore).reasons);
+
+// Attach a score to a place that lacks a valid one (direct-Overpass
+// fallback, or a cache written before D15). Valid scores pass through
+// untouched — this never re-scores the backend's answer.
+export const withSafety = <
+  T extends { category?: string; distanceKm?: number | null; openNow?: boolean | null; safety?: SafetyScore },
+>(
+  place: T
+): T & { safety: SafetyScore } =>
+  isValidSafety(place.safety)
+    ? (place as T & { safety: SafetyScore })
+    : {
+        ...place,
+        safety: scorePlaceLocal({
+          category: place.category,
+          distanceKm: place.distanceKm ?? null,
+          openNow: place.openNow ?? null,
+        }),
+      };
 
 export const getCategoryPriority = (category: SafePlace['category']) => {
   switch (category) {

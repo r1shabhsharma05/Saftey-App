@@ -59,6 +59,8 @@ test("service: stubbed OSRM Ok returns rounded distance/duration + geometry", as
     const route = await getWalkingRoute(28.6139, 77.209, 28.62, 77.215);
     assert.equal(route.distanceM, 2969);
     assert.equal(route.durationS, 403);
+    // D15: 403s walk → 80 SAFE exposure ("7 min walk").
+    assert.deepEqual(route.safety, { score: 80, band: "SAFE", reasons: ["7 min walk"] });
     assert.deepEqual(route.coordinates, osrmOk().routes[0].geometry.coordinates);
     assert.equal(seenUrls.length, 2);
     for (const url of seenUrls) {
@@ -147,6 +149,7 @@ test("route: HTTP leg — 200 shape, 400 on bad coords, 502 mapping", async () =
     assert.equal(body.success, true);
     assert.equal(body.distanceM, 2969);
     assert.equal(body.durationS, 403);
+    assert.deepEqual(body.safety, { score: 80, band: "SAFE", reasons: ["7 min walk"] });
     assert.equal(body.coordinates.length, 5);
 
     const bad = await fetch(`${base}/route?fromLat=999&fromLng=77.209&toLat=28.62&toLng=77.215`);
