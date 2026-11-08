@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
 import { supabase } from '../utils/supabase';
+import { parseAuthDeepLink } from '../utils/deepLink';
 import AuthBackground from '../components/auth/Background';
 import AuthBrand from '../components/auth/Brand';
 import AuthButton from '../components/auth/Button';
@@ -20,10 +21,13 @@ import { AuthTheme } from '../constants/auth-theme';
  * PKCE code in the URL was never exchanged, so sign-in silently died.
  *
  * This screen consumes the URL exactly like reset-password.tsx does:
- * exchange the PKCE code (or set the implicit tokens), after which the
- * root layout's auth listener navigates to the tabs. If the WebBrowser
- * flow already exchanged the code, the exchange fails but a session
- * exists — that is success, not an error.
+ * exchange the PKCE code, after which the root layout's auth listener
+ * navigates to the tabs. If the WebBrowser flow already exchanged the
+ * code, the exchange fails but a session exists — that is success, not
+ * an error. (H1) The link is validated first (utils/deepLink.ts: our
+ * scheme + this route) and implicit-flow tokens in the URL are never
+ * accepted — a PKCE code is useless without the verifier the app holds,
+ * a pasted bearer token is not.
  */
 export default function AuthCallbackScreen() {
   const router = useRouter();
@@ -35,22 +39,14 @@ export default function AuthCallbackScreen() {
       if (handledRef.current) return;
       handledRef.current = true;
       try {
-        const hash = url.includes('#') ? url.split('#')[1] : '';
-        const query = url.includes('?') ? url.split('?')[1].split('#')[0] : '';
-        const hashParams = new URLSearchParams(hash);
-        const queryParams = new URLSearchParams(query);
-
-        const linkError =
-          hashParams.get('error_description') || hashParams.get('error') ||
-          queryParams.get('error_description') || queryParams.get('error');
-        if (linkError) {
+        const link = parseAuthDeepLink(url, 'auth-callback');
+        if (!link || link.error) {
           setPhase('failed');
           return;
         }
 
-        const code = queryParams.get('code') || hashParams.get('code');
-        if (code) {
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
+        if (link.code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(link.code);
           if (!error) return; // session set — layout navigates to tabs
           // The code may already have been exchanged by the WebBrowser
           // flow; a live session means sign-in actually succeeded.
@@ -59,19 +55,7 @@ export default function AuthCallbackScreen() {
           return;
         }
 
-        const atKey = ['access', 'token'].join('_');
-        const rtKey = ['refresh', 'token'].join('_');
-        const accessToken = hashParams.get(atKey) || queryParams.get(atKey);
-        const refreshToken = hashParams.get(rtKey) || queryParams.get(rtKey);
-        if (accessToken && refreshToken) {
-          const { error } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-          });
-          setPhase(error ? 'failed' : 'working');
-          return;
-        }
-
+        // No PKCE code: an implicit-token link is not accepted (H1).
         setPhase('failed');
       } catch {
         setPhase('failed');

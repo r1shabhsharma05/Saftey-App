@@ -5,6 +5,7 @@ import * as Linking from 'expo-linking';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../utils/supabase';
+import { parseAuthDeepLink } from '../utils/deepLink';
 import { showAppDialog } from '../utils/dialog';
 import { friendlyAuthError } from '../utils/auth';
 import AuthBackground from '../components/auth/Background';
@@ -21,10 +22,12 @@ import { AuthTheme } from '../constants/auth-theme';
  * Supabase site URL and went nowhere. The email now links here
  * (safelifeai://reset-password — the URL must also be allow-listed in
  * the Supabase dashboard under Auth → URL Configuration → Redirect
- * URLs). The link carries a one-time PKCE code (or implicit tokens);
- * exchanging it creates a recovery session, and updateUser sets the
- * new password. The root layout deliberately does NOT bounce this
- * screen to the tabs when that session appears.
+ * URLs). The link carries a one-time PKCE code; exchanging it creates
+ * a recovery session, and updateUser sets the new password. The root
+ * layout deliberately does NOT bounce this screen to the tabs when
+ * that session appears. (H1) The link is validated first
+ * (utils/deepLink.ts: our scheme + this route) and implicit-flow
+ * tokens in the URL are never accepted.
  */
 export default function ResetPasswordScreen() {
   const router = useRouter();
@@ -39,34 +42,19 @@ export default function ResetPasswordScreen() {
       if (handledRef.current) return;
       handledRef.current = true;
       try {
-        const hash = url.includes('#') ? url.split('#')[1] : '';
-        const query = url.includes('?') ? url.split('?')[1].split('#')[0] : '';
-        const hashParams = new URLSearchParams(hash);
-        const queryParams = new URLSearchParams(query);
-
-        const linkError =
-          hashParams.get('error_description') || hashParams.get('error') ||
-          queryParams.get('error_description') || queryParams.get('error');
-        if (linkError) {
+        const link = parseAuthDeepLink(url, 'reset-password');
+        if (!link || link.error) {
           setPhase('invalid');
           return;
         }
 
-        const code = queryParams.get('code') || hashParams.get('code');
-        if (code) {
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
+        if (link.code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(link.code);
           setPhase(error ? 'invalid' : 'ready');
           return;
         }
 
-        const access_token = hashParams.get('access_token') || queryParams.get('access_token');
-        const refresh_token = hashParams.get('refresh_token') || queryParams.get('refresh_token');
-        if (access_token && refresh_token) {
-          const { error } = await supabase.auth.setSession({ access_token, refresh_token });
-          setPhase(error ? 'invalid' : 'ready');
-          return;
-        }
-
+        // No PKCE code: an implicit-token link is not accepted (H1).
         setPhase('invalid');
       } catch {
         setPhase('invalid');

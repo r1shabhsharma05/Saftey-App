@@ -2,6 +2,7 @@ import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
+import { parseAuthDeepLink } from './deepLink';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -18,8 +19,11 @@ WebBrowser.maybeCompleteAuthSession();
 // ?code=... which must be EXCHANGED for a session — an earlier version
 // of this file only looked for implicit-flow tokens (access_token /
 // refresh_token), which a PKCE redirect never contains, so every native
-// Google sign-in failed with "did not return a session". Both shapes
-// are handled below.
+// Google sign-in failed with "did not return a session". Only the PKCE
+// code is handled below (H1): implicit tokens in a redirect URL are
+// never accepted, and the result URL must be the redirect this call
+// opened (our scheme + auth-callback) — a stray or foreign URL is not
+// consumed.
 //
 // Returns {} on success (the root layout's auth listener navigates to
 // the tabs) and on user cancellation; { error } with a user-safe message
@@ -46,35 +50,18 @@ export async function signInWithGoogle(): Promise<{ error?: string }> {
   const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
   if (result.type !== 'success') return {}; // user cancelled — not an error
 
-  const url = result.url;
-  const hash = url.includes('#') ? url.split('#')[1] : '';
-  const query = url.includes('?') ? url.split('?')[1].split('#')[0] : '';
-  const hashParams = new URLSearchParams(hash);
-  const queryParams = new URLSearchParams(query);
-
-  const oauthError =
-    hashParams.get('error_description') || hashParams.get('error') ||
-    queryParams.get('error_description') || queryParams.get('error');
-  if (oauthError) return { error: friendly(oauthError) };
-
-  // PKCE (the supabase-js v2 default): exchange the one-time code.
-  const code = queryParams.get('code') || hashParams.get('code');
-  if (code) {
-    const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
-    return { error: exchangeError ? friendly(exchangeError.message) : undefined };
+  // (H1) The result must be the redirect this call opened — our scheme
+  // + auth-callback — carrying a PKCE code. Anything else (a foreign
+  // URL, an implicit-token link) is not consumed.
+  const link = parseAuthDeepLink(result.url, 'auth-callback');
+  if (!link || link.error) {
+    return { error: link?.error ? friendly(link.error) : 'Google sign-in did not return a session. Please try again.' };
   }
-
-  // Implicit flow: tokens arrive in the hash.
-  const access_token = hashParams.get('access_token') || queryParams.get('access_token');
-  const refresh_token = hashParams.get('refresh_token') || queryParams.get('refresh_token');
-  if (!access_token || !refresh_token) {
+  if (!link.code) {
     return { error: 'Google sign-in did not return a session. Please try again.' };
   }
-  const { error: sessionError } = await supabase.auth.setSession({
-    access_token,
-    refresh_token,
-  });
-  return { error: sessionError ? friendly(sessionError.message) : undefined };
+  const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(link.code);
+  return { error: exchangeError ? friendly(exchangeError.message) : undefined };
 }
 
 function friendly(message: string): string {
