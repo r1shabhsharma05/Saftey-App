@@ -8,9 +8,12 @@
 // Mobile app: set EXPO_PUBLIC_API_SECRET to the same value; the app sends it
 // as the `x-api-key` header on SOS alert requests.
 //
-// Migration note: while API_SECRET is unset the check is skipped (with a loud
-// warning at startup) so existing app builds keep working. Set API_SECRET in
-// the hosting dashboard to activate enforcement.
+// Fail CLOSED: while API_SECRET is unset the gate refuses every mutating
+// request (503) instead of letting it through — an unset secret must never
+// silently degrade to anonymous access. Set API_SECRET in the hosting
+// dashboard (and EXPO_PUBLIC_API_SECRET in the mobile app) to activate
+// enforcement. Day-30 (2026-11-22) is when the production value lands;
+// until then the backend answers 503 on mutating routes, loudly.
 const crypto = require("crypto");
 const { audit } = require("../services/audit");
 
@@ -23,12 +26,12 @@ const requireApiKey = (req, res, next) => {
     if (!warned) {
       warned = true;
       console.warn(
-        "⚠️  API_SECRET is not set — API-key auth is DISABLED. " +
+        "⚠️  API_SECRET is not set — mutating routes refuse requests (503). " +
           "Set API_SECRET (backend) and EXPO_PUBLIC_API_SECRET (mobile app) " +
           "to lock down /alert, /location-update and /test-alert."
       );
     }
-    return next();
+    return res.status(503).json({ success: false, error: "Service not configured" });
   }
 
   const provided = req.header("x-api-key") || "";
