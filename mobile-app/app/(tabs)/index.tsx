@@ -26,7 +26,17 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import AlertActiveView from '../../components/AlertActiveView';
 import { rankSafePlaces, calculateBearing, calculateDistance, getCardinalDirection, withSafety, isValidSafety, scoreRouteLocal, combineRouteSafety } from '../../utils/escapeLogic';
-import type { SafetyScore } from '../../utils/escapeLogic';
+import type { SafePlace, SafetyScore } from '../../utils/escapeLogic';
+import JourneyCard from '../../components/JourneyCard';
+import {
+  JOURNEY_STORAGE_KEY,
+  buildShareText,
+  createJourney,
+  endJourney,
+  fetchJourney,
+  postJourneyLocation,
+  type Journey,
+} from '../../utils/journey';
 import { decideBatteryAlert, BATTERY_LOW_THRESHOLD, BATTERY_FINAL_THRESHOLD, BATTERY_REARM_LEVEL } from '../../utils/batteryAlerts';
 import ScreenBackground from '../../components/ui/ScreenBackground';
 import GlassCard from '../../components/ui/GlassCard';
@@ -143,6 +153,18 @@ export default function TacticalDashboard() {
   // confirmed and whether the ladder is still running.
   const [ackCount, setAckCount] = useState<number>(0);
   const [escalation, setEscalation] = useState<any | null>(null);
+  // D16: Journey Guardian — the active trip, or null. journeyRef
+  // mirrors it for the location effect, whose callback closes over
+  // stale state; journeyViewUrl is the signed share link returned
+  // at create time (persisted with the id so sharing survives a
+  // restart); journeyDistanceM is the live distance to the
+  // destination, recomputed on each posted position.
+  const [journey, setJourney] = useState<Journey | null>(null);
+  const [journeyBusy, setJourneyBusy] = useState(false);
+  const [journeyViewUrl, setJourneyViewUrl] = useState<string | null>(null);
+  const [journeyDistanceM, setJourneyDistanceM] = useState<number | null>(null);
+  const journeyRef = useRef<Journey | null>(null);
+  const lastJourneyTrackRef = useRef<{ lat: number; lng: number; at: number } | null>(null);
   // D14: in-app walking route to the nearest-best safe place (OSRM via
   // GET /route). routeKeyRef rounds the position to ~100 m so the route
   // refetches only when the user actually moves, not on every GPS tick;
@@ -284,6 +306,28 @@ export default function TacticalDashboard() {
       .then((raw) => setQueuedSOS(!!raw))
       .catch(() => {});
 
+    // D16: restore an in-progress journey across restarts. The
+    // server is the source of truth: a journey the server reports
+    // finished (or unknown) clears the stored id instead of showing
+    // a trip that is over.
+    AsyncStorage.getItem(JOURNEY_STORAGE_KEY)
+      .then(async (raw) => {
+        try {
+          const stored = raw ? JSON.parse(raw) : null;
+          if (!stored || typeof stored.id !== 'string') return;
+          const live = await fetchJourney(BACKEND_URL, stored.id);
+          if (live && live.state === 'active') {
+            setJourney(live);
+            setJourneyViewUrl(typeof stored.viewUrl === 'string' ? stored.viewUrl : null);
+          } else {
+            await AsyncStorage.removeItem(JOURNEY_STORAGE_KEY).catch(() => {});
+          }
+        } catch {
+          /* restore is best-effort */
+        }
+      })
+      .catch(() => {});
+
     Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, { toValue: 1.08, duration: 1600, useNativeDriver: true }),
@@ -311,7 +355,8 @@ export default function TacticalDashboard() {
     activeAlertIdRef.current = activeAlertId;
     latRef.current = lat;
     lngRef.current = lng;
-  }, [batteryLevel, batteryCharging, status, activeAlertId, lat, lng]);
+    journeyRef.current = journey;
+  }, [batteryLevel, batteryCharging, status, activeAlertId, lat, lng, journey]);
 
   const applyCoords = (coords: { latitude: number; longitude: number; speed?: number | null }) => {
     const currentLat = coords.latitude.toFixed(6);
@@ -785,6 +830,122 @@ export default function TacticalDashboard() {
     }
   };
 
+  // D16: start a Journey Guardian trip to a nearby safe place.
+  // No local queue: a trip start that never reached the server is
+  // retryable by tapping again — queueing it would create a stale
+  // trip (wrong origin, expired ETA) when connectivity returns.
+  const startJourney = async (place: SafePlace, etaMinutes: number): Promise<void> => {
+    if (journeyBusy) return;
+    if (lat === 'Loading...' || lng === 'Loading...' || isNaN(parseFloat(lat)) || isNaN(parseFloat(lng))) {
+      showBanner('error', 'No location fix yet — SafeLife needs your GPS position to start a journey.');
+      return;
+    }
+    setJourneyBusy(true);
+    try {
+      const result = await createJourney(
+        BACKEND_URL,
+        {
+          originLat: parseFloat(lat),
+          originLng: parseFloat(lng),
+          destLat: place.lat,
+          destLng: place.lng,
+          destinationLabel: place.name,
+          etaMinutes,
+        },
+        userData ? `${userData.first_name} ${userData.last_name}` : 'Unknown User'
+      );
+      if (!result.reached) {
+        showBanner('error', 'Journey could not be started — the connection failed. Try again when the network returns.');
+        return;
+      }
+      if (!result.success || !result.journey) {
+        showBanner('error', 'Journey could not be started — SafeLife refused the trip. Check the destination and try again.');
+        return;
+      }
+      setJourney(result.journey);
+      setJourneyViewUrl(result.viewUrl);
+      setJourneyDistanceM(calculateDistance(parseFloat(lat), parseFloat(lng), place.lat, place.lng));
+      await AsyncStorage.setItem(
+        JOURNEY_STORAGE_KEY,
+        JSON.stringify({ id: result.journey.id, viewUrl: result.viewUrl })
+      ).catch(() => {});
+      showBanner('success', `Journey started — heading to ${place.name}. Share the link so your contacts can follow you.`);
+    } finally {
+      setJourneyBusy(false);
+    }
+  };
+
+  // D16: share the signed live-trip link with the native share sheet.
+  // The link (not coordinates) is the live source — a pasted pin
+  // would go stale the moment the user moves.
+  const shareJourney = async (): Promise<void> => {
+    const current = journeyRef.current;
+    if (!current) return;
+    try {
+      await Share.share({ message: buildShareText(current, journeyViewUrl) });
+    } catch {
+      /* dismissed */
+    }
+  };
+
+  // D16: end the active trip (arrived or cancelled). The server is
+  // authoritative: only a journey it confirms finished clears the
+  // local state — a transport failure leaves the trip running rather
+  // than pretending it ended.
+  const endActiveJourney = async (action: 'arrived' | 'cancelled'): Promise<void> => {
+    const current = journeyRef.current;
+    if (!current || journeyBusy) return;
+    setJourneyBusy(true);
+    try {
+      const finished = await endJourney(BACKEND_URL, current.id, action);
+      if (!finished) {
+        showBanner('error', 'Could not reach SafeLife to end the journey — it is still active. Try again.');
+        return;
+      }
+      setJourney(null);
+      setJourneyViewUrl(null);
+      setJourneyDistanceM(null);
+      lastJourneyTrackRef.current = null;
+      await AsyncStorage.removeItem(JOURNEY_STORAGE_KEY).catch(() => {});
+      showBanner(
+        'success',
+        action === 'arrived' ? 'Journey complete — you arrived safely.' : 'Journey cancelled.'
+      );
+    } finally {
+      setJourneyBusy(false);
+    }
+  };
+
+  // D16: poll the active journey (same 30 s cadence as the alert
+  // receipts poll). A transport failure keeps the last known trip —
+  // blanking the card on a flaky link would be a lie about a live
+  // journey. A server-side finished state clears it: the trip ended
+  // elsewhere (another device, or the server), and the card must not
+  // keep offering ARRIVED for a trip that is over.
+  const fetchJourneyStatus = async (journeyId: string): Promise<void> => {
+    try {
+      const live = await fetchJourney(BACKEND_URL, journeyId);
+      if (!live) return;
+      if (live.state !== 'active') {
+        setJourney(null);
+        setJourneyViewUrl(null);
+        setJourneyDistanceM(null);
+        lastJourneyTrackRef.current = null;
+        await AsyncStorage.removeItem(JOURNEY_STORAGE_KEY).catch(() => {});
+        showBanner('success', 'Your journey ended.');
+        return;
+      }
+      setJourney(live);
+      const la = parseFloat(latRef.current);
+      const ln = parseFloat(lngRef.current);
+      if (Number.isFinite(la) && Number.isFinite(ln)) {
+        setJourneyDistanceM(calculateDistance(la, ln, live.destination.lat, live.destination.lng));
+      }
+    } catch {
+      /* polling is best-effort; the last trip stays on screen */
+    }
+  };
+
   // Live tracking (F2): the backend's /location-update endpoint had
   // zero callers, so the "LIVE LOCATION TRACKING" link in the SOS
   // Telegram message pointed at the static trigger-time pin while
@@ -822,6 +983,43 @@ export default function TacticalDashboard() {
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, activeAlertId]);
+
+  // D16: live journey tracking — same ≥25 m / ≥30 s cadence as alert
+  // tracking, posted to the journey instead of the alert. The first
+  // fix after starting only seeds the baseline — POST /journeys
+  // already delivered the origin. Distance-to-destination updates
+  // here too, so the card counts down without a server round-trip.
+  useEffect(() => {
+    if (!journey || journey.state !== 'active') {
+      lastJourneyTrackRef.current = null;
+      return;
+    }
+    const la = parseFloat(lat);
+    const ln = parseFloat(lng);
+    if (!Number.isFinite(la) || !Number.isFinite(ln)) return;
+    setJourneyDistanceM(calculateDistance(la, ln, journey.destination.lat, journey.destination.lng));
+    const last = lastJourneyTrackRef.current;
+    const now = Date.now();
+    if (!last) {
+      lastJourneyTrackRef.current = { lat: la, lng: ln, at: now };
+      return;
+    }
+    if (now - last.at < 30000) return;
+    if (calculateDistance(last.lat, last.lng, la, ln) < 25) return;
+    lastJourneyTrackRef.current = { lat: la, lng: ln, at: now };
+    void postJourneyLocation(BACKEND_URL, journey.id, la, ln);
+  }, [journey, lat, lng]);
+
+  // D16: journey status polling — refresh the trip every 30s while
+  // it is active, so an ETA/overdue change (or a finish from another
+  // device) reaches the card. Stops the moment the trip ends.
+  const activeJourneyId = journey && journey.state === 'active' ? journey.id : null;
+  useEffect(() => {
+    if (!activeJourneyId) return;
+    const id = setInterval(() => fetchJourneyStatus(activeJourneyId), 30000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeJourneyId]);
 
   // D11: fire the battery alert the moment a threshold is crossed —
   // level, charging state, alert status and position changes all
@@ -1316,6 +1514,20 @@ export default function TacticalDashboard() {
               <Text style={styles.actionLabel}>{item.label}</Text>
             </TouchableOpacity>
           ))}
+        </Reanimated.View>
+
+        {/* D16: Journey Guardian — share a trip, contacts follow live */}
+        <Reanimated.View entering={FadeInUp.delay(280).duration(500)}>
+          <JourneyCard
+            places={rankedPlaces}
+            journey={journey}
+            distanceRemainingM={journeyDistanceM}
+            busy={journeyBusy}
+            onStart={startJourney}
+            onShare={shareJourney}
+            onArrived={() => endActiveJourney('arrived')}
+            onCancel={() => endActiveJourney('cancelled')}
+          />
         </Reanimated.View>
 
         {/* D14: in-app walking route to the nearest-best safe place */}
