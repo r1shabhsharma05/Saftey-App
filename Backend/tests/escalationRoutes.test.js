@@ -128,6 +128,51 @@ test("ack: API-key path works, and the view-page form posts back to the page", a
   assert.equal((await read.json()).alert.acks.length, 2);
 });
 
+test("ack binding (H3): SOS stores contactKeys; only those contacts count, strangers 400, anonymous never counts", async () => {
+  const { ackKeyFor } = require("../services/alertLifecycle");
+  const sos = await fetch(`${base}/alert`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": KEY },
+    body: JSON.stringify({
+      lat: 28.6139,
+      lng: 77.209,
+      contacts: [
+        { name: "Asha", phone: "+919999999999" },
+        { name: "Ravi", phone: "+918888888888" },
+      ],
+    }),
+  });
+  assert.equal(sos.status, 502, "channels down: alert fails but is still created");
+  const sosBody = await sos.json();
+  const alert = await alertStore.get(sosBody.alertId);
+  assert.equal(alert.contactKeys.length, 2);
+  assert.deepEqual(
+    [...alert.contactKeys].sort(),
+    [ackKeyFor({ phone: "+919999999999" }), ackKeyFor({ phone: "+918888888888" })].sort()
+  );
+  // Failed → dispatching → delivered, so the ack route will accept acks.
+  transition(alert, "dispatching");
+  transition(alert, "delivered");
+  alertStore.save(alert);
+  const token = viewToken(alert.id);
+
+  const stranger = await ack(alert.id, { phone: "+917777777777" }, { token });
+  assert.equal(stranger.status, 400);
+  assert.equal((await alertStore.get(alert.id)).acks.length, 0, "a rejected ack is not recorded");
+
+  const anon = await ack(alert.id, {}, { token });
+  assert.equal(anon.status, 200);
+  const anonBody = await anon.json();
+  assert.equal(anonBody.ackCount, 0, "anonymous ack never counts");
+  assert.equal(anonBody.acked, false);
+  assert.equal(anonBody.state, "delivered", "anonymous ack does not move delivered→acked");
+
+  const first = await ack(alert.id, { phone: "+919999999999" }, { token });
+  assert.equal((await first.json()).ackCount, 1);
+  const second = await ack(alert.id, { phone: "+918888888888" }, { token });
+  assert.equal((await second.json()).ackCount, 2);
+});
+
 test("escalate: forged token 401, bad step 400, unknown alert 404", async () => {
   const alert = seedDelivered();
   const forged = await fetch(`${base}/escalate`, {

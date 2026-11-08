@@ -34,6 +34,10 @@ const toRow = (alert) => ({
   lat: alert.lat ?? null,
   lng: alert.lng ?? null,
   location_at: alert.locationAt ?? null,
+  // H3 ACK binding (migration 20261108090000_sos_alerts_ack_binding.sql):
+  // one-way hashes of the contacts this SOS went to. Empty for legacy
+  // alerts — the lifecycle treats an empty set as unbound.
+  contact_keys: alert.contactKeys || [],
 });
 
 const fromRow = (row) => ({
@@ -52,6 +56,7 @@ const fromRow = (row) => ({
   lat: row.lat ?? null,
   lng: row.lng ?? null,
   locationAt: row.location_at ?? null,
+  contactKeys: row.contact_keys || [],
 });
 
 // Public shape for GET /alert/:id — no history, no internals. Delivery

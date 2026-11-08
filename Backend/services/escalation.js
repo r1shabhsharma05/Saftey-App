@@ -29,7 +29,7 @@
 // replayed as an escalation token and vice versa.
 const crypto = require("crypto");
 const { normalizePhone } = require("./sms");
-const { ackKeyFor } = require("./alertLifecycle");
+const { ackKeyFor, countingAcks } = require("./alertLifecycle");
 const { publishDelayed } = require("./qstash");
 const { publicBaseUrl } = require("./delivery");
 
@@ -59,12 +59,15 @@ const verifyEscalationToken = (alertId, step, token) => {
 
 // The ladder runs only while the alert is live (delivered, or acked
 // but below threshold) and fewer than ACK_THRESHOLD distinct contacts
-// have acknowledged. A failed alert is the D4 retry chain's job —
-// the ladder must never re-fire it (that would double-send with the
-// retry). Created/dispatching/closed never escalate.
+// have acknowledged. Only COUNTING acks stop it (services/
+// alertLifecycle.js): a fabricated identifier is rejected at the ack
+// route, and an anonymous ack never counts. A failed alert is the D4
+// retry chain's job — the ladder must never re-fire it (that would
+// double-send with the retry). Created/dispatching/closed never
+// escalate.
 const shouldEscalate = (alert) => {
   if (!alert || (alert.state !== "delivered" && alert.state !== "acked")) return false;
-  return (Array.isArray(alert.acks) ? alert.acks.length : 0) < ACK_THRESHOLD;
+  return countingAcks(alert).length < ACK_THRESHOLD;
 };
 
 // Channels worth re-firing: failed, or partial (some contacts got

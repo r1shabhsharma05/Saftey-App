@@ -104,19 +104,53 @@ const ackKeyFor = ({ phone, pushToken } = {}) => {
   return crypto.createHash("sha256").update(id).digest("hex").slice(0, 32);
 };
 
-// Records one contact's acknowledgement. Returns {isNew}: a repeat
-// ack from the same contact is a no-op, not a second vote. Pure
-// except for mutating the alert record it is handed — the caller
-// owns the delivered→acked transition (transition() above), so this
-// never throws on state: recording that a human answered must not
-// fail because of a state-machine edge.
+// Records one contact's acknowledgement. Returns {isNew, counts,
+// rejected}: a repeat ack from the same contact is a no-op, not a
+// second vote. Pure except for mutating the alert record it is handed
+// — the caller owns the delivered→acked transition (transition()
+// above), so this never throws on state: recording that a human
+// answered must not fail because of a state-machine edge.
+//
+// BINDING (audit H3): an ACK counts toward the 2-ack stop only when
+// the identifier belongs to a contact this SOS actually went to —
+// alert.contactKeys, stored at SOS time as one-way hashes of the
+// contacts' phones/tokens. An identifier outside the set is rejected
+// (the caller answers 400): anyone with the link could otherwise
+// fabricate confirmations and stop the escalation while nobody came.
+// An ack with no identifier at all keys on the single "anonymous"
+// slot: it is recorded once (dedupe) but never counts — a refresh
+// or a forwarded link must not stop the ladder. Alerts created
+// before this binding carry no contactKeys (legacy): every
+// identifier counts, as before, so old in-flight alerts keep working.
+const ANONYMOUS_KEY = ackKeyFor({});
+
+const countingAcks = (alert) => {
+  const acks = Array.isArray(alert.acks) ? alert.acks : [];
+  const bound =
+    Array.isArray(alert.contactKeys) && alert.contactKeys.length > 0
+      ? new Set(alert.contactKeys)
+      : null;
+  if (!bound) return acks;
+  return acks.filter((a) => bound.has(a.key));
+};
+
 const recordAck = (alert, contact = {}) => {
   if (!Array.isArray(alert.acks)) alert.acks = [];
   const key = ackKeyFor(contact);
-  if (alert.acks.some((a) => a.key === key)) return { isNew: false };
+  if (alert.acks.some((a) => a.key === key)) return { isNew: false, counts: false };
+  const bound =
+    Array.isArray(alert.contactKeys) && alert.contactKeys.length > 0
+      ? new Set(alert.contactKeys)
+      : null;
+  if (key === ANONYMOUS_KEY) {
+    alert.acks.push({ key, at: new Date().toISOString() });
+    alert.updatedAt = new Date().toISOString();
+    return { isNew: true, counts: false };
+  }
+  if (bound && !bound.has(key)) return { isNew: false, counts: false, rejected: true };
   alert.acks.push({ key, at: new Date().toISOString() });
   alert.updatedAt = new Date().toISOString();
-  return { isNew: true };
+  return { isNew: true, counts: true };
 };
 
-module.exports = { ALERT_STATES, ALLOWED_TRANSITIONS, createAlert, transition, setAlertLocation, recordAck, ackKeyFor };
+module.exports = { ALERT_STATES, ALLOWED_TRANSITIONS, createAlert, transition, setAlertLocation, recordAck, countingAcks, ackKeyFor };

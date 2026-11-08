@@ -40,7 +40,7 @@ const {
   scheduleEscalation,
 } = require("../services/escalation");
 const { audit } = require("../services/audit");
-const { createAlert, transition, setAlertLocation, recordAck } = require("../services/alertLifecycle");
+const { createAlert, transition, setAlertLocation, recordAck, countingAcks, ackKeyFor } = require("../services/alertLifecycle");
 const { viewToken, verifyViewToken } = require("../services/alertView");
 const alertStore = require("../services/alertStore");
 
@@ -95,6 +95,11 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
     // the trigger position, so the message can embed the contacts-side
     // alert-view link for this exact alert.
     alert = createAlert({ contactsCount: contacts.length, lat: latNum, lng: lngNum });
+    // H3: bind ACKs to the contacts this SOS actually went to — only
+    // their identifiers count toward the 2-ack stop. One-way hashes
+    // of the sanitized phones/tokens (the same values the message
+    // carries); the raw identifiers are never stored on the alert.
+    alert.contactKeys = contacts.map((c) => ackKeyFor({ phone: c.phone, pushToken: c.pushToken }));
     audit("alert.created", {
       actorKey: req.header("x-api-key"),
       ip: req.ip,
@@ -318,10 +323,14 @@ router.get("/alert/:id", trackingLimiter, requireApiKey, async (req, res) => {
 // contact's identifier (phone, or pushToken) is optional: with it,
 // the ack dedupes per contact and the voice step can skip them; the
 // stored record keeps only the one-way hash (services/
-// alertLifecycle.js), never the raw number. Without it the ack
-// counts once, anonymously. A closed alert is 410 (its emergency is
-// over — an ack then would restart nothing, and the view page is
-// 410 too); any other non-live state is 409.
+// alertLifecycle.js), never the raw number. An identifier that is
+// not one of the contacts this SOS went to is rejected (400) —
+// anyone with the link could otherwise fabricate confirmations and
+// stop the escalation while nobody came. An ack with no identifier
+// is recorded once (anonymous slot) but never counts toward the
+// stop. A closed alert is 410 (its emergency is over — an ack then
+// would restart nothing, and the view page is 410 too); any other
+// non-live state is 409.
 const ackAuth = (req, res, next) => {
   const token = typeof req.query.token === "string" ? req.query.token : "";
   if (verifyViewToken(req.params.id, token)) return next();
@@ -341,15 +350,18 @@ router.post("/alert/:id/ack", trackingLimiter, ackAuth, async (req, res) => {
     return res.status(409).json({ success: false, error: "Alert is not awaiting confirmation" });
   }
   const body = req.body || {};
-  const { isNew } = recordAck(alert, {
+  const { isNew, counts, rejected } = recordAck(alert, {
     phone: sanitizeText(body.contact || body.phone, 20),
     pushToken: sanitizeText(body.pushToken, 1024),
   });
-  if (isNew && alert.state === "delivered") {
+  if (rejected) {
+    return res.status(400).json({ success: false, error: "Unknown contact — only the contacts this SOS went to can acknowledge it" });
+  }
+  if (isNew && counts && alert.state === "delivered") {
     transition(alert, "acked", "contact acknowledged");
   }
   alertStore.save(alert);
-  const ackCount = (alert.acks || []).length;
+  const ackCount = countingAcks(alert).length;
   audit("alert.ack", { ip: req.ip, meta: { alertId: alert.id, ackCount, isNew } });
   // The no-JavaScript view page posts this form: answer with a
   // redirect back to the page (token preserved) instead of JSON the
@@ -360,7 +372,7 @@ router.post("/alert/:id/ack", trackingLimiter, ackAuth, async (req, res) => {
   if (req.is("application/x-www-form-urlencoded") && verifyViewToken(alert.id, token)) {
     return res.redirect(303, `/alert/${alert.id}/view?token=${encodeURIComponent(token)}`);
   }
-  res.json({ success: true, alertId: alert.id, state: alert.state, ackCount, acked: isNew });
+  res.json({ success: true, alertId: alert.id, state: alert.state, ackCount, acked: isNew && counts });
 });
 
 // POST /alert/:id/close — end an alert from the responder side (API key

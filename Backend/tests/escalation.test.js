@@ -80,6 +80,32 @@ test("recordAck: hashed dedupe, threshold is a count; the route owns the state m
   assert.equal(anon.acks.length, 1);
 });
 
+test("recordAck binding (H3): only the SOS contacts count; strangers rejected, anonymous never counts", () => {
+  const alert = createAlert({ contactsCount: 2 });
+  alert.contactKeys = [ackKeyFor({ phone: "+919999999999" }), ackKeyFor({ phone: "+918888888888" })];
+  transition(alert, "dispatching");
+  transition(alert, "delivered");
+
+  const stranger = recordAck(alert, { phone: "+917777777777" });
+  assert.equal(stranger.rejected, true);
+  assert.equal(alert.acks.length, 0, "a rejected ack is not recorded");
+
+  const anon = recordAck(alert, {});
+  assert.equal(anon.isNew, true);
+  assert.equal(anon.counts, false);
+  assert.equal(alert.acks.length, 1, "anonymous ack is recorded once");
+  assert.equal(shouldEscalate(alert), true, "an anonymous ack never stops the ladder");
+
+  const first = recordAck(alert, { phone: "+91 99999 99999" });
+  assert.equal(first.isNew, true);
+  assert.equal(first.counts, true);
+  assert.equal(shouldEscalate(alert), true, "1 of 2 counting acks: ladder still runs");
+
+  const second = recordAck(alert, { phone: "+918888888888" });
+  assert.equal(second.counts, true);
+  assert.equal(shouldEscalate(alert), false, "2 counting acks stop the ladder");
+});
+
 test("shouldEscalate: only live delivered/acked alerts below threshold", () => {
   const mk = (state, acks) => {
     const a = createAlert({ contactsCount: 2 });
