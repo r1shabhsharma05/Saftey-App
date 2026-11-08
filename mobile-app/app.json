@@ -18,7 +18,8 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.rishabh.safelifeai"
+      "package": "com.rishabh.safelifeai",
+      "allowBackup": false
     },
     "web": {
       "output": "static",
@@ -56,7 +57,8 @@
         {
           "contactsPermission": "SafeLife lets you pick emergency contacts to receive your SOS location."
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,

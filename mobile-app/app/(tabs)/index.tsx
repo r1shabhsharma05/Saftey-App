@@ -24,6 +24,7 @@ import { getBackendUrl } from '../../utils/backendUrl';
 import { Theme } from '../../constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
+import { secureGetItem, secureSetItem, secureRemoveItem } from '../../utils/secureStorage';
 import AlertActiveView from '../../components/AlertActiveView';
 import { rankSafePlaces, calculateBearing, calculateDistance, getCardinalDirection, withSafety, isValidSafety, scoreRouteLocal, combineRouteSafety, sanitizePhone } from '../../utils/escapeLogic';
 import type { SafePlace, SafetyScore } from '../../utils/escapeLogic';
@@ -304,7 +305,7 @@ export default function TacticalDashboard() {
     });
     // Seed the queued pill from storage: a queued SOS must stay
     // visible across restarts until it is delivered or expires.
-    AsyncStorage.getItem('pendingSOS')
+    secureGetItem('pendingSOS')
       .then((raw) => setQueuedSOS(!!raw))
       .catch(() => {});
 
@@ -312,7 +313,7 @@ export default function TacticalDashboard() {
     // server is the source of truth: a journey the server reports
     // finished (or unknown) clears the stored id instead of showing
     // a trip that is over.
-    AsyncStorage.getItem(JOURNEY_STORAGE_KEY)
+    secureGetItem(JOURNEY_STORAGE_KEY)
       .then(async (raw) => {
         try {
           const stored = raw ? JSON.parse(raw) : null;
@@ -322,7 +323,7 @@ export default function TacticalDashboard() {
             setJourney(live);
             setJourneyViewUrl(typeof stored.viewUrl === 'string' ? stored.viewUrl : null);
           } else {
-            await AsyncStorage.removeItem(JOURNEY_STORAGE_KEY).catch(() => {});
+            await secureRemoveItem(JOURNEY_STORAGE_KEY).catch(() => {});
           }
         } catch {
           /* restore is best-effort */
@@ -876,7 +877,7 @@ export default function TacticalDashboard() {
       setJourney(result.journey);
       setJourneyViewUrl(result.viewUrl);
       setJourneyDistanceM(calculateDistance(parseFloat(lat), parseFloat(lng), place.lat, place.lng));
-      await AsyncStorage.setItem(
+      await secureSetItem(
         JOURNEY_STORAGE_KEY,
         JSON.stringify({ id: result.journey.id, viewUrl: result.viewUrl })
       ).catch(() => {});
@@ -917,7 +918,7 @@ export default function TacticalDashboard() {
       setJourneyViewUrl(null);
       setJourneyDistanceM(null);
       lastJourneyTrackRef.current = null;
-      await AsyncStorage.removeItem(JOURNEY_STORAGE_KEY).catch(() => {});
+      await secureRemoveItem(JOURNEY_STORAGE_KEY).catch(() => {});
       showBanner(
         'success',
         action === 'arrived' ? 'Journey complete — you arrived safely.' : 'Journey cancelled.'
@@ -942,7 +943,7 @@ export default function TacticalDashboard() {
         setJourneyViewUrl(null);
         setJourneyDistanceM(null);
         lastJourneyTrackRef.current = null;
-        await AsyncStorage.removeItem(JOURNEY_STORAGE_KEY).catch(() => {});
+        await secureRemoveItem(JOURNEY_STORAGE_KEY).catch(() => {});
         showBanner('success', 'Your journey ended.');
         return;
       }
@@ -1067,7 +1068,7 @@ export default function TacticalDashboard() {
     if (flushInFlightRef.current) return;
     flushInFlightRef.current = true;
     try {
-      const raw = await AsyncStorage.getItem('pendingSOS');
+      const raw = await secureGetItem('pendingSOS');
       if (!raw) {
         setQueuedSOS(false);
         return;
@@ -1076,13 +1077,13 @@ export default function TacticalDashboard() {
       // A queued alert older than a day is history, not an emergency —
       // drop it instead of retrying it on every foreground forever.
       if (!parsed || Date.now() - (parsed.queuedAt || 0) > 24 * 60 * 60 * 1000) {
-        await AsyncStorage.removeItem('pendingSOS');
+        await secureRemoveItem('pendingSOS');
         setQueuedSOS(false);
         return;
       }
       if (!force && Date.now() < (parsed.nextRetryAt || 0)) return;
       if (!parsed.payload) {
-        await AsyncStorage.removeItem('pendingSOS');
+        await secureRemoveItem('pendingSOS');
         setQueuedSOS(false);
         return;
       }
@@ -1091,14 +1092,14 @@ export default function TacticalDashboard() {
         // Still never reached the server: keep it queued, back off.
         const attempts = (parsed.attempts || 0) + 1;
         const delay = QUEUE_BACKOFF_MS[Math.min(attempts - 1, QUEUE_BACKOFF_MS.length - 1)];
-        await AsyncStorage.setItem(
+        await secureSetItem(
           'pendingSOS',
           JSON.stringify({ ...parsed, attempts, nextRetryAt: Date.now() + delay })
         ).catch(() => {});
         setQueuedSOS(true);
         return;
       }
-      await AsyncStorage.removeItem('pendingSOS');
+      await secureRemoveItem('pendingSOS');
       setQueuedSOS(false);
       if (result.alertId) {
         setActiveAlertId(result.alertId);
@@ -1181,7 +1182,7 @@ export default function TacticalDashboard() {
         // D11: a new alert gets a fresh final-burst allowance.
         finalBurstSentRef.current = null;
         setBatteryFinalStatus(null);
-        await AsyncStorage.removeItem('pendingSOS').catch(() => {});
+        await secureRemoveItem('pendingSOS').catch(() => {});
         setQueuedSOS(false);
         if (!result.success) {
           // Success needs no dialog: the screen switches to the ALERT
@@ -1202,7 +1203,7 @@ export default function TacticalDashboard() {
         // returns, with backoff; tell the user honestly, with an SMS
         // escape hatch that works with zero data connection.
         const queued: QueuedSOS = { payload, queuedAt: Date.now(), attempts: 0, nextRetryAt: Date.now() };
-        await AsyncStorage.setItem('pendingSOS', JSON.stringify(queued)).catch(() => {});
+        await secureSetItem('pendingSOS', JSON.stringify(queued)).catch(() => {});
         setQueuedSOS(true);
         setStatus('SAFE');
         showBanner(

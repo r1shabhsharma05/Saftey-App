@@ -1,38 +1,14 @@
 import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, Platform } from 'react-native';
+import { secureGetItem, secureSetItem, secureRemoveItem } from './secureStorage';
 
-// Custom storage adapter for SSR safety (Expo Web)
-const customStorage = {
-  getItem: async (key: string) => {
-    if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined') {
-        return localStorage.getItem(key);
-      }
-      return null;
-    }
-    return AsyncStorage.getItem(key);
-  },
-  setItem: async (key: string, value: string) => {
-    if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(key, value);
-      }
-    } else {
-      await AsyncStorage.setItem(key, value);
-    }
-  },
-  removeItem: async (key: string) => {
-    if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem(key);
-      }
-    } else {
-      await AsyncStorage.removeItem(key);
-    }
-  },
-};
+// (M2) The session lives in the OS keychain/keystore via
+// expo-secure-store, not plaintext AsyncStorage: the stored tokens
+// are what an attacker needs to impersonate the user. Web has no
+// keychain, so it keeps AsyncStorage (same exposure as before). A
+// pre-M2 session still in AsyncStorage is migrated once on first
+// read (see secureStorage.ts) — no user is logged out by the move.
 
 // 🚀 SUPABASE CONFIGURATION
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://xkfrsjtfbylhhrvibmxk.supabase.co';
@@ -40,7 +16,7 @@ const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOi
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: customStorage as any,
+    storage: { getItem: secureGetItem, setItem: secureSetItem, removeItem: secureRemoveItem },
     autoRefreshToken: true,
     persistSession: true,
     // Web needs this so OAuth / magic-link redirects restore the session.

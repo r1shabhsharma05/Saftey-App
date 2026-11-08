@@ -194,9 +194,14 @@ export default function EmergencyContactsScreen() {
         })
         .map((r: any) => r.id);
       if (toDeleteIds.length > 0) {
+        // (NV6) Scope the delete to this user's rows: the id list is
+        // built from rows the user could see, but the delete itself
+        // must not trust that — a stale or tampered id must not remove
+        // another user's contact.
         const { error: deleteError } = await supabase
           .from('emergency_contacts')
           .delete()
+          .eq('user_id', userId)
           .in('id', toDeleteIds);
         if (deleteError) throw deleteError;
       }

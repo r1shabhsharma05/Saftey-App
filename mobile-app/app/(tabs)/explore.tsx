@@ -23,11 +23,16 @@ import { MAX_AVATAR_BYTES, detectImageMime } from '../../utils/mediaValidation';
 // short-lived signed URL, minted on every profile load / photo change.
 // Legacy rows stored a full public URL — the path is extracted from those.
 const AVATAR_SIGN_TTL_SECONDS = 3600;
-const resolveAvatarDisplayUrl = async (stored: string | null): Promise<string | null> => {
-  if (!stored) return null;
+const resolveAvatarDisplayUrl = async (stored: string | null, uid: string | null): Promise<string | null> => {
+  if (!stored || !uid) return null;
   const match = stored.match(/avatars\/(.+?)(\?|$)/);
   const path = stored.startsWith('http') ? (match ? match[1] : null) : stored;
   if (!path) return null;
+  // (NV4) The path's first segment must be the caller's own uid:
+  // profiles.avatar_url is client-writable, so without this check a
+  // row pointing at another user's "<uid>/avatar.jpg" would mint a
+  // signed URL for someone else's private photo.
+  if (path.split('/')[0] !== uid) return null;
   const { data, error } = await supabase.storage
     .from('avatars')
     .createSignedUrl(path, AVATAR_SIGN_TTL_SECONDS);
@@ -68,7 +73,7 @@ export default function PremiumProfileScreen() {
       if (error) throw error;
       setProfile(data);
       setLoadError(null);
-      setAvatarDisplayUrl(await resolveAvatarDisplayUrl(data?.avatar_url));
+      setAvatarDisplayUrl(await resolveAvatarDisplayUrl(data?.avatar_url, user.id));
     } catch (error: any) {
       console.error('Profile fetch error:', error);
       // A failed load used to render as a fake EMPTY profile (blank
@@ -148,7 +153,7 @@ export default function PremiumProfileScreen() {
       }
 
       setProfile((prev: any) => (prev ? { ...prev, avatar_url: path } : prev));
-      setAvatarDisplayUrl(await resolveAvatarDisplayUrl(path));
+      setAvatarDisplayUrl(await resolveAvatarDisplayUrl(path, userId));
       showAppDialog('Photo updated', 'Your profile photo has been changed.');
     } catch (err: any) {
       console.error('Change photo error:', err);
