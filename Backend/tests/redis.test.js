@@ -119,6 +119,21 @@ test("upstash store fails open when Upstash is down", async () => {
   }
 });
 
+test("upstash store: namespaces isolate limiter counters", async () => {
+  // (NV1) Two limiters keyed on the same IP must not share a counter:
+  // without namespaces a /safe-places burst would spend the tracking
+  // allowance. The bare store keeps the SOS keys unchanged.
+  const tracking = createUpstashStore("tracking");
+  const safePlaces = createUpstashStore("safe-places");
+  tracking.init({ windowMs: 60 * 1000, limit: 60 });
+  safePlaces.init({ windowMs: 60 * 1000, limit: 30 });
+  const before = calls.length;
+  await tracking.increment("1.2.3.4");
+  await safePlaces.increment("1.2.3.4");
+  const incrKeys = calls.slice(before).filter((c) => c[0] === "incr").map((c) => c[1]);
+  assert.deepEqual(incrKeys, ["rl:tracking:1.2.3.4", "rl:safe-places:1.2.3.4"]);
+});
+
 test("unconfigured primitives degrade to null/false, never throw", async () => {
   delete process.env.UPSTASH_REDIS_REST_URL;
   delete process.env.UPSTASH_REDIS_REST_TOKEN;

@@ -160,9 +160,16 @@ const checkRateLimit = async (key, limit, windowSec) => {
 // (rl:) so limiter buckets never collide with cache/GEO keys.
 // decrement/resetKey exist because the Store interface offers them;
 // the request path never calls them (no skip* options are enabled).
-const createUpstashStore = () => {
+const createUpstashStore = (namespace) => {
   let limit = 0;
   let windowMs = 0;
+  // (NV1) A namespace isolates one limiter's counters inside the shared
+  // Upstash backend. express-rate-limit keys every limiter on req.ip,
+  // so two limiters sharing the bare `rl:<ip>` counter would spend each
+  // other's budget (a /safe-places burst would eat the tracking
+  // allowance). The SOS store keeps the bare namespace — its keys are
+  // unchanged — only the other limiters pass one.
+  const prefix = namespace ? `rl:${namespace}:` : "rl:";
   return {
     init(options) {
       limit = options.limit;
@@ -174,7 +181,7 @@ const createUpstashStore = () => {
       // any limit). The outage is logged, not hidden.
       try {
         if (!limit || !windowMs) return { totalHits: 0, resetTime: new Date() };
-        const verdict = await checkRateLimit(`rl:${key}`, limit, Math.ceil(windowMs / 1000));
+        const verdict = await checkRateLimit(`${prefix}${key}`, limit, Math.ceil(windowMs / 1000));
         if (!verdict) return { totalHits: 0, resetTime: new Date(Date.now() + windowMs) };
         // resetTime is header-only precision: the true reset is the Redis
         // TTL set on the window's first hit, which the library never
@@ -187,14 +194,14 @@ const createUpstashStore = () => {
     },
     async decrement(key) {
       try {
-        await transport("decr", `rl:${key}`);
+        await transport("decr", `${prefix}${key}`);
       } catch {
         // Best-effort only; a missed decrement just leaves headroom.
       }
     },
     async resetKey(key) {
       try {
-        await transport("del", `rl:${key}`);
+        await transport("del", `${prefix}${key}`);
       } catch {
         // Best-effort only.
       }

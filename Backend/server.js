@@ -28,6 +28,16 @@ app.use(express.urlencoded({ extended: false, limit: "32kb" }));
 // 🌐 Trust the first proxy hop (Vercel's edge / local reverse proxies) so
 // req.ip — and therefore rate limiting — sees the real client IP. Without
 // this, every user shares one rate-limit bucket.
+// (NV3, verified 2026-11-08) `trust proxy 1` is safe against XFF
+// spoofing here for two independent reasons: (1) Vercel OVERWRITES the
+// X-Forwarded-For header and does not forward external IPs
+// (vercel.com/docs/headers/request-headers — "to prevent IP spoofing"),
+// so the function only ever sees a single-entry XFF holding the real
+// client IP; (2) Express's proxy-addr counts from the RIGHT, so even
+// if the edge appended instead, trust proxy 1 would still return the
+// rightmost (edge-written) entry — proven by a local probe
+// (spoofed,real -> real; three entries -> rightmost). Do NOT raise
+// this number without re-checking both halves.
 app.set("trust proxy", 1);
 
 // 🔒 CORS — allowlisted origins only (see middleware/cors.js). With

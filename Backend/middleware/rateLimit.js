@@ -16,6 +16,14 @@
 // Upstash env is set, the SOS bucket is shared across all instances;
 // without it, the memory store applies exactly as before.
 //
+// (NV1) Every bucket now uses the Upstash store when it is configured
+// (SOS first in D2, the rest here): the per-instance memory store let
+// a flood spread across cold starts dodge every limit. Each limiter
+// gets its own namespace inside the shared backend — without that,
+// express-rate-limit's shared req.ip key would merge the counters and
+// one bucket's burst would spend another's budget. Without Upstash
+// env, the memory store applies exactly as before.
+//
 // IMPORTANT: server.js sets `trust proxy` (1 hop) so req.ip is the real
 // client IP behind Vercel's edge. Without it every request would share a
 // single bucket and one bad actor could lock out all users.
@@ -41,6 +49,13 @@ const baseOptions = {
   handler: jsonHandler,
 };
 
+// One line per limiter: Upstash-backed when configured, memory
+// otherwise. The namespace keeps each bucket's counters separate in
+// the shared backend (see createUpstashStore); the SOS bucket keeps
+// the bare namespace, so its existing keys are unchanged.
+const upstashStore = (namespace) =>
+  redisStatus().configured ? { store: createUpstashStore(namespace) } : {};
+
 // 🚨 SOS alerts: each hit spams the user's Telegram contacts, so a cap
 // must exist — but 5/15min was an emergency hazard: Indian carriers put
 // many subscribers behind one NAT egress IP (trust proxy keys the bucket
@@ -52,7 +67,7 @@ const sosLimiter = rateLimit({
   ...baseOptions,
   windowMs: 15 * 60 * 1000,
   limit: 30,
-  ...(redisStatus().configured ? { store: createUpstashStore() } : {}),
+  ...upstashStore(),
 });
 
 // 📡 Live location updates: no client sends these yet, but live tracking
@@ -62,6 +77,7 @@ const trackingLimiter = rateLimit({
   ...baseOptions,
   windowMs: 60 * 1000,
   limit: 60,
+  ...upstashStore("tracking"),
 });
 
 // 🧪 Test alerts: debugging only — 10/hour is plenty.
@@ -69,6 +85,7 @@ const testLimiter = rateLimit({
   ...baseOptions,
   windowMs: 60 * 60 * 1000,
   limit: 10,
+  ...upstashStore("test"),
 });
 
 // 🛡️ Safe-places proxy: the only unauthenticated route that fans out to
@@ -82,6 +99,7 @@ const safePlacesLimiter = rateLimit({
   ...baseOptions,
   windowMs: 60 * 1000,
   limit: 30,
+  ...upstashStore("safe-places"),
 });
 
 // 🗺️ Walking-route proxy (D14): same class as /safe-places —
@@ -93,6 +111,7 @@ const routeLimiter = rateLimit({
   ...baseOptions,
   windowMs: 60 * 1000,
   limit: 30,
+  ...upstashStore("route"),
 });
 
 // 🏠 System pages (/ and /health): unauthenticated but trivially cheap
@@ -102,6 +121,7 @@ const systemLimiter = rateLimit({
   ...baseOptions,
   windowMs: 60 * 1000,
   limit: 120,
+  ...upstashStore("system"),
 });
 
 module.exports = { sosLimiter, trackingLimiter, testLimiter, safePlacesLimiter, routeLimiter, systemLimiter };
