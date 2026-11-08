@@ -3,7 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { createAlert, transition } = require("../services/alertLifecycle");
-const { save, get, toPublic, _clearMemory } = require("../services/alertStore");
+const { save, get, toPublic, _clearMemory, _size, _has } = require("../services/alertStore");
 const { _setDbTransport } = require("../services/supabaseDb");
 
 const OLD_URL = process.env.SUPABASE_URL;
@@ -106,6 +106,37 @@ test("toPublic carries the live position once set", async () => {
     assert.equal(pub.lat, 28.6139);
     assert.equal(pub.lng, 77.209);
     assert.equal(pub.locationAt, alert.createdAt);
+  } finally {
+    if (OLD_URL !== undefined) process.env.SUPABASE_URL = OLD_URL;
+    if (OLD_KEY !== undefined) process.env.SUPABASE_SERVICE_ROLE_KEY = OLD_KEY;
+  }
+});
+
+test("save: caps memory at 500 alerts, evicting the oldest finished first (M1)", () => {
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  try {
+    _clearMemory();
+    const closed = createAlert({ contactsCount: 0 });
+    transition(closed, "dispatching");
+    transition(closed, "delivered");
+    transition(closed, "acked");
+    transition(closed, "closed");
+    save(closed);
+    const firstLive = createAlert({ contactsCount: 0 });
+    transition(firstLive, "dispatching");
+    transition(firstLive, "delivered");
+    save(firstLive);
+    // 2 + 499 = 501 → one eviction: the closed alert goes first.
+    for (let i = 0; i < 499; i++) save(createAlert({ contactsCount: 0 }));
+    assert.equal(_size(), 500);
+    assert.equal(_has(closed.id), false);
+    assert.equal(_has(firstLive.id), true);
+    // One more: no finished alert left, so the oldest live one goes —
+    // the cap holds, and an SOS is never refused for capacity.
+    save(createAlert({ contactsCount: 0 }));
+    assert.equal(_size(), 500);
+    assert.equal(_has(firstLive.id), false);
   } finally {
     if (OLD_URL !== undefined) process.env.SUPABASE_URL = OLD_URL;
     if (OLD_KEY !== undefined) process.env.SUPABASE_SERVICE_ROLE_KEY = OLD_KEY;

@@ -71,7 +71,11 @@ router.post("/journeys", trackingLimiter, requireApiKey, async (req, res) => {
   } catch (err) {
     return res.status(400).json({ success: false, error: err.message });
   }
-  journeyStore.save(journey);
+  // M7: a full store of live trips refuses the create (503) instead
+  // of evicting a stranger's live journey — the traveller retries.
+  if (journeyStore.save(journey) === false) {
+    return res.status(503).json({ success: false, error: "Journey store is full of live trips — please try again shortly" });
+  }
   audit("journey.created", {
     actorKey: req.header("x-api-key"),
     ip: req.ip,

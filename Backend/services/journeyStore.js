@@ -13,8 +13,11 @@
 // (500 journeys). A journey create is a cheap unauthenticated-shape
 // write behind a 60/min bucket, and an unbounded Map on a serverless
 // instance is a memory DoS; eviction takes the oldest finished
-// journey first (its trip is over — nobody is watching it), and only
-// then the oldest active one.
+// journey (its trip is over — nobody is watching it). A live journey
+// is NEVER evicted (M7): dropping one would strand a trip whose
+// contacts are watching it. When the store is full of live journeys,
+// save() refuses (returns false) and the create route answers 503 —
+// the traveller retries, instead of a stranger's trip disappearing.
 //
 // Row shape (see supabase/migrations/20261108080000_journeys.sql):
 // id, state, user_name, origin_lat/lng, dest_lat/lng,
@@ -59,28 +62,19 @@ const fromRow = (row) => ({
   locationAt: row.location_at ?? null,
 });
 
-const evictIfNeeded = () => {
-  while (memory.size > MAX_JOURNEYS) {
-    // Oldest finished journey first; if every journey is still
-    // active, the oldest active one goes — the cap must hold either
-    // way, and an active journey evicted from one instance is still
-    // in Postgres (when configured) for the next read.
-    let victim = null;
-    for (const j of memory.values()) {
-      if (j.state !== "active" && (!victim || j.createdAt < victim.createdAt)) victim = j;
-    }
-    if (!victim) {
-      for (const j of memory.values()) {
-        if (!victim || j.createdAt < victim.createdAt) victim = j;
-      }
-    }
-    memory.delete(victim.id);
-  }
-};
-
 const save = (journey) => {
+  if (!memory.has(journey.id) && memory.size >= MAX_JOURNEYS) {
+    // New journey needs a slot: evict finished ones (oldest first).
+    // If every journey is live there is no safe victim — refuse
+    // (false) instead of stranding a live trip. The caller answers
+    // 503; the traveller retries.
+    for (const j of [...memory.values()]) {
+      if (memory.size < MAX_JOURNEYS) break;
+      if (j.state !== "active") memory.delete(j.id);
+    }
+    if (memory.size >= MAX_JOURNEYS) return false;
+  }
   memory.set(journey.id, journey);
-  evictIfNeeded();
   // Fire-and-forget by design: returns the promise so tests can await
   // it, but callers on the request path must not await it.
   if (dbStatus().configured) return dbUpsert("journeys", toRow(journey));

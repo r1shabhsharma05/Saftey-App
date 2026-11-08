@@ -12,6 +12,8 @@
 // id, state, sent, failed, contacts_count, created_at, updated_at.
 const { dbStatus, dbUpsert, dbSelectOne } = require("./supabaseDb");
 
+const MAX_ALERTS = 500;
+
 const memory = new Map();
 
 const toRow = (alert) => ({
@@ -95,7 +97,31 @@ const toPublic = (alert) => ({
   locationAt: alert.locationAt ?? null,
 });
 
+const evictIfNeeded = () => {
+  // Bounded memory (M1): an unbounded Map on a serverless instance is
+  // a memory DoS behind the SOS bucket. The oldest FINISHED alert goes
+  // first — closed, or failed with no retry queued (its emergency is
+  // over). Only when every alert is live does the oldest live one go:
+  // an SOS must never be refused for capacity, so the cap holds even
+  // at the cost of the oldest live alert's escalation/retry. An alert
+  // evicted from one instance is still in Postgres (when configured)
+  // for the next read.
+  while (memory.size >= MAX_ALERTS) {
+    let victim = null;
+    for (const a of memory.values()) {
+      if (a.state === "closed" || (a.state === "failed" && !(a.retry && a.retry.queued))) {
+        victim = a;
+        break;
+      }
+    }
+    if (!victim) victim = memory.values().next().value;
+    if (!victim) return;
+    memory.delete(victim.id);
+  }
+};
+
 const save = (alert) => {
+  if (!memory.has(alert.id)) evictIfNeeded();
   memory.set(alert.id, alert);
   // Fire-and-forget by design: returns the promise so tests can await
   // it, but callers on the request path must not await it.
@@ -114,6 +140,9 @@ module.exports = {
   save,
   get,
   toPublic,
-  // Test seam only.
+  MAX_ALERTS,
+  // Test seams only.
   _clearMemory: () => memory.clear(),
+  _size: () => memory.size,
+  _has: (id) => memory.has(id),
 };

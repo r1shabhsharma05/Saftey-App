@@ -215,3 +215,24 @@ test("GET /journey/:id/location: token-gated JSON twin of the view page", async 
   assert.equal(data.lat, 28.6139);
   assert.equal(data.overdue, false);
 });
+
+test("POST /journeys (M7): full store of live trips → 503, no live trip evicted", async () => {
+  const { createJourney } = require("../services/journey");
+  const inMinutes = (m) => new Date(Date.now() + m * 60 * 1000).toISOString();
+  const first = createJourney({
+    originLat: 28.6139, originLng: 77.209, destLat: 28.62, destLng: 77.215,
+    destinationLabel: "First live", expectedArrivalAt: inMinutes(25), userName: "Rishabh Sharma",
+  });
+  journeyStore.save(first);
+  for (let i = 0; i < 499; i++) {
+    journeyStore.save(createJourney({
+      originLat: 28.6139, originLng: 77.209, destLat: 28.62, destLng: 77.215,
+      destinationLabel: `J${i}`, expectedArrivalAt: inMinutes(25), userName: "Rishabh Sharma",
+    }));
+  }
+  assert.equal(journeyStore._size(), 500);
+  const res = await post("/journeys", createBody());
+  assert.equal(res.status, 503);
+  assert.equal(journeyStore._size(), 500);
+  assert.equal(journeyStore._has(first.id), true, "no live trip was evicted to make room");
+});

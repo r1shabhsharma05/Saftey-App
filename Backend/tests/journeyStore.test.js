@@ -4,7 +4,8 @@
 // fire-and-forget. One deliberate difference: the store is BOUNDED
 // (500 journeys) — an unauthenticated create loop must not grow
 // server memory without limit; the oldest finished journey is
-// evicted first, and only then the oldest active one.
+// evicted first, and a live journey is NEVER evicted (M7) — when
+// the store is full of live journeys, save() refuses instead.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
@@ -119,11 +120,20 @@ test("save: caps memory at 500 journeys, evicting the oldest finished first", ()
   assert.equal(journeyStore._size(), 500);
   assert.equal(journeyStore._has(finished.id), false);
   assert.equal(journeyStore._has(firstActive.id), true);
-  // One more active journey: no finished journey is left to evict,
-  // so the oldest active one goes — the cap holds either way.
-  journeyStore.save(makeJourney("One more"));
+  // One more active journey: no finished journey is left to evict, so
+  // the save is REFUSED (M7) instead of stranding a live trip — the
+  // oldest active journey stays, and the new one is not stored.
+  const refused = makeJourney("One more");
+  assert.equal(journeyStore.save(refused), false);
   assert.equal(journeyStore._size(), 500);
-  assert.equal(journeyStore._has(firstActive.id), false);
+  assert.equal(journeyStore._has(firstActive.id), true);
+  assert.equal(journeyStore._has(refused.id), false);
+  // ...but once a journey finishes, its slot frees up for the next create.
+  transition(firstActive, "arrived");
+  journeyStore.save(firstActive);
+  assert.equal(journeyStore.save(makeJourney("After a finish")), undefined);
+  assert.equal(journeyStore._size(), 500);
+  assert.equal(journeyStore._has(firstActive.id), false, "the finished journey was evicted to make room");
 });
 
 test("toPublic: the store's public shape matches the service shape", () => {
