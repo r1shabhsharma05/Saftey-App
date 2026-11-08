@@ -16,10 +16,10 @@
 //
 // The HTTP legs run the REAL Express app with every external dependency
 // unconfigured and the fail-closed premises pinned (no CORS allowlist,
-// test-alert off, API_SECRET set): /health must tell the unconfigured
-// truth without leaking the secret, the debug route must stay 404, and
-// the escalation callback must re-fire only the failed channels when
-// every channel is down.
+// test-alert off, API_SECRET set): /health must answer up/down only,
+// without disclosing any config or leaking the secret, the debug route
+// must stay 404, and the escalation callback must re-fire only the
+// failed channels when every channel is down.
 //
 // Env is pinned BEFORE requiring the app, as in the simulation suite:
 // adapters read config at module load and limiters pick their store
@@ -176,19 +176,15 @@ test("escalation narrowing: delivered channels are never re-fired", async () => 
 
 // --- HTTP: the deployed shape under chaos -------------------------------
 
-test("health: unconfigured truth, no secret leak, no route map", async () => {
+test("health: up/down only — no config disclosure, no secret leak, no route map", async () => {
   const res = await fetch(`${base}/health`);
   assert.equal(res.status, 200);
   const body = await res.json();
+  assert.deepEqual(Object.keys(body).sort(), ["status", "time"]);
   assert.equal(body.status, "OK");
-  for (const channel of ["telegram", "sms", "whatsapp", "push", "voice"]) {
-    assert.equal(body.config[channel].configured, false, `${channel} must report unconfigured`);
-  }
-  assert.equal(body.config.apiKeyEnforced, true);
-  assert.equal(body.config.upstash.configured, false);
-  assert.equal(body.config.qstash.configured, false);
-  assert.equal(body.config.supabase.configured, false);
   assert.ok(!JSON.stringify(body).includes(KEY), "the secret must never appear in /health");
+  assert.ok(!("config" in body), "no channel/config state is disclosed");
+  assert.ok(!("safePlacesCache" in body), "no cache state is disclosed");
 
   const root = await fetch(`${base}/`);
   assert.equal(root.status, 200);

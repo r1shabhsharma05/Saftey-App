@@ -25,7 +25,22 @@ router.get("/safe-places", safePlacesLimiter, async (req, res) => {
     // openNow=1 drops only definitively-closed places (unknown hours
     // stay); the default response is unchanged, elements annotated.
     const openNow = req.query.openNow === "1" || req.query.openNow === "true";
-    const { data, source } = await lookupSafePlaces(lat, lng, { openNow });
+    // M4: the caller may pass its IANA timezone (?tz=Asia/Kolkata)
+    // so openNow is judged in the place's local time, not the
+    // server's. Validated: an unknown zone is ignored (openNow stays
+    // unknown) rather than failing the lookup — a lookup with unknown
+    // hours beats a failed lookup.
+    let timeZone;
+    const tz = req.query.tz;
+    if (typeof tz === "string" && tz.length > 0 && tz.length <= 64) {
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: tz });
+        timeZone = tz;
+      } catch {
+        timeZone = undefined;
+      }
+    }
+    const { data, source } = await lookupSafePlaces(lat, lng, { openNow, timeZone });
     // Cache tier is header-only: the body keeps Overpass's shape
     // ({ elements: [...] }) so the app's existing parser works unchanged.
     res.set("X-SafePlaces-Cache", source);

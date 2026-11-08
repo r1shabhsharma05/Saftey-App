@@ -19,6 +19,7 @@ const {
 
 // Minimal in-memory Upstash: enough semantics for the primitives' tests.
 const kv = new Map();
+const ttls = new Map();
 const geo = new Map();
 const calls = [];
 const fakeTransport = async (command, ...args) => {
@@ -35,8 +36,15 @@ const fakeTransport = async (command, ...args) => {
       return next;
     }
     case "expire":
-    case "del":
+      ttls.set(args[0], args[1]);
       return 1;
+    case "del":
+      kv.delete(args[0]);
+      ttls.delete(args[0]);
+      return 1;
+    case "ttl":
+      if (!kv.has(args[0])) return -2;
+      return ttls.has(args[0]) ? ttls.get(args[0]) : -1;
     case "geoadd": {
       if (!geo.has(args[0])) geo.set(args[0], []);
       geo.get(args[0]).push(args[3]);
@@ -124,4 +132,51 @@ test("unconfigured primitives degrade to null/false, never throw", async () => {
     process.env.UPSTASH_REDIS_REST_URL = "https://fake.upstash.io";
     process.env.UPSTASH_REDIS_REST_TOKEN = "fake-token";
   }
+});
+
+test("checkRateLimit (L2): a transient EXPIRE failure is retried once, then the TTL holds", async () => {
+  let expires = 0;
+  _setRedisTransport(async (command, ...args) => {
+    if (command === "incr") return 1;
+    if (command === "expire") {
+      expires += 1;
+      if (expires === 1) throw new Error("transient");
+      return 1;
+    }
+    if (command === "ttl") return 60;
+    throw new Error(`unexpected ${command}`);
+  });
+  try {
+    assert.deepEqual(await checkRateLimit("retry-key", 2, 60), { allowed: true, count: 1 });
+    assert.equal(expires, 2, "EXPIRE was retried once");
+  } finally {
+    _setRedisTransport(fakeTransport);
+  }
+});
+
+test("checkRateLimit (L2): EXPIRE failing twice falls back to DEL and fails open", async () => {
+  _setRedisTransport(async (command, ...args) => {
+    if (command === "incr") return 1;
+    if (command === "expire") throw new Error("expire down");
+    if (command === "del") return 1;
+    throw new Error(`unexpected ${command}`);
+  });
+  try {
+    assert.equal(await checkRateLimit("del-key", 2, 60), null);
+  } finally {
+    _setRedisTransport(fakeTransport);
+  }
+});
+
+test("checkRateLimit (L2): a TTL-less key self-heals on the next hit", async () => {
+  // Seed a wedged key: count 5, no TTL (as if an earlier EXPIRE+DEL
+  // both failed). The next hit must notice ttl === -1 and set one.
+  kv.set("heal-key", "5");
+  ttls.delete("heal-key");
+  const before = calls.length;
+  const verdict = await checkRateLimit("heal-key", 10, 60);
+  assert.deepEqual(verdict, { allowed: true, count: 6 });
+  const expires = calls.slice(before).filter((c) => c[0] === "expire" && c[1] === "heal-key");
+  assert.equal(expires.length, 1);
+  assert.equal(ttls.get("heal-key"), 60);
 });

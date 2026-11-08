@@ -95,4 +95,13 @@ const routeLimiter = rateLimit({
   limit: 30,
 });
 
-module.exports = { sosLimiter, trackingLimiter, testLimiter, safePlacesLimiter, routeLimiter };
+// 🏠 System pages (/ and /health): unauthenticated but trivially cheap
+// (no upstream calls, no auth). 120/min per IP is generous for uptime
+// monitors while still bounding a flood.
+const systemLimiter = rateLimit({
+  ...baseOptions,
+  windowMs: 60 * 1000,
+  limit: 120,
+});
+
+module.exports = { sosLimiter, trackingLimiter, testLimiter, safePlacesLimiter, routeLimiter, systemLimiter };

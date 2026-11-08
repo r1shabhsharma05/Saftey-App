@@ -112,6 +112,11 @@ const geoSearch = async (key, lng, lat, radiusKm) => {
 // Fixed-window counter. INCR is atomic, so only the caller that sees 1
 // sets the TTL — the window is exact. If setting the TTL fails, the
 // key is deleted instead of left to wedge the bucket full forever.
+// (L2) Two self-heals: the EXPIRE is retried once before the DEL
+// fallback, and a key that survived without a TTL (an earlier
+// EXPIRE+DEL both failing) is caught by a TTL probe on later hits —
+// ttl === -1 means "no expiry", so the window is set now instead of
+// letting the bucket fill once and block forever.
 const checkRateLimit = async (key, limit, windowSec) => {
   if (!redisStatus().configured) return null;
   try {
@@ -120,8 +125,26 @@ const checkRateLimit = async (key, limit, windowSec) => {
       try {
         await transport("expire", key, windowSec);
       } catch {
-        await transport("del", key).catch(() => {});
-        return null;
+        try {
+          await transport("expire", key, windowSec);
+        } catch {
+          try {
+            await transport("del", key);
+          } catch (delErr) {
+            // LOUD: the key is now wedged with no TTL — the TTL probe
+            // below is the only thing standing between it and a
+            // permanently-full bucket.
+            console.log("❌ Upstash checkRateLimit: EXPIRE failed twice and DEL failed — key may be wedged without TTL:", key, delErr.message);
+          }
+          return null;
+        }
+      }
+    } else {
+      try {
+        const ttl = await transport("ttl", key);
+        if (ttl === -1) await transport("expire", key, windowSec);
+      } catch {
+        // Best-effort: a failed TTL probe must not fail the verdict.
       }
     }
     return { allowed: count <= limit, count };

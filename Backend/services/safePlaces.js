@@ -25,7 +25,23 @@ const { scorePlace, categoryFromTags } = require("./safetyScore");
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_TTL_SEC = 300;
+// (L3) A grid cell is ~100 m; 1000 cells is a generous working set for
+// one instance, and the Map must not grow without bound behind an
+// unauthenticated route. Insertion order is recency: a hit re-inserts
+// its entry, a set evicts the oldest first.
+// (L3) A stale cell is served for at most 1 h past its fetch — older
+// station data than that is worse than an honest 502.
+const MAX_CACHE_CELLS = 1000;
+const STALE_MAX_MS = 60 * 60 * 1000;
 const safePlacesCache = new Map();
+
+const setMemoryCell = (key, entry) => {
+  if (safePlacesCache.has(key)) safePlacesCache.delete(key);
+  safePlacesCache.set(key, entry);
+  while (safePlacesCache.size > MAX_CACHE_CELLS) {
+    safePlacesCache.delete(safePlacesCache.keys().next().value);
+  }
+};
 
 const upstashKey = (key) => `safe-places:${key}`;
 
@@ -70,12 +86,40 @@ const parseMinutes = (t) => {
 const inInterval = (t, start, end) =>
   end > start ? t >= start && t < end : t >= start || t < end;
 
-const isOpenNow = (openingHours, now = new Date()) => {
+// (M4) The place's local day/time, from an IANA zone. Without a zone
+// the verdict would be the SERVER's local time — a Mumbai server
+// answering for a Delhi user is right by luck, for a London user
+// wrong by hours. No zone (or an invalid one) → null (unknown, never
+// guessed): the place stays visible, it just carries no open verdict.
+const zonedDayMinutes = (now, timeZone) => {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      weekday: "short",
+      hour: "numeric",
+      minute: "numeric",
+      hour12: false,
+    }).formatToParts(now);
+    const get = (type) => parts.find((p) => p.type === type)?.value;
+    const day = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[get("weekday")];
+    let hour = Number(get("hour"));
+    if (hour === 24) hour = 0; // hour12:false can yield 24 at midnight
+    const mins = hour * 60 + Number(get("minute"));
+    if (day === undefined || !Number.isFinite(mins)) return null;
+    return { day, mins };
+  } catch {
+    return null; // invalid zone
+  }
+};
+
+const isOpenNow = (openingHours, now = new Date(), timeZone) => {
   if (!openingHours || typeof openingHours !== "string") return null;
   const cleaned = openingHours.replace(/"[^"]*"/g, "").trim();
   if (cleaned === "24/7") return true;
-  const day = now.getDay();
-  const mins = now.getHours() * 60 + now.getMinutes();
+  if (!timeZone) return null;
+  const zoned = zonedDayMinutes(now, timeZone);
+  if (!zoned) return null;
+  const { day, mins } = zoned;
   const prevDay = (day + 6) % 7;
   // A day can carry several rules ("Mo 09:00-12:00; Mo 13:00-18:00"):
   // open wins over closed across rules covering today, and an
@@ -141,7 +185,7 @@ const haversineKm = (lat1, lng1, lat2, lng2) => {
 // Annotate a fresh copy of the cached raw data — the cache itself stays
 // raw, so distance (exact query point, not grid cell) and openNow (now,
 // not fetch time) are recomputed per request.
-const annotate = (raw, lat, lng, now) => ({
+const annotate = (raw, lat, lng, now, timeZone) => ({
   ...raw,
   elements: (raw.elements || []).map((el) => {
     const elLat = el.lat !== undefined ? el.lat : el.center && el.center.lat;
@@ -150,7 +194,7 @@ const annotate = (raw, lat, lng, now) => ({
       elLat !== undefined && elLng !== undefined
         ? Math.round(haversineKm(lat, lng, elLat, elLng) * 100) / 100
         : null;
-    const openNow = isOpenNow(el.tags && el.tags.opening_hours, now);
+    const openNow = isOpenNow(el.tags && el.tags.opening_hours, now, timeZone);
     return {
       ...el,
       distanceKm,
@@ -168,10 +212,12 @@ const annotate = (raw, lat, lng, now) => ({
 
 const lookupSafePlaces = async (lat, lng, options = {}) => {
   const now = options.now || new Date();
+  const timeZone = options.timeZone;
   const key = `${lat.toFixed(3)},${lng.toFixed(3)}`;
   const hit = safePlacesCache.get(key);
   if (hit && Date.now() - hit.ts < CACHE_TTL_MS) {
-    const data = annotate(hit.data, lat, lng, now);
+    setMemoryCell(key, hit); // refresh recency (same ts, newest slot)
+    const data = annotate(hit.data, lat, lng, now, timeZone);
     return {
       data: options.openNow ? filterOpen(data) : data,
       cached: true,
@@ -181,8 +227,8 @@ const lookupSafePlaces = async (lat, lng, options = {}) => {
   // Shared tier: a sibling Vercel instance may already hold this cell.
   const shared = await cacheGet(upstashKey(key));
   if (shared && Array.isArray(shared.elements)) {
-    safePlacesCache.set(key, { ts: Date.now(), data: shared });
-    const data = annotate(shared, lat, lng, now);
+    setMemoryCell(key, { ts: Date.now(), data: shared });
+    const data = annotate(shared, lat, lng, now, timeZone);
     return {
       data: options.openNow ? filterOpen(data) : data,
       cached: true,
@@ -218,11 +264,11 @@ const lookupSafePlaces = async (lat, lng, options = {}) => {
   };
   try {
     const data = await Promise.any(mirrors.map(fetchMirror));
-    safePlacesCache.set(key, { ts: Date.now(), data });
+    setMemoryCell(key, { ts: Date.now(), data });
     // Best-effort share: a failed write degrades to memory-only, and
     // cacheSet itself never throws — this await cannot fail the lookup.
     await cacheSet(upstashKey(key), data, CACHE_TTL_SEC);
-    const annotated = annotate(data, lat, lng, now);
+    const annotated = annotate(data, lat, lng, now, timeZone);
     return {
       data: options.openNow ? filterOpen(annotated) : annotated,
       cached: false,
@@ -234,11 +280,14 @@ const lookupSafePlaces = async (lat, lng, options = {}) => {
         ? err.errors.map((e) => e && e.message).join(" | ")
         : err && err.message;
     console.log("❌ SAFE-PLACES ERROR:", msgs);
-    // Every mirror failed. If this grid cell was ever fetched
-    // successfully, serve the stale copy instead of an error — for a
-    // safety lookup, slightly old station data beats none.
-    if (hit) {
-      const data = annotate(hit.data, lat, lng, now);
+    // Every mirror failed. If this grid cell was fetched successfully
+    // recently, serve the stale copy instead of an error — for a
+    // safety lookup, slightly old station data beats none. But a cell
+    // older than an hour is worse than an honest 502: stations close,
+    // move, and renumber, and a stale pin can send someone to a
+    // shuttered door in an emergency.
+    if (hit && Date.now() - hit.ts < STALE_MAX_MS) {
+      const data = annotate(hit.data, lat, lng, now, timeZone);
       return {
         data: options.openNow ? filterOpen(data) : data,
         cached: true,
