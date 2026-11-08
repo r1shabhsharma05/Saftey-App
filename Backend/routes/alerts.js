@@ -363,6 +363,25 @@ router.post("/alert/:id/ack", trackingLimiter, ackAuth, async (req, res) => {
   res.json({ success: true, alertId: alert.id, state: alert.state, ackCount, acked: isNew });
 });
 
+// POST /alert/:id/close — end an alert from the responder side (API key
+// only). Only a delivered/acked alert can close; anything earlier is 409.
+// Closing is what makes the 24 h view-token expiry real before its time:
+// the view, location and ack routes all answer 410 for closed alerts, and
+// the escalation callbacks ignore closed alerts. There is no re-open.
+router.post("/alert/:id/close", trackingLimiter, requireApiKey, async (req, res) => {
+  const alert = await alertStore.get(req.params.id);
+  if (!alert) return res.status(404).json({ success: false, error: "Alert not found" });
+  if (alert.state !== "delivered" && alert.state !== "acked") {
+    return res
+      .status(409)
+      .json({ success: false, error: `Alert is ${alert.state}; only delivered/acked alerts can close` });
+  }
+  transition(alert, "closed");
+  alertStore.save(alert);
+  audit("alert.closed", { actorKey: req.header("x-api-key"), ip: req.ip, meta: { alertId: alert.id } });
+  return res.json({ success: true, alertId: alert.id, state: "closed" });
+});
+
 // 🪜 ESCALATION CALLBACK (QStash — D10)
 //
 // Auth is the HMAC token over (alertId, step) keyed by API_SECRET
