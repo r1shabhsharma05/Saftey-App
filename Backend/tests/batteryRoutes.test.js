@@ -114,10 +114,33 @@ test("battery-alert: final burst moves a live alert's stored position even when 
   assert.equal(stored.state, "delivered");
 });
 
-test("battery-alert: final burst with an unknown alert id still attempts fan-out, never crashes", async () => {
-  const res = await postBattery(
+test("battery-alert (M5): final needs a live alert — unknown id, missing id, failed alert → 400", async () => {
+  const unknown = await postBattery(
     { kind: "final", lat: 28.6139, lng: 77.209, battery: 5, alertId: "00000000-0000-0000-0000-000000000000" },
     KEY
   );
-  assert.equal(res.status, 502);
+  assert.equal(unknown.status, 400);
+  const missing = await postBattery(
+    { kind: "final", lat: 28.6139, lng: 77.209, battery: 5 },
+    KEY
+  );
+  assert.equal(missing.status, 400);
+  const failed = createAlert({ contactsCount: 1, lat: 28.6, lng: 77.2 });
+  transition(failed, "dispatching");
+  transition(failed, "failed");
+  alertStore.save(failed);
+  const failedRes = await postBattery(
+    { kind: "final", lat: 28.6139, lng: 77.209, battery: 5, alertId: failed.id },
+    KEY
+  );
+  assert.equal(failedRes.status, 400);
+});
+
+test("battery-alert (M5): low must not name an alert", async () => {
+  const alert = createAlert({ contactsCount: 1, lat: 28.6, lng: 77.2 });
+  transition(alert, "dispatching");
+  transition(alert, "delivered");
+  alertStore.save(alert);
+  const res = await postBattery({ ...validLow, alertId: alert.id }, KEY);
+  assert.equal(res.status, 400);
 });

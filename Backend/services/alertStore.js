@@ -38,6 +38,13 @@ const toRow = (alert) => ({
   // one-way hashes of the contacts this SOS went to. Empty for legacy
   // alerts — the lifecycle treats an empty set as unbound.
   contact_keys: alert.contactKeys || [],
+  // L5 retry binding (same migration): the exact message + contacts
+  // the SOS first went out with, and the retry attempts already used.
+  // Null/empty for legacy alerts — the retry/escalate routes fall back
+  // to the callback body's copy for those, and only those.
+  sos_message: alert.sosMessage ?? null,
+  sos_contacts: alert.sosContacts || [],
+  retry_consumed: alert.retryConsumed || [],
 });
 
 const fromRow = (row) => ({
@@ -57,6 +64,9 @@ const fromRow = (row) => ({
   lng: row.lng ?? null,
   locationAt: row.location_at ?? null,
   contactKeys: row.contact_keys || [],
+  sosMessage: row.sos_message ?? null,
+  sosContacts: row.sos_contacts || [],
+  retryConsumed: row.retry_consumed || [],
 });
 
 // Public shape for GET /alert/:id — no history, no internals. Delivery

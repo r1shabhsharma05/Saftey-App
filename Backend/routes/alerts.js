@@ -129,6 +129,12 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
       contacts,
       viewUrl: viewUrl || "",
     });
+    // L5: the exact message + contacts this SOS went out with, so a
+    // later /delivery-retry or /escalate callback re-sends the stored
+    // original instead of trusting body-supplied text. Saved with the
+    // alert below (both the delivered and the failed branches save).
+    alert.sosMessage = message;
+    alert.sosContacts = contacts;
 
     // AWAIT delivery before answering. On Vercel serverless the function
     // can freeze as soon as the response is sent, so the old
@@ -216,8 +222,9 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
 // spoofed client cannot cry "phone may die" at 90%.
 // A `final` burst naming a live (delivered/acked) alert also moves
 // that alert's stored position and embeds its view link, so the
-// contacts-side page shows the final pin. Best-effort, like
-// /location-update: an unknown/closed alert never breaks the send.
+// contacts-side page shows the final pin. A final naming an unknown,
+// closed or failed alert is 400 (M5) — it is not a standalone send;
+// a `low` warning names no alert at all.
 router.post("/battery-alert", sosLimiter, requireApiKey, async (req, res) => {
   const { lat, lng } = req.body;
   if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
@@ -250,19 +257,34 @@ router.post("/battery-alert", sosLimiter, requireApiKey, async (req, res) => {
     .filter((c) => c.name || c.phone || c.pushToken);
   const alertId = sanitizeText(req.body.alertId, 64);
 
+  // M5: kind must match the alert context. A "final" burst is the last
+  // gasp of an alert that already went out, so it needs a live
+  // (delivered/acked) alertId — a spoofed final must not move a dead
+  // alert's pin or embed its view link. A "low" warning is standalone
+  // and must not name an alert at all.
+  let liveAlert = null;
+  if (kind === "final") {
+    if (!alertId) {
+      return res.status(400).json({ success: false, error: "A final battery alert needs a live alertId" });
+    }
+    liveAlert = await alertStore.get(alertId);
+    if (!liveAlert || (liveAlert.state !== "delivered" && liveAlert.state !== "acked")) {
+      return res.status(400).json({ success: false, error: "final battery alert needs a live (delivered/acked) alert" });
+    }
+  } else if (alertId) {
+    return res.status(400).json({ success: false, error: "A low battery alert must not name an alert" });
+  }
+
   try {
     let viewUrl = null;
-    if (alertId) {
+    if (liveAlert) {
       try {
-        const alert = await alertStore.get(alertId);
-        if (alert && (alert.state === "delivered" || alert.state === "acked")) {
-          setAlertLocation(alert, latNum, lngNum);
-          alertStore.save(alert);
-          const viewBase = publicBaseUrl();
-          const token = viewToken(alert.id);
-          if (viewBase && token) {
-            viewUrl = `${viewBase}/alert/${alert.id}/view?token=${token}`;
-          }
+        setAlertLocation(liveAlert, latNum, lngNum);
+        alertStore.save(liveAlert);
+        const viewBase = publicBaseUrl();
+        const token = viewToken(liveAlert.id);
+        if (viewBase && token) {
+          viewUrl = `${viewBase}/alert/${liveAlert.id}/view?token=${token}`;
         }
       } catch {
         // The fan-out below still runs.
@@ -398,18 +420,20 @@ router.post("/alert/:id/close", trackingLimiter, requireApiKey, async (req, res)
 //
 // Auth is the HMAC token over (alertId, step) keyed by API_SECRET
 // (services/escalation.js), the same pattern as /delivery-retry:
-// QStash cannot carry our x-api-key header. The body carries the
-// original SOS message + contact phones/pushTokens (same pairing as
-// D7/D9 retries). Idempotent per step: a QStash redelivery of a step
-// that already ran returns ignored:true instead of re-firing —
-// re-sending an SOS because a queue redelivered would be a false
-// alarm. The ladder stops early when 2 distinct contacts have ACKed,
-// when the alert closed, or when it is not in a live state (a failed
-// alert belongs to the D4 retry chain, not this ladder).
+// QStash cannot carry our x-api-key header. The message + contacts
+// re-sent here are the STORED originals from SOS time (L5 twin),
+// not the callback body's copy — the body is only a legacy fallback
+// for alerts created before the stored fields existed. Idempotent
+// per step: a QStash redelivery of a step that already ran — or is
+// still running (M6 reservation) — returns ignored:true instead of
+// re-firing — re-sending an SOS because a queue redelivered would be
+// a false alarm. The ladder stops early when 2 distinct contacts
+// have ACKed, when the alert closed, or when it is not in a live
+// state (a failed alert belongs to the D4 retry chain, not this
+// ladder).
 router.post("/escalate", trackingLimiter, async (req, res) => {
   const alertId = typeof req.body.alertId === "string" ? req.body.alertId : "";
   const step = req.body.step;
-  const message = typeof req.body.message === "string" ? req.body.message : "";
   const jobPhones = req.body.contacts;
   const contacts = Array.isArray(jobPhones)
     ? jobPhones.slice(0, 10).map((p) => (typeof p === "string" ? p.slice(0, 20) : ""))
@@ -418,7 +442,7 @@ router.post("/escalate", trackingLimiter, async (req, res) => {
   const pushTokens = Array.isArray(jobTokens)
     ? jobTokens.slice(0, 10).map((t) => (typeof t === "string" ? t.slice(0, 1024) : ""))
     : [];
-  if (!alertId || !Number.isInteger(step) || !ESCALATION_STEPS.some((s) => s.step === step) || !message || message.length > 4000 ||
+  if (!alertId || !Number.isInteger(step) || !ESCALATION_STEPS.some((s) => s.step === step) ||
       (jobPhones !== undefined && !Array.isArray(jobPhones)) ||
       (jobTokens !== undefined && !Array.isArray(jobTokens))) {
     return res.status(400).json({ success: false, error: "Invalid escalation job" });
@@ -434,36 +458,69 @@ router.post("/escalate", trackingLimiter, async (req, res) => {
   if (!alert) {
     return res.status(404).json({ success: false, error: "Alert not found" });
   }
-  const ackCount = (alert.acks || []).length;
-  const runs = alert.escalation?.runs || [];
+  // L5 twin: re-send the STORED original message/contacts, not the
+  // body-supplied ones (same flaw class as /delivery-retry). Legacy
+  // alerts fall back to the callback body's copy.
+  const storedMessage = typeof alert.sosMessage === "string" ? alert.sosMessage : "";
+  const storedContacts =
+    Array.isArray(alert.sosContacts) && alert.sosContacts.length > 0 ? alert.sosContacts : null;
+  const message = storedMessage || (typeof req.body.message === "string" ? req.body.message : "");
+  const escContacts = storedContacts || jobContacts;
+  if (!message || message.length > 4000) {
+    return res.status(400).json({ success: false, error: "Invalid escalation job" });
+  }
+  const ackCount = countingAcks(alert).length;
+  // M6: reserve the step SYNCHRONOUSLY, before any await — a QStash
+  // redelivery arriving while this callback is still fanning out must
+  // see the step as in-progress and stand down, not fire a second
+  // SOS. The reservation is replaced by the real run below, or
+  // removed if the fan-out throws.
+  if (!alert.escalation || typeof alert.escalation !== "object") alert.escalation = {};
+  if (!Array.isArray(alert.escalation.runs)) alert.escalation.runs = [];
+  const runs = alert.escalation.runs;
   if (runs.some((r) => r.step === step) || !shouldEscalate(alert)) {
     return res.json({ success: true, ignored: true, state: alert.state, ackCount });
   }
   const now = new Date().toISOString();
+  const action = step === 3 ? "voice-call" : "refire-failed-channels";
+  const reservation = { step, at: now, action, state: "in-progress" };
+  runs.push(reservation);
+  alertStore.save(alert);
   let run;
-  if (step === 3) {
-    // Voice step: call only contacts who have not ACKed, with the
-    // original SOS message for the agent to speak. No channel
-    // re-fire here — the channels have had two attempts each.
-    const targets = unackedContacts(alert, jobContacts);
-    const voice = await sendVoiceAlert({ message, contacts: targets });
-    run = { step, at: now, action: "voice-call", sent: voice.sent, failed: voice.failed, voice };
-  } else {
-    const channels = failedChannels(alert.delivery);
-    const fresh = channels.length
-      ? await deliverAlert({ message, contacts: jobContacts, channels })
-      : [];
-    const merged = applyRetryReceipts(alert.delivery, fresh);
-    alert.delivery = merged;
-    const totals = receiptsSummary(merged);
-    alert.sent = totals.sent;
-    alert.failed = totals.failed;
-    const freshTotals = receiptsSummary(fresh);
-    run = { step, at: now, action: "refire-failed-channels", channels, sent: freshTotals.sent, failed: freshTotals.failed };
+  try {
+    if (step === 3) {
+      // Voice step: call only contacts who have not ACKed, with the
+      // original SOS message for the agent to speak. No channel
+      // re-fire here — the channels have had two attempts each.
+      const targets = unackedContacts(alert, escContacts);
+      const voice = await sendVoiceAlert({ message, contacts: targets });
+      run = { step, at: now, action, sent: voice.sent, failed: voice.failed, voice };
+    } else {
+      const channels = failedChannels(alert.delivery);
+      const fresh = channels.length
+        ? await deliverAlert({ message, contacts: escContacts, channels })
+        : [];
+      const merged = applyRetryReceipts(alert.delivery, fresh);
+      alert.delivery = merged;
+      const totals = receiptsSummary(merged);
+      alert.sent = totals.sent;
+      alert.failed = totals.failed;
+      const freshTotals = receiptsSummary(fresh);
+      run = { step, at: now, action, channels, sent: freshTotals.sent, failed: freshTotals.failed };
+    }
+  } catch (err) {
+    const idx = runs.indexOf(reservation);
+    if (idx >= 0) runs.splice(idx, 1);
+    alertStore.save(alert);
+    console.log("❌ ERROR:", err.message);
+    return res.status(500).json({ success: false, error: "Escalation step failed" });
   }
+  const idx = runs.indexOf(reservation);
+  if (idx >= 0) runs[idx] = run;
+  else runs.push(run);
   alert.escalation = {
     scheduled: alert.escalation?.scheduled ?? alert.escalation?.steps ?? null,
-    runs: [...runs, run],
+    runs,
   };
   alertStore.save(alert);
   audit("escalation.run", {
@@ -642,7 +699,7 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
   const pushTokens = Array.isArray(jobTokens)
     ? jobTokens.slice(0, 10).map((t) => (typeof t === "string" ? t.slice(0, 1024) : ""))
     : [];
-  if (!alertId || !Number.isInteger(attempt) || attempt < 1 || attempt > MAX_RETRIES || !message || message.length > 4000 ||
+  if (!alertId || !Number.isInteger(attempt) || attempt < 1 || attempt > MAX_RETRIES ||
       (jobPhones !== undefined && !Array.isArray(jobPhones)) ||
       (jobTokens !== undefined && !Array.isArray(jobTokens))) {
     return res.status(400).json({ success: false, error: "Invalid retry job" });
@@ -661,17 +718,40 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
   if (alert.state !== "failed") {
     return res.json({ success: true, ignored: true, state: alert.state });
   }
+  // L5: re-send the STORED original message/contacts, not the
+  // body-supplied ones — a leaked token must not let anyone rewrite
+  // an SOS into arbitrary text to arbitrary numbers. Legacy alerts
+  // (created before the stored fields) fall back to the callback
+  // body's copy, which scheduleRetry wrote at SOS time; that fallback
+  // dies with those alerts.
+  const storedMessage = typeof alert.sosMessage === "string" ? alert.sosMessage : "";
+  const storedContacts =
+    Array.isArray(alert.sosContacts) && alert.sosContacts.length > 0 ? alert.sosContacts : null;
+  const resendMessage = storedMessage || message;
+  const resendContacts = storedContacts || retryContacts;
+  if (!resendMessage || resendMessage.length > 4000) {
+    return res.status(400).json({ success: false, error: "Invalid retry job" });
+  }
+  // L5 single-use: each attempt fires at most once. The check runs
+  // before the transition so a replay never moves the alert, and the
+  // mark lands before the fan-out so a concurrent replay sees it.
+  alert.retryConsumed = Array.isArray(alert.retryConsumed) ? alert.retryConsumed : [];
+  if (alert.retryConsumed.includes(attempt)) {
+    return res.status(409).json({ success: false, error: "Retry attempt already used" });
+  }
   try {
     transition(alert, "dispatching", `delivery retry attempt ${attempt}`);
   } catch {
     return res.json({ success: true, ignored: true, state: alert.state });
   }
-  // The retry re-sends the ORIGINAL SOS message, carried in the job
-  // body by scheduleRetry: the callback instance shares no memory with
-  // the instance that took the SOS, and a location-less retry notice
-  // would be a neutered alert. The body message is only ever sent to
-  // our own configured channels, never reflected or logged.
-  const receipts = await deliverAlert({ message, contacts: retryContacts });
+  alert.retryConsumed.push(attempt);
+  alertStore.save(alert);
+  // The retry re-sends the ORIGINAL SOS message (stored at SOS time,
+  // see above): the callback instance shares no memory with the
+  // instance that took the SOS, and a location-less retry notice
+  // would be a neutered alert. The message is only ever sent to our
+  // own configured channels, never reflected or logged.
+  const receipts = await deliverAlert({ message: resendMessage, contacts: resendContacts });
   const { sent, failed } = receiptsSummary(receipts);
   alert.delivery = applyRetryReceipts(alert.delivery, receipts);
   alert.sent = sent;
@@ -682,12 +762,12 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
     // D10: a retry-delivered alert gets the same ladder as a
     // first-try delivery — its contacts still need the ACK check.
     alert.escalation = {
-      scheduled: (await scheduleEscalation({ alertId: alert.id, message, contacts: retryContacts })).steps,
+      scheduled: (await scheduleEscalation({ alertId: alert.id, message: resendMessage, contacts: resendContacts })).steps,
       runs: [],
     };
   } else {
     transition(alert, "failed", `retry attempt ${attempt} failed`);
-    alert.retry = await scheduleRetry({ alertId: alert.id, attempt: attempt + 1, message, contacts: retryContacts });
+    alert.retry = await scheduleRetry({ alertId: alert.id, attempt: attempt + 1, message: resendMessage, contacts: resendContacts });
   }
   alertStore.save(alert);
   audit("delivery.retry", {

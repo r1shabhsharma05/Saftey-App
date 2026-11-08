@@ -21,10 +21,14 @@
 // is the D10 escalation ladder's job, not D4's.
 //
 // Callback auth: QStash cannot carry our x-api-key header, so the
-// retry job body carries an HMAC token over (alertId, attempt) keyed
-// by API_SECRET, verified with a timing-safe compare in the route.
-// Without API_SECRET there is no signing key, so no retry is scheduled
-// — an unsigned callback must never be able to re-fire an SOS.
+// retry job body carries an HMAC token over (alertId, attempt, expiry)
+// keyed by API_SECRET, verified with a timing-safe compare in the
+// route. The token expires 1 h after minting (retry delays top out
+// at 300 s) and each attempt is single-use (the route marks it
+// consumed before fanning out), so a leaked or replayed token cannot
+// re-fire an SOS. Without API_SECRET there is no signing key, so no
+// retry is scheduled — an unsigned callback must never be able to
+// re-fire an SOS.
 const crypto = require("crypto");
 const { dispatchSos } = require("./sos");
 const { sendSmsAlert } = require("./sms");
@@ -102,15 +106,28 @@ const applyRetryReceipts = (oldReceipts, freshReceipts) => {
   }).filter(Boolean);
 };
 
-const retryToken = (alertId, attempt) => {
+// Retry tokens lapse 1 h after minting: the longest retry delay is
+// 300 s, so an hour is generous and a leaked token still dies soon.
+const RETRY_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+const retryToken = (alertId, attempt, expiresAtMs = Date.now() + RETRY_TOKEN_TTL_MS) => {
   const secret = process.env.API_SECRET || "";
-  if (!secret) return null;
-  return crypto.createHmac("sha256", secret).update(`${alertId}:${attempt}`).digest("hex");
+  if (!secret || !Number.isFinite(expiresAtMs)) return null;
+  const mac = crypto
+    .createHmac("sha256", secret)
+    .update(`delivery-retry:${alertId}:${attempt}:${expiresAtMs}`)
+    .digest("hex");
+  return `${expiresAtMs}.${mac}`;
 };
 
 const verifyRetryToken = (alertId, attempt, token) => {
-  const expected = retryToken(alertId, attempt);
-  if (!expected || typeof token !== "string") return false;
+  if (typeof token !== "string") return false;
+  const dot = token.indexOf(".");
+  if (dot <= 0) return false;
+  const expiresAtMs = Number(token.slice(0, dot));
+  if (!Number.isFinite(expiresAtMs) || Date.now() > expiresAtMs) return false;
+  const expected = retryToken(alertId, attempt, expiresAtMs);
+  if (!expected) return false;
   const a = Buffer.from(token);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
@@ -187,6 +204,7 @@ module.exports = {
   applyRetryReceipts,
   retryToken,
   verifyRetryToken,
+  RETRY_TOKEN_TTL_MS,
   publicBaseUrl,
   scheduleRetry,
 };

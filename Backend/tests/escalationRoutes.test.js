@@ -257,3 +257,32 @@ test("escalate: step 3 voice step records an honest unconfigured receipt, never 
   assert.equal(body.escalation.runs[0].voice.reason, "channel-not-configured");
   assert.equal(body.escalation.runs[0].voice.sent, 0);
 });
+
+test("escalate (M6): two concurrent callbacks for one step fire exactly once", async () => {
+  const alert = seedDelivered();
+  const payload = JSON.stringify({
+    alertId: alert.id, step: 1, token: escalationToken(alert.id, 1),
+    message: "SOS", contacts: [], pushTokens: [],
+  });
+  const [first, second] = await Promise.all([
+    fetch(`${base}/escalate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+    }),
+    fetch(`${base}/escalate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+    }),
+  ]);
+  const firstBody = await first.json();
+  const secondBody = await second.json();
+  const fired = [firstBody, secondBody].filter((b) => !b.ignored);
+  const ignored = [firstBody, secondBody].filter((b) => b.ignored);
+  assert.equal(fired.length, 1, "exactly one callback fires");
+  assert.equal(ignored.length, 1, "the other stands down");
+  const stored = await alertStore.get(alert.id);
+  assert.equal(stored.escalation.runs.filter((r) => r.step === 1).length, 1, "one run recorded");
+  assert.ok(!stored.escalation.runs.some((r) => r.state === "in-progress"), "no reservation residue");
+});

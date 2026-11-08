@@ -87,6 +87,28 @@ test("retryToken: verifies, rejects tampered attempt and token", () => {
   }
 });
 
+test("retryToken (L5): expiry is carried in the token; stale or tampered expiry rejected", () => {
+  const prev = process.env.API_SECRET;
+  process.env.API_SECRET = "test-secret";
+  try {
+    const { RETRY_TOKEN_TTL_MS } = require("../services/delivery");
+    const exp = Date.now() + RETRY_TOKEN_TTL_MS;
+    const token = retryToken("alert-1", 1, exp);
+    assert.equal(token, retryToken("alert-1", 1, exp), "same expiry = same token");
+    assert.match(token, /^\d+\.[0-9a-f]{64}$/);
+    assert.ok(verifyRetryToken("alert-1", 1, token));
+    assert.ok(!verifyRetryToken("alert-1", 1, retryToken("alert-1", 1, Date.now() - 1000)), "expired");
+    const tampered = `${Date.now() + 2 * RETRY_TOKEN_TTL_MS}.${token.split(".")[1]}`;
+    assert.ok(!verifyRetryToken("alert-1", 1, tampered), "tampered expiry");
+    const fresh = retryToken("alert-1", 1);
+    assert.ok(verifyRetryToken("alert-1", 1, fresh), "default mint verifies");
+    assert.ok(Number(fresh.split(".")[0]) - Date.now() > RETRY_TOKEN_TTL_MS - 1000);
+  } finally {
+    if (prev === undefined) delete process.env.API_SECRET;
+    else process.env.API_SECRET = prev;
+  }
+});
+
 test("retryToken: null without a signing secret", () => {
   const prev = process.env.API_SECRET;
   delete process.env.API_SECRET;

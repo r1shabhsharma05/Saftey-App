@@ -213,6 +213,44 @@ test("retry: forged token 401, valid token re-fires, delivered alert ignored", a
   assert.equal(ignoredBody.state, "delivered");
 });
 
+test("retry (L5): expired token 401, body message ignored, replay 409", async () => {
+  const sos = await postSos();
+  const failed = await sos.json();
+  const alertId = failed.alertId;
+  assert.equal(failed.state, "failed");
+
+  const expired = await post("/delivery-retry", {
+    alertId,
+    attempt: 1,
+    token: retryToken(alertId, 1, Date.now() - 1000),
+    message: "SOS",
+  });
+  assert.equal(expired.status, 401);
+
+  // A forged body message must not rewrite the SOS: the retry re-sends
+  // the message stored at SOS time.
+  const retry = await post("/delivery-retry", {
+    alertId,
+    attempt: 1,
+    token: retryToken(alertId, 1),
+    message: "FORGED TEXT",
+  });
+  assert.equal(retry.status, 200);
+  const stored = await alertStore.get(alertId);
+  assert.ok(stored.sosMessage.includes("28.6139"), "stored original kept its location");
+  assert.ok(!stored.sosMessage.includes("FORGED TEXT"), "body text never stored");
+  assert.deepEqual(stored.retryConsumed, [1], "attempt marked consumed");
+
+  // Same attempt again — even with a freshly minted token — is 409.
+  const replay = await post("/delivery-retry", {
+    alertId,
+    attempt: 1,
+    token: retryToken(alertId, 1),
+    message: "SOS",
+  });
+  assert.equal(replay.status, 409);
+});
+
 test("alert view: token-gated page + live position, closed alerts 410", async () => {
   const alert = createAlert({ contactsCount: 0, lat: 28.6139, lng: 77.209 });
   transition(alert, "dispatching");
