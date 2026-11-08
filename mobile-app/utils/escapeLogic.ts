@@ -204,3 +204,17 @@ export const rankSafePlaces = (places: SafePlace[], userLat: number, userLng: nu
     };
   }).sort((a, b) => (a.priorityScore || 0) - (b.priorityScore || 0));
 };
+
+// (M3) OSM phone numbers are crowd-edited text — anything can sit in
+// the tag (a URL, a note, "call me", a foreign number). Only a
+// plausible dial string is ever passed to tel:, and only as the number
+// itself: an allowlist (optional +, digits, spaces, dashes, parens,
+// 7–20 chars) so a `tel:` URI cannot carry a scheme, a pause
+// sequence, or a USSD/MMI code. Returns the cleaned number, or the
+// fallback ('N/A' for display, '100' for the dial action).
+export const sanitizePhone = (raw: unknown, fallback = 'N/A'): string => {
+  if (typeof raw !== 'string') return fallback;
+  const phone = raw.trim();
+  if (!/^\+?[0-9][0-9\s\-()]{5,18}$/.test(phone)) return fallback;
+  return phone;
+};

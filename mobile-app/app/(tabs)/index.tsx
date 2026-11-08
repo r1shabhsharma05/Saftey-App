@@ -25,7 +25,7 @@ import { Theme } from '../../constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import AlertActiveView from '../../components/AlertActiveView';
-import { rankSafePlaces, calculateBearing, calculateDistance, getCardinalDirection, withSafety, isValidSafety, scoreRouteLocal, combineRouteSafety } from '../../utils/escapeLogic';
+import { rankSafePlaces, calculateBearing, calculateDistance, getCardinalDirection, withSafety, isValidSafety, scoreRouteLocal, combineRouteSafety, sanitizePhone } from '../../utils/escapeLogic';
 import type { SafePlace, SafetyScore } from '../../utils/escapeLogic';
 import JourneyCard from '../../components/JourneyCard';
 import {
@@ -95,7 +95,9 @@ export default function TacticalDashboard() {
   const updateCachedPlaces = (places: any[]) => {
     // D15: every place carries a safety score — restored pre-D15 cache
     // entries (no safety yet) get a local one; valid scores pass through.
-    const scored = places.map((p) => withSafety(p));
+    // (M3) Phones are revalidated on restore too: a cached place from
+    // before the allowlist (or a tampered cache) must not reach tel:.
+    const scored = places.map((p) => withSafety({ ...p, phone: sanitizePhone(p.phone) }));
     cachedPlacesRef.current = scored;
     setCachedSafePlaces(scored);
   };
@@ -495,8 +497,8 @@ export default function TacticalDashboard() {
           if (amenity.includes('police')) category = 'police';
           else if (amenity.includes('university') || amenity.includes('college') || name.includes('gla university')) category = 'university';
           else if (amenity.includes('hospital') || amenity.includes('clinic')) category = 'hospital';
-          else if (tourism.includes('hostel') || name.includes('hostel')) category = 'hostel';
-          else if (amenity.includes('mall') || amenity.includes('cafe') || shop !== '') category = 'crowd';
+          else if (tourism.includes('hostel') || tourism.includes('hotel') || name.includes('hostel')) category = 'hostel';
+          else if (amenity.includes('mall') || amenity.includes('cafe') || amenity.includes('bank') || amenity.includes('pharmacy') || shop !== '') category = 'crowd';
 
           const pLat = el.lat || el.center?.lat;
           const pLng = el.lon || el.center?.lon;
@@ -513,7 +515,9 @@ export default function TacticalDashboard() {
             lat: pLat,
             lng: pLng,
             name: el.tags?.name || category.toUpperCase(),
-            phone: el.tags?.phone || el.tags?.['contact:phone'] || 'N/A',
+            // (M3) OSM phone is crowd-edited text — allowlisted here,
+            // never passed raw to tel:.
+            phone: sanitizePhone(el.tags?.phone || el.tags?.['contact:phone']),
             category,
             distanceKm,
             openNow,
@@ -554,6 +558,10 @@ export default function TacticalDashboard() {
   // alert and its retry), while a transport failure carries nothing
   // (the alert never left the phone). Success is still only ever
   // claimed on the backend's own success flag — never on a blind 200.
+  // (H2) `reached` means the server OWNS this alert: a success flag,
+  // an alert id, or a queued retry. A JSON error reply with none of
+  // those (400/401/429/503) is NOT reached — the alert stays queued
+  // and is re-sent later instead of being silently dropped.
   const postAlertOnce = async (payload: Record<string, unknown>): Promise<AlertPostResult> => {
     const notReached: AlertPostResult = { reached: false, success: false, alertId: null, delivery: null, retry: null };
     const controller = new AbortController();
@@ -576,12 +584,15 @@ export default function TacticalDashboard() {
       });
       const data = await response.json().catch(() => null);
       if (!data) return notReached;
+      const alertId = typeof data.alertId === 'string' ? data.alertId : null;
+      const retry = data.retry && typeof data.retry === 'object' ? data.retry : null;
+      if (!data.success && !alertId && retry?.queued !== true) return notReached;
       return {
         reached: true,
         success: !!data.success,
-        alertId: typeof data.alertId === 'string' ? data.alertId : null,
+        alertId,
         delivery: Array.isArray(data.delivery) ? data.delivery : null,
-        retry: data.retry && typeof data.retry === 'object' ? data.retry : null,
+        retry,
       };
     } catch {
       return notReached;

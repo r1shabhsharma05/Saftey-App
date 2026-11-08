@@ -5,6 +5,7 @@ import { Theme } from '../../constants/theme';
 import GlassCard from './GlassCard';
 import SafetyBadge from './SafetyBadge';
 import type { SafetyScore } from '../../utils/escapeLogic';
+import { sanitizePhone } from '../../utils/escapeLogic';
 
 interface Props {
   name: string;
@@ -18,7 +19,11 @@ interface Props {
 
 /** Premium police-station row: glass card, call + navigation actions. */
 export default function PoliceStationCard({ name, phone, distanceLabel, direction, lat, lng, safety }: Props) {
-  const dialNumber = phone !== 'N/A' ? phone : '100';
+  // (M3) The phone is OSM crowd-edited text: allowlist it here (the
+  // parser does too — this is the last stop before tel:). Anything
+  // implausible dials the 100 emergency number instead, and the
+  // separators are stripped from the tel: URI itself.
+  const dialNumber = sanitizePhone(phone, '100');
 
   return (
     <GlassCard style={styles.card} edgeColor={Theme.colors.police} intensity={16}>
@@ -38,11 +43,11 @@ export default function PoliceStationCard({ name, phone, distanceLabel, directio
         <TouchableOpacity
           style={styles.callBtn}
           activeOpacity={0.7}
-          onPress={() => Linking.openURL(`tel:${dialNumber}`)}
+          onPress={() => Linking.openURL(`tel:${dialNumber.replace(/[\s\-()]/g, '')}`)}
         >
           <Ionicons name="call" size={15} color={Theme.colors.onSurface} />
           <Text style={styles.callText}>
-            {phone !== 'N/A' ? phone : '100 · Emergency'}
+            {dialNumber === '100' ? '100 · Emergency' : dialNumber}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
