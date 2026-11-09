@@ -32,6 +32,7 @@ import JourneyCard from '../../components/JourneyCard';
 import {
   JOURNEY_STORAGE_KEY,
   buildShareText,
+  answerCheckIn,
   createJourney,
   endJourney,
   fetchJourney,
@@ -164,6 +165,7 @@ export default function TacticalDashboard() {
   // destination, recomputed on each posted position.
   const [journey, setJourney] = useState<Journey | null>(null);
   const [journeyBusy, setJourneyBusy] = useState(false);
+  const [checkInBusy, setCheckInBusy] = useState(false);
   const [journeyViewUrl, setJourneyViewUrl] = useState<string | null>(null);
   const [journeyDistanceM, setJourneyDistanceM] = useState<number | null>(null);
   const journeyRef = useRef<Journey | null>(null);
@@ -854,6 +856,9 @@ export default function TacticalDashboard() {
     }
     setJourneyBusy(true);
     try {
+      // D17: the escalation timer needs the traveller's emergency
+      // contacts — same list SOS uses, phones only.
+      const journeyContacts = await readEmergencyContacts();
       const result = await createJourney(
         BACKEND_URL,
         {
@@ -863,6 +868,7 @@ export default function TacticalDashboard() {
           destLng: place.lng,
           destinationLabel: place.name,
           etaMinutes,
+          contacts: journeyContacts.map((c) => ({ phone: c.phone })),
         },
         userData ? `${userData.first_name} ${userData.last_name}` : 'Unknown User'
       );
@@ -884,6 +890,29 @@ export default function TacticalDashboard() {
       showBanner('success', `Journey started — heading to ${place.name}. Share the link so your contacts can follow you.`);
     } finally {
       setJourneyBusy(false);
+    }
+  };
+
+  // D17: answer the server's "Sab theek hai?" prompt. The poll
+  // refreshes the journey right after, so a cleared prompt vanishes
+  // on the next 30 s tick even if this set fails to stick locally.
+  const answerJourneyCheckIn = async (ok: boolean): Promise<void> => {
+    const current = journeyRef.current;
+    if (!current || checkInBusy || !current.checkIn) return;
+    setCheckInBusy(true);
+    try {
+      const result = await answerCheckIn(BACKEND_URL, current.id, ok);
+      if (!result.reached || !result.success || !result.journey) {
+        showBanner('error', 'Could not send your answer — try again.');
+        return;
+      }
+      setJourney(result.journey);
+      showBanner(
+        'success',
+        ok ? 'Got it — stay safe.' : 'Help is on the way — your emergency contacts have been alerted.'
+      );
+    } finally {
+      setCheckInBusy(false);
     }
   };
 
@@ -1539,6 +1568,8 @@ export default function TacticalDashboard() {
             onShare={shareJourney}
             onArrived={() => endActiveJourney('arrived')}
             onCancel={() => endActiveJourney('cancelled')}
+            onCheckIn={answerJourneyCheckIn}
+            checkInBusy={checkInBusy}
           />
         </Reanimated.View>
 

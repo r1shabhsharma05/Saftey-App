@@ -36,7 +36,18 @@ interface JourneyCardProps {
   onShare: () => void;
   onArrived: () => void;
   onCancel: () => void;
+  /** D17: answer the server's "Sab theek hai?" prompt. */
+  onCheckIn: (ok: boolean) => void;
+  /** True while a check-in answer is in flight. */
+  checkInBusy: boolean;
 }
+
+// D17: one line per watch reason, in the traveller's own words.
+const CHECKIN_COPY: Record<string, string> = {
+  deviated: "You're off your route.",
+  stopped: "You haven't moved in a while.",
+  overdue: "You're past your expected arrival time.",
+};
 
 const formatDistance = (m: number | null): string => {
   if (m === null || !Number.isFinite(m)) return '—';
@@ -59,6 +70,8 @@ export default function JourneyCard({
   onShare,
   onArrived,
   onCancel,
+  onCheckIn,
+  checkInBusy,
 }: JourneyCardProps) {
   const [selectedId, setSelectedId] = useState<number | string | null>(null);
   const [etaMinutes, setEtaMinutes] = useState(25);
@@ -103,6 +116,33 @@ export default function JourneyCard({
             <Text style={styles.overdueText}>
               Past your ETA — if you are safe, tap ARRIVED so your contacts stop worrying.
             </Text>
+          )}
+          {journey.checkIn && (
+            <View style={styles.checkInBox} accessibilityRole="alert">
+              <Text style={styles.checkInTitle}>Sab theek hai?</Text>
+              <Text style={styles.checkInText}>
+                {CHECKIN_COPY[journey.checkIn.reason] ?? 'SafeLife needs to hear from you.'}{' '}
+                Answer now — no answer in 5 minutes alerts your emergency contacts.
+              </Text>
+              <View style={styles.checkInRow}>
+                <TouchableOpacity
+                  style={[styles.button, styles.okButton]}
+                  onPress={() => onCheckIn(true)}
+                  disabled={checkInBusy}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.buttonText}>I&apos;M OK</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.button, styles.helpButton]}
+                  onPress={() => onCheckIn(false)}
+                  disabled={checkInBusy}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.buttonText}>I NEED HELP</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
           )}
           <View style={styles.buttonRow}>
             <TouchableOpacity style={[styles.button, styles.shareButton]} onPress={onShare} activeOpacity={0.8}>
@@ -222,6 +262,19 @@ const styles = StyleSheet.create({
   meta: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant },
   updated: { fontFamily: Theme.fonts.body, fontSize: 11, color: Theme.colors.onSurfaceVariant },
   overdueText: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.error, lineHeight: 16 },
+  checkInBox: {
+    borderWidth: 1,
+    borderColor: Theme.colors.error,
+    backgroundColor: 'rgba(255, 80, 80, 0.08)',
+    borderRadius: 12,
+    padding: 12,
+    gap: 8,
+  },
+  checkInTitle: { fontFamily: Theme.fonts.headline, fontSize: 15, color: Theme.colors.onSurface },
+  checkInText: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant, lineHeight: 16 },
+  checkInRow: { flexDirection: 'row', gap: 8 },
+  okButton: { backgroundColor: 'rgba(0, 227, 253, 0.10)', borderWidth: 1, borderColor: Theme.colors.primary },
+  helpButton: { backgroundColor: 'rgba(255, 80, 80, 0.16)', borderWidth: 1, borderColor: Theme.colors.error },
   buttonRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
   button: { flex: 1, paddingVertical: 10, borderRadius: 12, alignItems: 'center' },
   shareButton: { backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)' },

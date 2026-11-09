@@ -50,6 +50,7 @@ const createJourney = ({
   destinationLabel,
   expectedArrivalAt,
   userName,
+  contacts = [],
 } = {}) => {
   if (!isValidCoord(originLat, -90, 90)) throw new Error("Invalid origin latitude");
   if (!isValidCoord(originLng, -180, 180)) throw new Error("Invalid origin longitude");
@@ -78,6 +79,28 @@ const createJourney = ({
     lat: originLat,
     lng: originLng,
     locationAt: createdAt,
+    // D17 watch state: lastMovedAt is the last post that moved the
+    // pin ≥25 m (services/journeyWatch.js keeps it); checkIn is the
+    // pending "Sab theek hai?" prompt, lastOk* the traveller's last
+    // "I'm OK" (suppresses re-prompting for that reason, 10 min);
+    // escalation records scheduled QStash jobs + callback runs.
+    // contacts are the escalation recipients, capped at 10 — the
+    // route normalizes them; the store never fans out by itself.
+    // None of these are mirrored to Supabase yet (see
+    // journeyStore.js toRow): the mirror is unconfigured, and the
+    // escalation job body carries the contacts as its fallback.
+    lastMovedAt: createdAt,
+    checkIn: null,
+    lastOkAt: null,
+    lastOkReason: null,
+    escalation: { scheduled: [], runs: [] },
+    contacts: (Array.isArray(contacts) ? contacts : [])
+      .slice(0, 10)
+      .map((c) => ({
+        phone: typeof c?.phone === "string" ? c.phone : "",
+        pushToken: typeof c?.pushToken === "string" ? c.pushToken : "",
+      }))
+      .filter((c) => c.phone || c.pushToken),
     history: [{ state: "active", at: createdAt }],
   };
   return journey;

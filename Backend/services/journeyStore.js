@@ -30,6 +30,13 @@ const MAX_JOURNEYS = 500;
 
 const memory = new Map();
 
+// D17: the watch columns (migration 20261109080000) mirror the
+// in-memory watch state so a QStash callback on another instance
+// sees the same prompt/answer/escalation a local one would. jsonb
+// for the three structured fields: contacts are the escalation
+// recipients (phones only), check_in the pending prompt, escalation
+// the scheduled jobs + runs. A row written before D17 reads back
+// with safe defaults in fromRow, below.
 const toRow = (journey) => ({
   id: journey.id,
   state: journey.state,
@@ -43,6 +50,12 @@ const toRow = (journey) => ({
   last_lat: journey.lat ?? null,
   last_lng: journey.lng ?? null,
   location_at: journey.locationAt ?? null,
+  last_moved_at: journey.lastMovedAt ?? journey.locationAt ?? journey.createdAt,
+  contacts: Array.isArray(journey.contacts) ? journey.contacts : [],
+  check_in: journey.checkIn ?? null,
+  last_ok_at: journey.lastOkAt ?? null,
+  last_ok_reason: journey.lastOkReason ?? null,
+  escalation: journey.escalation ?? { scheduled: [], runs: [] },
   created_at: journey.createdAt,
   updated_at: journey.updatedAt,
 });
@@ -60,6 +73,14 @@ const fromRow = (row) => ({
   lat: row.last_lat ?? null,
   lng: row.last_lng ?? null,
   locationAt: row.location_at ?? null,
+  // Pre-D17 rows have none of these columns: fall back so the
+  // watch treats the trip as never-moved, never-prompted.
+  lastMovedAt: row.last_moved_at ?? row.location_at ?? row.created_at,
+  checkIn: row.check_in ?? null,
+  lastOkAt: row.last_ok_at ?? null,
+  lastOkReason: row.last_ok_reason ?? null,
+  escalation: row.escalation ?? { scheduled: [], runs: [] },
+  contacts: Array.isArray(row.contacts) ? row.contacts : [],
 });
 
 const save = (journey) => {

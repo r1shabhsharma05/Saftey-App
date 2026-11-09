@@ -9,6 +9,24 @@
 // traveller sends it with the native share sheet.
 export type JourneyState = 'active' | 'arrived' | 'cancelled';
 
+export type JourneyWatchStatus = 'ok' | 'deviated' | 'stopped' | 'overdue';
+
+/** D17 watch state: which off-pattern reason (if any) the server sees. */
+export interface JourneyWatch {
+  status: JourneyWatchStatus;
+  overdue: boolean;
+  deviated: boolean;
+  stopped: boolean;
+  deviationM: number;
+}
+
+/** D17 pending "Sab theek hai?" prompt, with the answer window. */
+export interface JourneyCheckIn {
+  reason: string;
+  askedAt: string;
+  dueAt: string;
+}
+
 export interface Journey {
   id: string;
   state: JourneyState;
@@ -22,6 +40,8 @@ export interface Journey {
   lng: number | null;
   locationAt: string | null;
   overdue: boolean;
+  watch?: JourneyWatch;
+  checkIn?: JourneyCheckIn | null;
 }
 
 export interface CreateJourneyInput {
@@ -31,6 +51,8 @@ export interface CreateJourneyInput {
   destLng: number;
   destinationLabel: string;
   etaMinutes: number;
+  /** D17: emergency contacts for the escalation timer (phones only). */
+  contacts?: { phone?: string; pushToken?: string }[];
 }
 
 export interface JourneyCreateResult {
@@ -38,6 +60,15 @@ export interface JourneyCreateResult {
   success: boolean;
   journey: Journey | null;
   viewUrl: string | null;
+  /** D17: the overdue-escalate timer job, honestly queued or not. */
+  scheduled?: { kind: string; delaySeconds: number; queued: boolean; reason?: string }[];
+}
+
+export interface JourneyCheckInResult {
+  reached: boolean;
+  success: boolean;
+  journey: Journey | null;
+  escalation?: { sent: number; failed: number };
 }
 
 /** ETA chips offered when starting a journey (minutes). */
@@ -112,14 +143,40 @@ export const createJourney = async (
     destinationLabel: input.destinationLabel,
     expectedArrivalAt: new Date(Date.now() + input.etaMinutes * 60 * 1000).toISOString(),
     userName,
+    ...(input.contacts ? { contacts: input.contacts } : {}),
   });
   if (!reached || !data || typeof data !== 'object') return notReached;
-  const d = data as { success?: boolean; journey?: unknown; viewUrl?: unknown };
+  const d = data as { success?: boolean; journey?: unknown; viewUrl?: unknown; scheduled?: JourneyCreateResult['scheduled'] };
   return {
     reached: true,
     success: !!d.success,
     journey: isValidJourney(d.journey) ? d.journey : null,
     viewUrl: typeof d.viewUrl === 'string' ? d.viewUrl : null,
+    scheduled: Array.isArray(d.scheduled) ? d.scheduled : undefined,
+  };
+};
+
+// D17: answer the server's "Sab theek hai?" prompt. ok=true means
+// "I'm OK" (clears the prompt, 10 min before it can re-ask for the
+// same reason); ok=false means "I need help" and escalates to the
+// emergency contacts immediately.
+export const answerCheckIn = async (
+  backendUrl: string,
+  id: string,
+  ok: boolean
+): Promise<JourneyCheckInResult> => {
+  const notReached: JourneyCheckInResult = { reached: false, success: false, journey: null };
+  const { reached, data } = await postJson(`${backendUrl}/journey/${encodeURIComponent(id)}/checkin`, { ok });
+  if (!reached || !data || typeof data !== 'object') return notReached;
+  const d = data as { success?: boolean; journey?: unknown; escalation?: { sent?: number; failed?: number } };
+  return {
+    reached: true,
+    success: !!d.success,
+    journey: isValidJourney(d.journey) ? d.journey : null,
+    escalation:
+      d.escalation && typeof d.escalation.sent === 'number'
+        ? { sent: d.escalation.sent, failed: d.escalation.failed ?? 0 }
+        : undefined,
   };
 };
 
