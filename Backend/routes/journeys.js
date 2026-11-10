@@ -123,6 +123,17 @@ router.post("/journeys", trackingLimiter, requireApiKey, async (req, res) => {
   // are stored on the record for the timer callback and NEVER leave
   // in a read shape.
   const contacts = normalizeJourneyContacts(req.body.contacts);
+  // D18: the OSRM walking polyline the app fetched for the map
+  // ([{lat,lng}] — the app converts from GeoJSON [lng,lat]). A
+  // non-array route is a client bug, answered 400; bad points inside
+  // an array are dropped by createJourney's normalization, and a
+  // route that normalizes to empty means the D17 straight-line
+  // fallback. The route never appears in any read shape — it is
+  // server-side watch geometry, and the app already holds it.
+  if (req.body.route !== undefined && !Array.isArray(req.body.route)) {
+    return res.status(400).json({ success: false, error: "Invalid journey route" });
+  }
+  const route = req.body.route;
   let journey;
   try {
     journey = createJourney({
@@ -134,6 +145,7 @@ router.post("/journeys", trackingLimiter, requireApiKey, async (req, res) => {
       expectedArrivalAt,
       userName,
       contacts,
+      route,
     });
   } catch (err) {
     return res.status(400).json({ success: false, error: err.message });

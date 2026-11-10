@@ -9,13 +9,15 @@
 // journeyEscalation.js; the routes own when to ask.
 //
 // Deviation is the perpendicular distance from the live pin to the
-// straight origin→destination segment, computed on an equirectangular
-// projection around the segment midpoint. A straight line is not the
-// walked route (D14's OSRM polyline is), but the journey record
-// stores no polyline — and a 500 m straight-line deviation already
-// means the traveller is a different street away. Using the polyline
-// would need the app to send it at create time; D18 candidate, not
-// D17 scope. The projection error is <1% at these distances.
+// OSRM polyline the app sends at create time (D18) — or, when the
+// journey carries no route, to the straight origin→destination
+// segment (D17 fallback). The straight line alone false-prompts on
+// real roads: the live GLA→Mathura route wanders 3,073 m off it
+// (Day-18 real-area probe), so the polyline is the measure whenever
+// it exists. A straight line is still the honest threshold when
+// there is no polyline, and the check-in is a question, not an
+// accusation — a false ask costs one tap, a missed deviation costs
+// the trip. The projection error is <1% at these distances.
 // A stop is 10 min without a ≥25 m move (the posting cadence's own
 // move threshold) while still >200 m from the destination — parked
 // at the door is arrival, not a stop. Overstay reuses D16's
@@ -45,9 +47,27 @@ const project = (lat, lng, lat0, lng0) => ({
   y: (lat - lat0) * toRad(1) * EARTH_RADIUS_M,
 });
 
-// Metres from the live pin to the origin→destination segment. A pin
-// past either end measures to that endpoint; a zero-length route
-// (origin == destination) measures to the point.
+// Metres from the live pin to the origin→destination segment — or,
+// when the journey carries the OSRM polyline the app sent at create
+// time (D18), to the NEAREST polyline segment. A straight line is
+// not the walked route: the live GLA→Mathura road wanders 3,073 m
+// off it, so the straight-line measure false-prompts a traveller
+// who is exactly on the road. With a polyline the pin is measured
+// against the road itself; without one (old records, or a create
+// whose /route fetch failed) the D17 straight-line measure stands.
+// A pin past either end measures to that endpoint; a zero-length
+// route (origin == destination) measures to the point; a one-point
+// route measures to that point.
+const segmentDistanceM = (p, a, b) => {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+};
+
 const deviationM = (journey) => {
   if (!journey || typeof journey.lat !== "number" || typeof journey.lng !== "number") return 0;
   const o = journey.origin;
@@ -56,15 +76,24 @@ const deviationM = (journey) => {
   const lat0 = (o.lat + d.lat) / 2;
   const lng0 = (o.lng + d.lng) / 2;
   const p = project(journey.lat, journey.lng, lat0, lng0);
+  const route = journey.route;
+  if (Array.isArray(route) && route.length > 0) {
+    if (route.length === 1) {
+      const only = project(route[0].lat, route[0].lng, lat0, lng0);
+      return Math.hypot(p.x - only.x, p.y - only.y);
+    }
+    let best = Infinity;
+    for (let i = 0; i + 1 < route.length; i++) {
+      const a = project(route[i].lat, route[i].lng, lat0, lng0);
+      const b = project(route[i + 1].lat, route[i + 1].lng, lat0, lng0);
+      const m = segmentDistanceM(p, a, b);
+      if (m < best) best = m;
+    }
+    return best;
+  }
   const a = project(o.lat, o.lng, lat0, lng0);
   const b = project(d.lat, d.lng, lat0, lng0);
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len2 = dx * dx + dy * dy;
-  if (len2 === 0) return Math.hypot(p.x - a.x, p.y - a.y);
-  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
-  t = Math.max(0, Math.min(1, t));
-  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+  return segmentDistanceM(p, a, b);
 };
 
 const isDeviated = (journey, thresholdM = DEVIATION_THRESHOLD_M) =>

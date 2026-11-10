@@ -859,6 +859,18 @@ export default function TacticalDashboard() {
       // D17: the escalation timer needs the traveller's emergency
       // contacts — same list SOS uses, phones only.
       const journeyContacts = await readEmergencyContacts();
+      // D18: send the walking polyline the dashboard already fetched
+      // for the map (GeoJSON [lng,lat] → {lat,lng}) so the server
+      // measures deviation against the road, not the straight line.
+      // Only when the fetched route is for THIS place — otherwise
+      // the create goes without a route and the server falls back
+      // to the straight line, exactly as before.
+      const journeyRoute =
+        route && routeState === 'ready' && routePlace && routePlace.id === place.id
+          ? route.coordinates
+              .filter((c) => Array.isArray(c) && Number.isFinite(c[0]) && Number.isFinite(c[1]))
+              .map(([lng, lat]) => ({ lat, lng }))
+          : undefined;
       const result = await createJourney(
         BACKEND_URL,
         {
@@ -869,6 +881,7 @@ export default function TacticalDashboard() {
           destinationLabel: place.name,
           etaMinutes,
           contacts: journeyContacts.map((c) => ({ phone: c.phone })),
+          ...(journeyRoute && journeyRoute.length >= 2 ? { route: journeyRoute } : {}),
         },
         userData ? `${userData.first_name} ${userData.last_name}` : 'Unknown User'
       );

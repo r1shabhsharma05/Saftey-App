@@ -42,6 +42,28 @@ const ETA_GRACE_MS = 60 * 1000;
 const isValidCoord = (v, min, max) =>
   typeof v === "number" && Number.isFinite(v) && v >= min && v <= max;
 
+// D18: the OSRM walking polyline the app sends at create time, so
+// deviation is measured against the road actually walked instead of
+// the straight line (a real 18 km route wanders 3 km off the line).
+// {lat,lng} objects only — anything else is dropped, never stored —
+// capped at 1000 points (an 18 km walk is ~500; 25 km is the route
+// cap, so 1000 leaves headroom). A missing/empty route means the
+// D17 straight-line measure (old records, or a create whose /route
+// fetch failed).
+const MAX_ROUTE_POINTS = 1000;
+
+const normalizeRoute = (route) => {
+  if (!Array.isArray(route)) return [];
+  return route
+    .filter(
+      (p) =>
+        p && typeof p === "object" &&
+        isValidCoord(p.lat, -90, 90) && isValidCoord(p.lng, -180, 180)
+    )
+    .slice(0, MAX_ROUTE_POINTS)
+    .map((p) => ({ lat: p.lat, lng: p.lng }));
+};
+
 const createJourney = ({
   originLat,
   originLng,
@@ -51,6 +73,7 @@ const createJourney = ({
   expectedArrivalAt,
   userName,
   contacts = [],
+  route = [],
 } = {}) => {
   if (!isValidCoord(originLat, -90, 90)) throw new Error("Invalid origin latitude");
   if (!isValidCoord(originLng, -180, 180)) throw new Error("Invalid origin longitude");
@@ -101,6 +124,7 @@ const createJourney = ({
         pushToken: typeof c?.pushToken === "string" ? c.pushToken : "",
       }))
       .filter((c) => c.phone || c.pushToken),
+    route: normalizeRoute(route),
     history: [{ state: "active", at: createdAt }],
   };
   return journey;
@@ -177,6 +201,8 @@ module.exports = {
   JOURNEY_STATES,
   ALLOWED_TRANSITIONS,
   MAX_JOURNEY_MS,
+  MAX_ROUTE_POINTS,
+  normalizeRoute,
   createJourney,
   transition,
   setJourneyLocation,

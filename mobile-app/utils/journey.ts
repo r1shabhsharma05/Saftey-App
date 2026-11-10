@@ -53,6 +53,11 @@ export interface CreateJourneyInput {
   etaMinutes: number;
   /** D17: emergency contacts for the escalation timer (phones only). */
   contacts?: { phone?: string; pushToken?: string }[];
+  /** D18: the OSRM walking polyline the app fetched for the map
+   * ({lat,lng} — converted from GeoJSON [lng,lat]). The server
+   * measures deviation against it; without it the watch falls back
+   * to the straight line, which false-prompts on bendy roads. */
+  route?: { lat: number; lng: number }[];
 }
 
 export interface JourneyCreateResult {
@@ -144,6 +149,7 @@ export const createJourney = async (
     expectedArrivalAt: new Date(Date.now() + input.etaMinutes * 60 * 1000).toISOString(),
     userName,
     ...(input.contacts ? { contacts: input.contacts } : {}),
+    ...(input.route ? { route: input.route } : {}),
   });
   if (!reached || !data || typeof data !== 'object') return notReached;
   const d = data as { success?: boolean; journey?: unknown; viewUrl?: unknown; scheduled?: JourneyCreateResult['scheduled'] };

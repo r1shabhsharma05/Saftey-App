@@ -56,6 +56,9 @@ const toRow = (journey) => ({
   last_ok_at: journey.lastOkAt ?? null,
   last_ok_reason: journey.lastOkReason ?? null,
   escalation: journey.escalation ?? { scheduled: [], runs: [] },
+  // D18: the OSRM polyline (migration 20261110080000) — the watch
+  // measures deviation against it instead of the straight line.
+  route: Array.isArray(journey.route) ? journey.route : [],
   created_at: journey.createdAt,
   updated_at: journey.updatedAt,
 });
@@ -81,6 +84,9 @@ const fromRow = (row) => ({
   lastOkReason: row.last_ok_reason ?? null,
   escalation: row.escalation ?? { scheduled: [], runs: [] },
   contacts: Array.isArray(row.contacts) ? row.contacts : [],
+  // Pre-D18 rows have no route column: the watch falls back to the
+  // straight line, exactly as it did before the polyline existed.
+  route: Array.isArray(row.route) ? row.route : [],
 });
 
 const save = (journey) => {
