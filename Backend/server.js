@@ -13,6 +13,7 @@ const alertRoutes = require("./routes/alerts");
 const safePlacesRoutes = require("./routes/safePlaces");
 const routeRoutes = require("./routes/route");
 const journeyRoutes = require("./routes/journeys");
+const guardianRoutes = require("./routes/guardians");
 
 const app = express();
 
@@ -52,6 +53,7 @@ app.use(alertRoutes);
 app.use(safePlacesRoutes);
 app.use(routeRoutes);
 app.use(journeyRoutes);
+app.use(guardianRoutes);
 
 // 🚫 404 — every response from this API is JSON. Express's default 404
 // is an HTML page ("Cannot POST /…"), which leaks framework details

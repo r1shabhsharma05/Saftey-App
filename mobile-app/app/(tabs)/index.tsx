@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -18,6 +18,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { supabase } from '../../utils/supabase';
 import { ensureProfile } from '../../utils/auth';
 import { getBackendUrl } from '../../utils/backendUrl';
@@ -29,6 +30,12 @@ import AlertActiveView from '../../components/AlertActiveView';
 import { rankSafePlaces, calculateBearing, calculateDistance, getCardinalDirection, withSafety, isValidSafety, scoreRouteLocal, combineRouteSafety, sanitizePhone } from '../../utils/escapeLogic';
 import type { SafePlace, SafetyScore } from '../../utils/escapeLogic';
 import JourneyCard from '../../components/JourneyCard';
+import GuardianCard from '../../components/GuardianCard';
+import {
+  GUARDIAN_STORAGE_KEY,
+  fetchGuardian,
+  type Guardian,
+} from '../../utils/guardian';
 import {
   JOURNEY_STORAGE_KEY,
   buildShareText,
@@ -55,6 +62,7 @@ import RouteMap from '../../components/RouteMap';
 const BACKEND_URL = getBackendUrl();
 
 export default function TacticalDashboard() {
+  const router = useRouter();
   // --- States ---
   const [status, setStatus] = useState<'SAFE' | 'ALERT ACTIVE'>('SAFE');
   const [lat, setLat] = useState<string>('Loading...');
@@ -170,6 +178,29 @@ export default function TacticalDashboard() {
   const [journeyDistanceM, setJourneyDistanceM] = useState<number | null>(null);
   const journeyRef = useRef<Journey | null>(null);
   const lastJourneyTrackRef = useRef<{ lat: number; lng: number; at: number } | null>(null);
+  // D19: Guardian Network — the guardian record, or null. Refreshed
+  // whenever the tab regains focus (the guardian screen edits it) and
+  // on mount, restored from SecureStore like the journey.
+  const [guardian, setGuardian] = useState<Guardian | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      (async () => {
+        try {
+          const raw = await secureGetItem(GUARDIAN_STORAGE_KEY);
+          const stored = raw ? JSON.parse(raw) : null;
+          if (!stored || typeof stored.id !== 'string') return;
+          const live = await fetchGuardian(BACKEND_URL, stored.id);
+          if (live && !cancelled) setGuardian(live);
+        } catch {
+          /* restore is best-effort */
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
   // D14: in-app walking route to the nearest-best safe place (OSRM via
   // GET /route). routeKeyRef rounds the position to ~100 m so the route
   // refetches only when the user actually moves, not on every GPS tick;
@@ -1584,6 +1615,11 @@ export default function TacticalDashboard() {
             onCheckIn={answerJourneyCheckIn}
             checkInBusy={checkInBusy}
           />
+        </Reanimated.View>
+
+        {/* D19: Guardian Network — onboarding + availability */}
+        <Reanimated.View entering={FadeInUp.delay(290).duration(500)}>
+          <GuardianCard guardian={guardian} onOpen={() => router.push('/guardian')} />
         </Reanimated.View>
 
         {/* D14: in-app walking route to the nearest-best safe place */}

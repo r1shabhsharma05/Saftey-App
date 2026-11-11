@@ -87,10 +87,35 @@ const dbSelectOne = async (table, id) => {
   }
 };
 
+// D19: select one row by a non-id column (guardianStore.getByPhone).
+// The column is allowlisted to a bare identifier — it is interpolated
+// into the query string, so anything else would be an injection
+// vector. The value is always URL-encoded.
+const dbSelectBy = async (table, column, value) => {
+  if (!/^[a-z_]+$/.test(column || "")) return { ok: false, reason: "invalid-column" };
+  if (!dbStatus().configured) return { ok: false, reason: "not_configured" };
+  const { url } = getConfig();
+  try {
+    const { data } = await transport({
+      method: "GET",
+      url: `${url}/rest/v1/${table}?${column}=eq.${encodeURIComponent(value)}&select=*`,
+      headers: authHeaders(),
+    });
+    if (!Array.isArray(data) || data.length === 0) {
+      return { ok: false, reason: "not_found" };
+    }
+    return { ok: true, row: data[0] };
+  } catch (err) {
+    console.log(`❌ Supabase select ${table} failed:`, err.message);
+    return { ok: false, reason: err.message };
+  }
+};
+
 module.exports = {
   dbStatus,
   dbUpsert,
   dbSelectOne,
+  dbSelectBy,
   // Test seam only — lets tests drive the writer without network.
   // Pass null to restore the production transport.
   _setDbTransport: (fn) => {
