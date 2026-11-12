@@ -89,23 +89,35 @@ const geoAdd = async (key, lng, lat, member) => {
   }
 };
 
-const geoSearch = async (key, lng, lat, radiusKm) => {
+const geoSearch = async (key, lng, lat, radiusKm, { withDist } = {}) => {
   if (!redisStatus().configured) return [];
   try {
-    const result = await transport(
-      "geosearch",
-      key,
-      "fromlonlat",
-      lng,
-      lat,
-      "byradius",
-      radiusKm,
-      "km"
-    );
-    return Array.isArray(result) ? result : [];
+    const args = ["fromlonlat", lng, lat, "byradius", radiusKm, "km"];
+    if (withDist) args.push("withdist");
+    const result = await transport("geosearch", key, ...args);
+    if (!Array.isArray(result)) return [];
+    if (!withDist) return result;
+    // WITHDIST answers [[member, distance], ...] — distances arrive
+    // as strings over REST; coerce once, here, so callers get numbers.
+    return result
+      .filter((row) => Array.isArray(row) && row.length >= 2)
+      .map(([member, dist]) => ({ member, distanceKm: Number(dist) }));
   } catch (err) {
     console.log("❌ Upstash geoSearch failed:", err.message);
     return [];
+  }
+};
+
+// GEO is a sorted set under the hood: ZREM drops a member. Used for
+// lazy cleanup of stale guardian locations (D20) — a member whose
+// location key expired must not keep matching forever.
+const geoRem = async (key, member) => {
+  if (!redisStatus().configured) return 0;
+  try {
+    return await transport("zrem", key, member);
+  } catch (err) {
+    console.log("❌ Upstash geoRem failed:", err.message);
+    return 0;
   }
 };
 
@@ -215,6 +227,7 @@ module.exports = {
   cacheSet,
   geoAdd,
   geoSearch,
+  geoRem,
   checkRateLimit,
   createUpstashStore,
   // Test seam only — lets tests drive the primitives without network.

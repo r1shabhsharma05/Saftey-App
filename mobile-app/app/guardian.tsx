@@ -6,6 +6,10 @@
 // unconfigured it says so plainly and keeps the sign-up saved; the
 // "how it works" copy names the alert flow as coming next (D21),
 // not as live. The code is typed once, sent once, never stored.
+// D20: while on duty the screen shares the guardian's location
+// (one post on toggle-on + a 5-min foreground heartbeat) so the
+// backend's GEO matching can find them; a stale pin (10 min)
+// drops out of matching, and the screen says so plainly.
 import React, { useEffect, useState } from 'react';
 import {
   View,
@@ -17,6 +21,7 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import * as Location from 'expo-location';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../utils/supabase';
 import { ensureProfile } from '../utils/auth';
@@ -33,6 +38,7 @@ import {
   GUARDIAN_ROLES,
   GUARDIAN_STORAGE_KEY,
   fetchGuardian,
+  postGuardianLocation,
   registerGuardian,
   requestVerificationCode,
   setGuardianAvailability,
@@ -66,6 +72,10 @@ export default function GuardianScreen() {
   const [smsUnavailable, setSmsUnavailable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toggleBusy, setToggleBusy] = useState(false);
+  // Location sharing while on duty (D20): null = not attempted yet
+  // (or off duty), true/false = last post accepted/rejected. A
+  // false here means matching cannot find this guardian.
+  const [locationShared, setLocationShared] = useState<boolean | null>(null);
 
   useEffect(() => {
     load();
@@ -199,6 +209,40 @@ export default function GuardianScreen() {
     }
   };
 
+  // D20: one fresh pin for the backend's GEO matching. Permission
+  // denied or post failed → false, so the screen can say matching
+  // cannot find this guardian instead of implying it can.
+  const shareLocation = async (): Promise<boolean> => {
+    if (!guardian) return false;
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setLocationShared(false);
+        return false;
+      }
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const ok = await postGuardianLocation(BACKEND_URL, guardian.id, pos.coords.latitude, pos.coords.longitude);
+      setLocationShared(ok);
+      return ok;
+    } catch {
+      setLocationShared(false);
+      return false;
+    }
+  };
+
+  // D20 heartbeat: a pin goes stale after 10 min, so re-post every
+  // 5 min while on duty and this screen is open (foreground only —
+  // background location is a D21 live-tracking concern). Cleared the
+  // moment the guardian goes off duty.
+  useEffect(() => {
+    if (!guardian || guardian.state !== 'verified' || !guardian.available) return;
+    const timer = setInterval(() => {
+      void shareLocation();
+    }, 5 * 60 * 1000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guardian?.available, guardian?.id]);
+
   const handleToggle = async (value: boolean) => {
     if (!guardian) return;
     setToggleBusy(true);
@@ -213,6 +257,11 @@ export default function GuardianScreen() {
         return;
       }
       await rememberGuardian(res.guardian);
+      if (value) {
+        await shareLocation();
+      } else {
+        setLocationShared(null);
+      }
     } finally {
       setToggleBusy(false);
     }
@@ -373,6 +422,15 @@ export default function GuardianScreen() {
                       thumbColor={guardian.available ? Theme.colors.success : Theme.colors.onSurfaceVariant}
                     />
                   </View>
+                  {guardian.available && (
+                    <Text style={styles.meta}>
+                      {locationShared === true
+                        ? 'Location shared — nearby SOS alerts can find you.'
+                        : locationShared === false
+                          ? 'Location not shared — matching can’t find you. Keep this screen open and check location permission.'
+                          : 'Sharing your location…'}
+                    </Text>
+                  )}
                   <Text style={styles.meta}>Verified {guardian.verifiedAt ? new Date(guardian.verifiedAt).toLocaleDateString() : ''} · {guardian.phone}</Text>
                 </GlassCard>
                 <GlassCard>

@@ -12,6 +12,7 @@ const {
   cacheSet,
   geoAdd,
   geoSearch,
+  geoRem,
   checkRateLimit,
   createUpstashStore,
   _setRedisTransport,
@@ -22,6 +23,19 @@ const kv = new Map();
 const ttls = new Map();
 const geo = new Map();
 const calls = [];
+// The fake Upstash stores GEO members WITH coords so a WITHDIST
+// search can answer a real distance (same shape the real service
+// returns: [[member, "0.977"], ...]). Distances are haversine —
+// this is the fake's own implementation, not the code under test.
+const fakeHaversineKm = (lng1, lat1, lng2, lat2) => {
+  const r = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return 2 * r * Math.asin(Math.sqrt(a));
+};
 const fakeTransport = async (command, ...args) => {
   calls.push([command, ...args]);
   switch (command) {
@@ -47,11 +61,29 @@ const fakeTransport = async (command, ...args) => {
       return ttls.has(args[0]) ? ttls.get(args[0]) : -1;
     case "geoadd": {
       if (!geo.has(args[0])) geo.set(args[0], []);
-      geo.get(args[0]).push(args[3]);
+      geo.get(args[0]).push({ member: args[3], lng: Number(args[1]), lat: Number(args[2]) });
       return 1;
     }
-    case "geosearch":
-      return geo.has(args[0]) ? [...geo.get(args[0])] : [];
+    case "geosearch": {
+      // args: key, "fromlonlat", lng, lat, "byradius", radiusKm, "km", ["withdist"]
+      const members = geo.has(args[0]) ? geo.get(args[0]) : [];
+      const lng = Number(args[2]);
+      const lat = Number(args[3]);
+      const radiusKm = Number(args[5]);
+      const within = members.filter((m) => fakeHaversineKm(lng, lat, m.lng, m.lat) <= radiusKm);
+      if (args.includes("withdist")) {
+        return within.map((m) => [m.member, fakeHaversineKm(lng, lat, m.lng, m.lat).toFixed(3)]);
+      }
+      return within.map((m) => m.member);
+    }
+    case "zrem": {
+      if (!geo.has(args[0])) return 0;
+      const list = geo.get(args[0]);
+      const idx = list.findIndex((m) => m.member === args[1]);
+      if (idx === -1) return 0;
+      list.splice(idx, 1);
+      return 1;
+    }
     default:
       throw new Error(`unexpected command ${command}`);
   }
@@ -194,4 +226,28 @@ test("checkRateLimit (L2): a TTL-less key self-heals on the next hit", async () 
   const expires = calls.slice(before).filter((c) => c[0] === "expire" && c[1] === "heal-key");
   assert.equal(expires.length, 1);
   assert.equal(ttls.get("heal-key"), 60);
+});
+
+test("geoSearch withDist returns member + numeric distanceKm", async () => {
+  await geoAdd("geo-dist", 77.2, 28.6, "d1");
+  await geoAdd("geo-dist", 77.21, 28.6, "d2");
+  const res = await geoSearch("geo-dist", 77.2, 28.6, 2, { withDist: true });
+  assert.equal(res.length, 2);
+  assert.equal(res[0].member, "d1");
+  assert.equal(res[0].distanceKm, 0);
+  assert.equal(res[1].member, "d2");
+  // 0.01° longitude at 28.6°N ≈ 0.977 km — range, not an exact
+  // literal, because the fake rounds to 3 decimals.
+  assert.ok(res[1].distanceKm > 0.9 && res[1].distanceKm < 1.0);
+});
+
+test("geoSearch without withDist still returns plain members", async () => {
+  assert.deepEqual(await geoSearch("geo-dist", 77.2, 28.6, 2), ["d1", "d2"]);
+});
+
+test("geoRem removes a member and reports 0 for a missing one", async () => {
+  await geoAdd("geo-rem", 77.2, 28.6, "r1");
+  assert.equal(await geoRem("geo-rem", "r1"), 1);
+  assert.equal(await geoRem("geo-rem", "r1"), 0);
+  assert.deepEqual(await geoSearch("geo-rem", 77.2, 28.6, 2), []);
 });

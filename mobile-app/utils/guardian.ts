@@ -196,3 +196,67 @@ export const fetchGuardian = async (backendUrl: string, id: string): Promise<Gua
     return null;
   }
 };
+
+// --- D20: GEO matching (location sharing + nearby list) ---
+
+/** Posts the guardian's current pin. True only when the server accepted it. */
+export const postGuardianLocation = async (
+  backendUrl: string,
+  id: string,
+  lat: number,
+  lng: number
+): Promise<boolean> => {
+  const { reached, data } = await postJson(
+    `${backendUrl}/guardians/${encodeURIComponent(id)}/location`,
+    { lat, lng }
+  );
+  return reached && !!data && typeof data === 'object' && (data as { success?: boolean }).success === true;
+};
+
+/** A ranked nearby guardian: distanceKm + score, NEVER coordinates. */
+export interface NearbyGuardian {
+  id: string;
+  name: string;
+  role: GuardianRole;
+  available: boolean;
+  distanceKm: number;
+  score: number;
+}
+
+export const isValidNearbyGuardian = (g: unknown): g is NearbyGuardian =>
+  !!g &&
+  typeof g === 'object' &&
+  typeof (g as NearbyGuardian).id === 'string' &&
+  typeof (g as NearbyGuardian).name === 'string' &&
+  (['family', 'friend', 'volunteer', 'security'] as string[]).includes((g as NearbyGuardian).role) &&
+  typeof (g as NearbyGuardian).available === 'boolean' &&
+  typeof (g as NearbyGuardian).distanceKm === 'number' &&
+  typeof (g as NearbyGuardian).score === 'number';
+
+/** Ranked guardians near a point (default radius 2 km). Null when unreachable. */
+export const fetchNearbyGuardians = async (
+  backendUrl: string,
+  lat: number,
+  lng: number,
+  radiusKm = 2
+): Promise<NearbyGuardian[] | null> => {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(
+        `${backendUrl}/guardians/nearby?lat=${lat}&lng=${lng}&radiusKm=${radiusKm}`,
+        { headers: guardianHeaders(), signal: controller.signal }
+      );
+      const data = await response.json().catch(() => null);
+      if (!data || typeof data !== 'object') return null;
+      const list = (data as { guardians?: unknown }).guardians;
+      if (!Array.isArray(list)) return null;
+      return list.filter(isValidNearbyGuardian);
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    return null;
+  }
+};

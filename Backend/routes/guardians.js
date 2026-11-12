@@ -23,7 +23,7 @@
 const express = require("express");
 const requireApiKey = require("../middleware/requireApiKey");
 const { trackingLimiter } = require("../middleware/rateLimit");
-const { sanitizeText } = require("../lib/validate");
+const { sanitizeText, isValidLatitude, isValidLongitude, toNumber } = require("../lib/validate");
 const { normalizePhone, smsStatus, sendSms } = require("../services/sms");
 const {
   GUARDIAN_ROLES,
@@ -34,6 +34,15 @@ const {
   toPublic,
 } = require("../services/guardian");
 const guardianStore = require("../services/guardianStore");
+const {
+  DEFAULT_RADIUS_KM,
+  MIN_RADIUS_KM,
+  MAX_RADIUS_KM,
+  DEFAULT_LIMIT,
+  MAX_LIMIT,
+  recordGuardianLocation,
+  findNearbyGuardians,
+} = require("../services/guardianMatch");
 const { audit } = require("../services/audit");
 
 const router = express.Router();
@@ -45,6 +54,15 @@ const loadGuardian = async (req, res) => {
     return null;
   }
   return guardian;
+};
+
+// Query-param clamp: a non-numeric value falls back to the default,
+// a numeric one is clamped into [min, max] (integers when `integer`).
+const clampNumber = (v, fallback, min, max, integer = false) => {
+  let n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  if (integer) n = Math.floor(n);
+  return Math.max(min, Math.min(max, n));
 };
 
 // 📝 REGISTER — become a guardian (or re-register the same phone).
@@ -183,6 +201,45 @@ router.post("/guardians/:id/availability", trackingLimiter, requireApiKey, async
   guardianStore.save(guardian);
   audit("guardian.availability", { actorKey: req.header("x-api-key"), ip: req.ip, meta: { guardianId: guardian.id, available } });
   res.json({ success: true, guardian: toPublic(guardian) });
+});
+
+// 📍 GUARDIAN LOCATION — the guardian's current pin (D20 GEO
+// matching). Verified-only, same gate as availability: a pending
+// guardian's pin is useless for matching and collecting it would be
+// data without purpose. Verified-but-off-duty may still post — the
+// pin is fresh when they toggle on later. The pin NEVER comes back
+// in any response: the app knows its own location; other callers get
+// distanceKm only (see GET /guardians/nearby). Audit carries the
+// guardianId only — never coordinates.
+router.post("/guardians/:id/location", trackingLimiter, requireApiKey, async (req, res) => {
+  const guardian = await loadGuardian(req, res);
+  if (!guardian) return;
+  const { lat, lng } = req.body;
+  if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
+    return res.status(400).json({ success: false, error: "Invalid location data" });
+  }
+  if (guardian.state !== "verified") {
+    return res.status(409).json({ success: false, error: "Guardian must be verified before sharing location" });
+  }
+  const pin = await recordGuardianLocation(guardian.id, toNumber(lat), toNumber(lng));
+  audit("guardian.location", { actorKey: req.header("x-api-key"), ip: req.ip, meta: { guardianId: guardian.id } });
+  res.json({ success: true, guardian: toPublic(guardian), locationUpdatedAt: pin.updatedAt });
+});
+
+// 🛰️ NEARBY GUARDIANS — the D20 matching engine over HTTP: verified
+// + available guardians within radiusKm of (lat, lng), ranked
+// best-first. Radius defaults to the plan's 2 km (clamped 0.5–10),
+// limit defaults to 10 (clamped 1–50). Response items carry
+// distanceKm + score — NEVER coordinates.
+router.get("/guardians/nearby", trackingLimiter, requireApiKey, async (req, res) => {
+  const { lat, lng } = req.query;
+  if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
+    return res.status(400).json({ success: false, error: "Invalid location data" });
+  }
+  const radiusKm = clampNumber(req.query.radiusKm, DEFAULT_RADIUS_KM, MIN_RADIUS_KM, MAX_RADIUS_KM);
+  const limit = clampNumber(req.query.limit, DEFAULT_LIMIT, 1, MAX_LIMIT, true);
+  const guardians = await findNearbyGuardians({ lat: toNumber(lat), lng: toNumber(lng), radiusKm, limit });
+  res.json({ success: true, guardians, radiusKm, limit, count: guardians.length });
 });
 
 // 🔍 GUARDIAN READ (owner read — what the app polls for the
