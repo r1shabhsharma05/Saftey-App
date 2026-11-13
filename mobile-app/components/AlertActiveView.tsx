@@ -6,11 +6,13 @@ import {
   Animated,
   ScrollView,
   Linking,
+  TouchableOpacity,
 } from 'react-native';
 import Reanimated, { FadeInUp } from 'react-native-reanimated';
 import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import { Theme } from '../constants/theme';
 import { rankSafePlaces, calculateBearing, getCardinalDirection, SafePlace } from '../utils/escapeLogic';
+import { VICTIM_PRESET_MESSAGES, type AlertGuardiansSummary } from '../utils/guardian';
 import ScreenBackground from './ui/ScreenBackground';
 import GlassCard from './ui/GlassCard';
 import GlowButton from './ui/GlowButton';
@@ -37,9 +39,14 @@ interface Props {
   // final location reached contacts, 'failed' if it could not be
   // delivered, null if no burst was attempted yet.
   batteryFinalStatus?: 'sent' | 'failed' | null;
+  // D21: the guardian summary polled with the receipts (null until
+  // the first poll answers) + the victim's preset-message sender.
+  guardians?: AlertGuardiansSummary | null;
+  alertId?: string | null;
+  onSendPreset?: (key: string) => void;
 }
 
-export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [], delivery = null, ackCount = 0, escalation = null, batteryFinalStatus = null }: Props) {
+export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [], delivery = null, ackCount = 0, escalation = null, batteryFinalStatus = null, guardians = null, alertId = null, onSendPreset }: Props) {
   const [timer, setTimer] = useState(0);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const [bestPlace, setBestPlace] = useState<SafePlace | null>(null);
@@ -246,6 +253,56 @@ export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [
           </Reanimated.View>
         )}
 
+        {/* D21 guardians — who was notified, who is coming, how far,
+            and preset messages. Null until the first status poll
+            answers; "no guardians nearby" is shown honestly instead
+            of an empty card. */}
+        {guardians && (
+          <Reanimated.View entering={FadeInUp.delay(280).duration(500)} style={styles.deliverySection}>
+            <SectionHeader
+              icon={<MaterialCommunityIcons name="shield-check" size={18} color={Theme.colors.primary} />}
+              title="Guardians"
+            />
+            <GlassCard style={styles.deliveryCard}>
+              {guardians.notified === 0 ? (
+                <Text style={styles.deliveryHint}>No guardians nearby for this alert — your contacts were alerted.</Text>
+              ) : (
+                <>
+                  {guardians.responses.map((r) => {
+                    const loc = guardians.locations.find((l) => l.guardianId === r.guardianId);
+                    return (
+                      <View key={r.guardianId} style={styles.deliveryRow}>
+                        <Text style={styles.deliveryChannel}>{r.name} · {r.role}</Text>
+                        <Text style={[styles.deliveryState, { color: r.state === 'accepted' ? Theme.colors.success : Theme.colors.onSurfaceVariant }]}>
+                          {r.state === 'accepted'
+                            ? `On the way${loc?.distanceKm != null ? ` · ${loc.distanceKm.toFixed(1)} km` : ''}`
+                            : r.state === 'declined'
+                              ? "Can't come"
+                              : 'Notified'}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                  {guardians.messages.slice(-3).map((m, i) => (
+                    <Text key={`${m.at}-${i}`} style={styles.deliveryHint}>
+                      {m.from === 'victim' ? 'You: ' : `${m.name || 'Guardian'}: `}{m.text}
+                    </Text>
+                  ))}
+                  {alertId && onSendPreset && (
+                    <View style={styles.presetRow}>
+                      {VICTIM_PRESET_MESSAGES.map((p) => (
+                        <TouchableOpacity key={p.key} onPress={() => onSendPreset(p.key)} style={styles.presetChip} activeOpacity={0.7}>
+                          <Text style={styles.presetText}>{p.label}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+                </>
+              )}
+            </GlassCard>
+          </Reanimated.View>
+        )}
+
         {/* Stop */}
         <Reanimated.View entering={FadeInUp.delay(300).duration(500)} style={styles.stopWrap}>
           <GlowButton
@@ -293,6 +350,15 @@ const styles = StyleSheet.create({
   deliveryChannel: { fontFamily: Theme.fonts.headline, fontSize: 14, color: Theme.colors.onSurface },
   deliveryState: { fontFamily: Theme.fonts.label, fontSize: 12, letterSpacing: 0.5 },
   deliveryHint: { fontFamily: Theme.fonts.body, fontSize: 11, color: Theme.colors.onSurfaceVariant, marginTop: 2 },
+  presetRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
+  presetChip: {
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  presetText: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurface },
   altRow: { gap: 12, paddingRight: 20 },
   stopWrap: { marginTop: 30, alignItems: 'center', gap: 10 },
   stopBtn: { width: 250 },

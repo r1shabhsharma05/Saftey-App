@@ -260,3 +260,184 @@ export const fetchNearbyGuardians = async (
     return null;
   }
 };
+
+// --- D21: guardian alert flow (accept/decline, live tracking, preset messages) ---
+
+/** One guardian's response to one alert (server state machine). */
+export type GuardianResponseState = 'notified' | 'accepted' | 'declined';
+
+/** A preset message as the server returns it (text is server-rendered from the key). */
+export interface GuardianAlertMessage {
+  from: string; // 'victim' or a guardian id
+  name: string | null;
+  key: string;
+  text: string;
+  at: string;
+}
+
+/** A live alert this guardian was notified about (GET /guardians/:id/alerts). */
+export interface GuardianAlert {
+  alertId: string;
+  state: string;
+  lat: number | null;
+  lng: number | null;
+  locationAt: string | null;
+  responseState: GuardianResponseState;
+  distanceKm: number | null;
+  score: number | null;
+  notifiedAt: string;
+  respondedAt: string | null;
+  messages: GuardianAlertMessage[];
+}
+
+/** The victim-side guardian summary (GET /alert/:id → alert.guardians). */
+export interface AlertGuardianResponse {
+  guardianId: string;
+  name: string;
+  role: GuardianRole;
+  state: GuardianResponseState;
+  distanceKm: number | null;
+  score: number | null;
+  notifiedAt: string;
+  respondedAt: string | null;
+}
+
+export interface AlertGuardianLocation {
+  guardianId: string;
+  name: string;
+  lat: number;
+  lng: number;
+  distanceKm: number | null;
+  updatedAt: string;
+}
+
+export interface AlertGuardiansSummary {
+  notified: number;
+  accepted: number;
+  responses: AlertGuardianResponse[];
+  locations: AlertGuardianLocation[];
+  messages: GuardianAlertMessage[];
+}
+
+/** Button labels for the preset messages — the exact text the server sends. */
+export const GUARDIAN_PRESET_MESSAGES: { key: string; label: string }[] = [
+  { key: 'on-my-way', label: "I'm on my way to you" },
+  { key: 'almost-there', label: 'Almost there — stay where you are' },
+  { key: 'calling-police', label: "I'm calling the police" },
+];
+
+export const VICTIM_PRESET_MESSAGES: { key: string; label: string }[] = [
+  { key: 'please-hurry', label: 'Please hurry' },
+  { key: 'i-am-safe', label: "I'm safe now — thank you" },
+  { key: 'call-police', label: 'Please call the police' },
+];
+
+const isValidGuardianAlertMessage = (m: unknown): m is GuardianAlertMessage =>
+  !!m &&
+  typeof m === 'object' &&
+  typeof (m as GuardianAlertMessage).from === 'string' &&
+  ((m as GuardianAlertMessage).name === null || typeof (m as GuardianAlertMessage).name === 'string') &&
+  typeof (m as GuardianAlertMessage).key === 'string' &&
+  typeof (m as GuardianAlertMessage).text === 'string' &&
+  typeof (m as GuardianAlertMessage).at === 'string';
+
+export const isValidGuardianAlert = (a: unknown): a is GuardianAlert =>
+  !!a &&
+  typeof a === 'object' &&
+  typeof (a as GuardianAlert).alertId === 'string' &&
+  typeof (a as GuardianAlert).state === 'string' &&
+  ((a as GuardianAlert).lat === null || typeof (a as GuardianAlert).lat === 'number') &&
+  ((a as GuardianAlert).lng === null || typeof (a as GuardianAlert).lng === 'number') &&
+  (['notified', 'accepted', 'declined'] as string[]).includes((a as GuardianAlert).responseState) &&
+  Array.isArray((a as GuardianAlert).messages) &&
+  (a as GuardianAlert).messages.every(isValidGuardianAlertMessage);
+
+export const isValidAlertGuardians = (g: unknown): g is AlertGuardiansSummary =>
+  !!g &&
+  typeof g === 'object' &&
+  typeof (g as AlertGuardiansSummary).notified === 'number' &&
+  typeof (g as AlertGuardiansSummary).accepted === 'number' &&
+  Array.isArray((g as AlertGuardiansSummary).responses) &&
+  Array.isArray((g as AlertGuardiansSummary).locations) &&
+  Array.isArray((g as AlertGuardiansSummary).messages);
+
+/** Live alerts this guardian was notified about. Null when unreachable. */
+export const fetchGuardianAlerts = async (
+  backendUrl: string,
+  id: string
+): Promise<GuardianAlert[] | null> => {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(`${backendUrl}/guardians/${encodeURIComponent(id)}/alerts`, {
+        headers: guardianHeaders(),
+        signal: controller.signal,
+      });
+      const data = await response.json().catch(() => null);
+      if (!data || typeof data !== 'object') return null;
+      const list = (data as { alerts?: unknown }).alerts;
+      if (!Array.isArray(list)) return null;
+      return list.filter(isValidGuardianAlert);
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    return null;
+  }
+};
+
+/** Accept an alert ("I'm coming"). True only when the server accepted it. */
+export const acceptGuardianAlert = async (
+  backendUrl: string,
+  alertId: string,
+  guardianId: string
+): Promise<boolean> => {
+  const { reached, data } = await postJson(
+    `${backendUrl}/alert/${encodeURIComponent(alertId)}/guardian/${encodeURIComponent(guardianId)}/accept`,
+    {}
+  );
+  return reached && !!data && typeof data === 'object' && (data as { success?: boolean }).success === true;
+};
+
+/** Decline an alert ("I can't come"). True only when the server accepted it. */
+export const declineGuardianAlert = async (
+  backendUrl: string,
+  alertId: string,
+  guardianId: string
+): Promise<boolean> => {
+  const { reached, data } = await postJson(
+    `${backendUrl}/alert/${encodeURIComponent(alertId)}/guardian/${encodeURIComponent(guardianId)}/decline`,
+    {}
+  );
+  return reached && !!data && typeof data === 'object' && (data as { success?: boolean }).success === true;
+};
+
+/** Post this guardian's live pin for an accepted alert. True only when accepted. */
+export const postGuardianAlertLocation = async (
+  backendUrl: string,
+  alertId: string,
+  guardianId: string,
+  lat: number,
+  lng: number
+): Promise<boolean> => {
+  const { reached, data } = await postJson(
+    `${backendUrl}/alert/${encodeURIComponent(alertId)}/guardian/${encodeURIComponent(guardianId)}/location`,
+    { lat, lng }
+  );
+  return reached && !!data && typeof data === 'object' && (data as { success?: boolean }).success === true;
+};
+
+/** Send one preset message (victim or guardian side). True only when accepted. */
+export const sendAlertMessage = async (
+  backendUrl: string,
+  alertId: string,
+  input: { sender: 'victim' | 'guardian'; guardianId?: string; key: string }
+): Promise<boolean> => {
+  const { reached, data } = await postJson(`${backendUrl}/alert/${encodeURIComponent(alertId)}/message`, {
+    sender: input.sender,
+    ...(input.guardianId ? { guardianId: input.guardianId } : {}),
+    key: input.key,
+  });
+  return reached && !!data && typeof data === 'object' && (data as { success?: boolean }).success === true;
+};

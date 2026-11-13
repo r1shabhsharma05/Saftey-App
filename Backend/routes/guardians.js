@@ -34,6 +34,8 @@ const {
   toPublic,
 } = require("../services/guardian");
 const guardianStore = require("../services/guardianStore");
+const alertStore = require("../services/alertStore");
+const { guardianAlertSummary } = require("../services/guardianAlert");
 const {
   DEFAULT_RADIUS_KM,
   MIN_RADIUS_KM,
@@ -240,6 +242,37 @@ router.get("/guardians/nearby", trackingLimiter, requireApiKey, async (req, res)
   const limit = clampNumber(req.query.limit, DEFAULT_LIMIT, 1, MAX_LIMIT, true);
   const guardians = await findNearbyGuardians({ lat: toNumber(lat), lng: toNumber(lng), radiusKm, limit });
   res.json({ success: true, guardians, radiusKm, limit, count: guardians.length });
+});
+
+// 🚨 MY ALERTS — the live SOS alerts this guardian was notified
+// about (D21). Polled by the guardian home screen while on duty.
+// Carries the VICTIM's pin — that is the point of accepting — plus
+// this guardian's response state and the preset messages so far.
+// Same-instance caveat as GET /alert/:id until the Supabase mirror
+// is live; a closed alert leaves the list (its emergency is over).
+router.get("/guardians/:id/alerts", trackingLimiter, requireApiKey, async (req, res) => {
+  const guardian = await guardianStore.get(req.params.id);
+  if (!guardian) {
+    return res.status(404).json({ success: false, error: "Guardian not found" });
+  }
+  const alerts = alertStore.findAlertsForGuardian(guardian.id).map((alert) => {
+    const response = alert.guardians.responses[guardian.id];
+    const summary = guardianAlertSummary(alert.guardians, { lat: alert.lat, lng: alert.lng });
+    return {
+      alertId: alert.id,
+      state: alert.state,
+      lat: alert.lat ?? null,
+      lng: alert.lng ?? null,
+      locationAt: alert.locationAt ?? null,
+      responseState: response.state,
+      distanceKm: response.distanceKm,
+      score: response.score,
+      notifiedAt: response.notifiedAt,
+      respondedAt: response.respondedAt,
+      messages: summary.messages,
+    };
+  });
+  res.json({ success: true, guardianId: guardian.id, alerts });
 });
 
 // 🔍 GUARDIAN READ (owner read — what the app polls for the

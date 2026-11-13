@@ -34,6 +34,9 @@ import GuardianCard from '../../components/GuardianCard';
 import {
   GUARDIAN_STORAGE_KEY,
   fetchGuardian,
+  isValidAlertGuardians,
+  sendAlertMessage,
+  type AlertGuardiansSummary,
   type Guardian,
 } from '../../utils/guardian';
 import {
@@ -160,6 +163,9 @@ export default function TacticalDashboard() {
   // receipts it shows. Null until an SOS has reached the server.
   const [activeAlertId, setActiveAlertId] = useState<string | null>(null);
   const [deliveryReceipts, setDeliveryReceipts] = useState<any[] | null>(null);
+  // D21: the guardian summary polled with the receipts — who was
+  // notified, who accepted, their live pins, preset messages.
+  const [alertGuardians, setAlertGuardians] = useState<AlertGuardiansSummary | null>(null);
   // D10: distinct contact confirmations + escalation schedule/runs,
   // polled with the receipts — the victim sees whether anyone has
   // confirmed and whether the ladder is still running.
@@ -848,9 +854,22 @@ export default function TacticalDashboard() {
         setDeliveryReceipts(data.alert.delivery);
         setAckCount(Array.isArray(data.alert.acks) ? data.alert.acks.length : 0);
         setEscalation(data.alert.escalation ?? null);
+        setAlertGuardians(isValidAlertGuardians(data.alert.guardians) ? data.alert.guardians : null);
       }
     } catch {
       /* polling is best-effort; the last receipts stay on screen */
+    }
+  };
+
+  // D21: one victim preset message to the responding guardians, then
+  // refresh the guardian summary so the sent line appears.
+  const sendVictimPreset = async (key: string): Promise<void> => {
+    if (!activeAlertId) return;
+    try {
+      await sendAlertMessage(BACKEND_URL, activeAlertId, { sender: 'victim', key });
+      await fetchAlertStatus(activeAlertId);
+    } catch {
+      /* best-effort like the rest of the SOS screen */
     }
   };
 
@@ -1421,12 +1440,16 @@ export default function TacticalDashboard() {
         ackCount={ackCount}
         escalation={escalation}
         batteryFinalStatus={batteryFinalStatus}
+        guardians={alertGuardians}
+        alertId={activeAlertId}
+        onSendPreset={sendVictimPreset}
         cachedSafePlaces={cachedSafePlaces}
         onStop={() => {
           setStatus('SAFE');
           // D11: the final-burst line belongs to the ended alert.
           finalBurstSentRef.current = null;
           setBatteryFinalStatus(null);
+          setAlertGuardians(null);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         }}
       />

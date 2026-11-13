@@ -11,6 +11,7 @@
 // Row shape (see supabase/migrations/20261026080000_sos_alerts_audit.sql):
 // id, state, sent, failed, contacts_count, created_at, updated_at.
 const { dbStatus, dbUpsert, dbSelectOne } = require("./supabaseDb");
+const { guardianAlertSummary } = require("./guardianAlert");
 
 const MAX_ALERTS = 500;
 
@@ -47,6 +48,10 @@ const toRow = (alert) => ({
   sos_message: alert.sosMessage ?? null,
   sos_contacts: alert.sosContacts || [],
   retry_consumed: alert.retryConsumed || [],
+  // D21 guardian alert flow (migration 20261113080000_alert_guardians.sql):
+  // responses + live pins + preset messages, one blob. Null for
+  // alerts that predate D21 or never matched a guardian.
+  guardians: alert.guardians ?? null,
 });
 
 const fromRow = (row) => ({
@@ -69,6 +74,7 @@ const fromRow = (row) => ({
   sosMessage: row.sos_message ?? null,
   sosContacts: row.sos_contacts || [],
   retryConsumed: row.retry_consumed || [],
+  guardians: row.guardians ?? null,
 });
 
 // Public shape for GET /alert/:id — no history, no internals. Delivery
@@ -95,6 +101,12 @@ const toPublic = (alert) => ({
   lat: alert.lat ?? null,
   lng: alert.lng ?? null,
   locationAt: alert.locationAt ?? null,
+  // D21: the victim's guardian summary (responses + accepted live
+  // pins + messages) — null until a guardian is notified for this
+  // alert. The key-holding caller is the victim's own app; the
+  // contacts-side page has its own token-gated read path and never
+  // sees this shape.
+  guardians: alert.guardians ? guardianAlertSummary(alert.guardians, { lat: alert.lat, lng: alert.lng }) : null,
 });
 
 const evictIfNeeded = () => {
@@ -136,10 +148,31 @@ const get = async (id) => {
   return res.ok ? fromRow(res.row) : null;
 };
 
+// Live alerts one guardian was notified about (D21 guardian poll).
+// Memory scan over the ≤500 bounded alerts: same-instance only
+// until the Supabase mirror is live (same caveat as get above), and
+// self-cleaning — an evicted alert simply stops appearing. Live
+// means delivered/acked OR failed: a failed alert's contacts never
+// got the SOS, so its guardians may be the ONLY rescue path —
+// hiding it from them would strand the victim. Only a closed alert
+// leaves the list: its emergency is over, and a guardian polling it
+// would rush to a dead pin.
+const findAlertsForGuardian = (guardianId) => {
+  if (typeof guardianId !== "string" || !guardianId) return [];
+  const found = [];
+  for (const alert of memory.values()) {
+    if (alert.state !== "delivered" && alert.state !== "acked" && alert.state !== "failed") continue;
+    if (!alert.guardians || !alert.guardians.responses || !alert.guardians.responses[guardianId]) continue;
+    found.push(alert);
+  }
+  return found;
+};
+
 module.exports = {
   save,
   get,
   toPublic,
+  findAlertsForGuardian,
   MAX_ALERTS,
   // Test seams only.
   _clearMemory: () => memory.clear(),

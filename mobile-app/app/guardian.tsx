@@ -35,15 +35,22 @@ import StatusPill from '../components/ui/StatusPill';
 import SectionHeader from '../components/ui/SectionHeader';
 import GlowButton from '../components/ui/GlowButton';
 import {
+  GUARDIAN_PRESET_MESSAGES,
   GUARDIAN_ROLES,
   GUARDIAN_STORAGE_KEY,
+  acceptGuardianAlert,
+  declineGuardianAlert,
   fetchGuardian,
+  fetchGuardianAlerts,
+  postGuardianAlertLocation,
   postGuardianLocation,
   registerGuardian,
   requestVerificationCode,
+  sendAlertMessage,
   setGuardianAvailability,
   verifyGuardianCode,
   type Guardian,
+  type GuardianAlert,
   type GuardianRole,
 } from '../utils/guardian';
 
@@ -76,6 +83,11 @@ export default function GuardianScreen() {
   // (or off duty), true/false = last post accepted/rejected. A
   // false here means matching cannot find this guardian.
   const [locationShared, setLocationShared] = useState<boolean | null>(null);
+  // D21: live alerts this guardian was notified about (polled while
+  // on duty). The alert the guardian accepted, if any, is the one
+  // getting the 30 s location heartbeat below.
+  const [incomingAlerts, setIncomingAlerts] = useState<GuardianAlert[]>([]);
+  const [alertBusy, setAlertBusy] = useState<string | null>(null);
 
   useEffect(() => {
     load();
@@ -243,6 +255,86 @@ export default function GuardianScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [guardian?.available, guardian?.id]);
 
+  // D21: one live pin for an ACCEPTED alert, so the victim can see
+  // help coming. Accepted-only — a merely-notified guardian has not
+  // consented to share location for that alert yet.
+  const shareAlertLocation = async (alertId: string): Promise<boolean> => {
+    if (!guardian) return false;
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') return false;
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      return await postGuardianAlertLocation(BACKEND_URL, alertId, guardian.id, pos.coords.latitude, pos.coords.longitude);
+    } catch {
+      return false;
+    }
+  };
+
+  // D21 alert poll: while on duty, check every 30 s for SOS alerts
+  // this guardian was notified about, and keep feeding the victim a
+  // live pin for every accepted one (foreground only — same limit as
+  // the D20 matching heartbeat).
+  useEffect(() => {
+    if (!guardian || guardian.state !== 'verified' || !guardian.available) return;
+    const poll = async () => {
+      const alerts = await fetchGuardianAlerts(BACKEND_URL, guardian.id);
+      if (!alerts) return;
+      setIncomingAlerts(alerts);
+      for (const a of alerts) {
+        if (a.responseState === 'accepted') {
+          await shareAlertLocation(a.alertId);
+        }
+      }
+    };
+    void poll();
+    const timer = setInterval(() => {
+      void poll();
+    }, 30 * 1000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guardian?.available, guardian?.id]);
+
+  // D21: accept or decline one alert, then refresh the list (and
+  // share a first pin immediately on accept).
+  const handleRespond = async (alertId: string, accept: boolean) => {
+    if (!guardian) return;
+    setAlertBusy(alertId);
+    try {
+      const ok = accept
+        ? await acceptGuardianAlert(BACKEND_URL, alertId, guardian.id)
+        : await declineGuardianAlert(BACKEND_URL, alertId, guardian.id);
+      if (!ok) {
+        showAppDialog('Not Updated', 'The response could not be sent. Check your internet and try again.');
+        return;
+      }
+      const alerts = await fetchGuardianAlerts(BACKEND_URL, guardian.id);
+      if (alerts) setIncomingAlerts(alerts);
+      if (accept) await shareAlertLocation(alertId);
+    } finally {
+      setAlertBusy(null);
+    }
+  };
+
+  // D21: one preset message to the victim of an accepted alert.
+  const handlePreset = async (alertId: string, key: string) => {
+    if (!guardian) return;
+    setAlertBusy(alertId);
+    try {
+      const ok = await sendAlertMessage(BACKEND_URL, alertId, { sender: 'guardian', guardianId: guardian.id, key });
+      if (!ok) {
+        showAppDialog('Not Sent', 'The message could not be sent. Check your internet and try again.');
+        return;
+      }
+      const alerts = await fetchGuardianAlerts(BACKEND_URL, guardian.id);
+      if (alerts) setIncomingAlerts(alerts);
+    } finally {
+      setAlertBusy(null);
+    }
+  };
+
+  const notifiedAlerts = incomingAlerts.filter((a) => a.responseState === 'notified');
+  const acceptedAlerts = incomingAlerts.filter((a) => a.responseState === 'accepted');
+
   const handleToggle = async (value: boolean) => {
     if (!guardian) return;
     setToggleBusy(true);
@@ -261,6 +353,7 @@ export default function GuardianScreen() {
         await shareLocation();
       } else {
         setLocationShared(null);
+        setIncomingAlerts([]);
       }
     } finally {
       setToggleBusy(false);
@@ -439,11 +532,70 @@ export default function GuardianScreen() {
                     title="How it works"
                   />
                   <Text style={styles.copy}>
-                    When someone near you sends an SOS, verified guardians on duty get an alert with their live
-                    location. Accepting an alert, live tracking and preset messages arrive with the alert flow — this
-                    screen manages your guardian status for now.
+                    When someone near you sends an SOS, it appears below with their live location. Accept to share
+                    your live location with them and send preset messages — decline if you can&apos;t come.
                   </Text>
                 </GlassCard>
+
+                {notifiedAlerts.map((a) => (
+                  <GlassCard key={a.alertId} edgeColor={Theme.colors.tertiary}>
+                    <SectionHeader
+                      icon={<MaterialCommunityIcons name="alarm-light" size={18} color={Theme.colors.tertiary} />}
+                      title="SOS nearby — help needed"
+                    />
+                    <Text style={styles.copy}>
+                      Someone {a.distanceKm !== null ? `${a.distanceKm.toFixed(1)} km away` : 'nearby'} needs help
+                      right now. Their live location is in the app once you accept.
+                    </Text>
+                    <View style={styles.alertButtons}>
+                      <GlowButton
+                        title="Accept — I'm coming"
+                        onPress={() => handleRespond(a.alertId, true)}
+                        loading={alertBusy === a.alertId}
+                        style={styles.alertButton}
+                      />
+                      <GlowButton
+                        title="Decline"
+                        onPress={() => handleRespond(a.alertId, false)}
+                        loading={alertBusy === a.alertId}
+                        variant="ghost"
+                        style={styles.alertButton}
+                      />
+                    </View>
+                  </GlassCard>
+                ))}
+
+                {acceptedAlerts.map((a) => (
+                  <GlassCard key={a.alertId} edgeColor={Theme.colors.success}>
+                    <SectionHeader
+                      icon={<MaterialCommunityIcons name="run-fast" size={18} color={Theme.colors.success} />}
+                      title="You're on the way"
+                    />
+                    <Text style={styles.copy}>
+                      The victim can see your live location
+                      {a.distanceKm !== null ? ` — you were ${a.distanceKm.toFixed(1)} km away when notified` : ''}.
+                      Keep this screen open so your pin stays live.
+                    </Text>
+                    {a.messages.slice(-3).map((m, i) => (
+                      <Text key={`${m.at}-${i}`} style={styles.message}>
+                        {m.from === 'victim' ? 'They say: ' : 'You said: '}{m.text}
+                      </Text>
+                    ))}
+                    <View style={styles.presetRow}>
+                      {GUARDIAN_PRESET_MESSAGES.map((p) => (
+                        <TouchableOpacity
+                          key={p.key}
+                          onPress={() => handlePreset(a.alertId, p.key)}
+                          disabled={alertBusy === a.alertId}
+                          style={styles.presetChip}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={styles.presetText}>{p.label}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </GlassCard>
+                ))}
               </>
             )}
           </>
@@ -487,6 +639,18 @@ const styles = StyleSheet.create({
   chipActive: { borderColor: Theme.colors.primary, backgroundColor: 'rgba(0, 227, 253, 0.12)' },
   chipText: { fontFamily: Theme.fonts.body, fontSize: 13, color: Theme.colors.onSurfaceVariant },
   chipTextActive: { color: Theme.colors.onSurface },
+  alertButtons: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  alertButton: { flex: 1, marginTop: 0 },
+  message: { fontFamily: Theme.fonts.body, fontSize: 13, color: Theme.colors.onSurface, marginTop: 8, lineHeight: 18 },
+  presetRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
+  presetChip: {
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  presetText: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurface },
   button: { marginTop: 16 },
   toggleRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 6 },
   toggleText: { flex: 1 },

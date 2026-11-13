@@ -43,8 +43,33 @@ const { audit } = require("../services/audit");
 const { createAlert, transition, setAlertLocation, recordAck, countingAcks, ackKeyFor } = require("../services/alertLifecycle");
 const { viewToken, verifyViewToken } = require("../services/alertView");
 const alertStore = require("../services/alertStore");
+const guardianStore = require("../services/guardianStore");
+const { haversineKm } = require("../services/guardianMatch");
+const {
+  guardianAlertSummary,
+  acceptResponse,
+  declineResponse,
+  recordGuardianAlertLocation,
+  addMessage,
+  notifyGuardiansForAlert,
+} = require("../services/guardianAlert");
 
 const router = express.Router();
+
+// 🛡️ Guardian notify (D21 — plan §6 D21, plan §3 F2). Runs on both
+// SOS outcomes (delivered + failed): guardians are an independent
+// rescue path, and a failed contact delivery must not silently skip
+// them. Must never turn a delivered SOS into a 500: a throwing
+// matcher is recorded as a notify-error, not a dispatch failure.
+// Idempotent per alert (services/guardianAlert.js) — a retry-
+// delivered alert does not re-notify.
+const safeNotifyGuardians = async (alert, lat, lng) => {
+  try {
+    return await notifyGuardiansForAlert({ alert, lat, lng });
+  } catch {
+    return { notified: 0, failed: 0, reason: "notify-error" };
+  }
+};
 
 // 🚨 SOS ALERT
 // Rate-limited (30/15min per IP — see middleware/rateLimit.js for why
@@ -153,16 +178,19 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
     console.log(`📨 SOS for ${name} at ${latNum},${lngNum}: delivery sent=${sent} failed=${failed}`);
     if (sent === 0) {
       transition(alert, "failed", "all channels failed");
+      // D21: guardians are notified even when every contact channel
+      // failed — they may be the only rescue path left.
+      const guardianNotify = await safeNotifyGuardians(alert, latNum, lngNum);
       alert.retry = await scheduleRetry({ alertId: alert.id, attempt: 1, message, contacts });
       alertStore.save(alert);
       audit("alert.failed", {
         actorKey: req.header("x-api-key"),
         ip: req.ip,
-        meta: { alertId: alert.id, sent, failed, contacts: contacts.length, retryQueued: alert.retry.queued },
+        meta: { alertId: alert.id, sent, failed, contacts: contacts.length, retryQueued: alert.retry.queued, guardiansNotified: guardianNotify.notified },
       });
       return res
         .status(502)
-        .json({ success: false, error: "Alert could not be delivered. Please try again.", alertId: alert.id, state: alert.state, delivery: receipts, retry: alert.retry, viewUrl });
+        .json({ success: false, error: "Alert could not be delivered. Please try again.", alertId: alert.id, state: alert.state, delivery: receipts, retry: alert.retry, viewUrl, guardians: guardianNotify });
     }
     transition(alert, "delivered", "channel accepted");
     // D10: the escalation ladder is scheduled now, for this alert, and
@@ -174,15 +202,17 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
       scheduled: (await scheduleEscalation({ alertId: alert.id, message, contacts })).steps,
       runs: [],
     };
+    // D21: nearby guardians are notified now that the SOS is out.
+    const guardianNotify = await safeNotifyGuardians(alert, latNum, lngNum);
     alertStore.save(alert);
     // Audit: counts + contact count only — no PII (names, phones,
     // coordinates, message text) ever lands in an audit line.
     audit("alert.delivered", {
       actorKey: req.header("x-api-key"),
       ip: req.ip,
-      meta: { alertId: alert.id, sent, failed, contacts: contacts.length },
+      meta: { alertId: alert.id, sent, failed, contacts: contacts.length, guardiansNotified: guardianNotify.notified },
     });
-    res.json({ success: true, message: "Alert delivered successfully", alertId: alert.id, state: alert.state, delivery: receipts, viewUrl, escalation: alert.escalation });
+    res.json({ success: true, message: "Alert delivered successfully", alertId: alert.id, state: alert.state, delivery: receipts, viewUrl, escalation: alert.escalation, guardians: guardianNotify });
   } catch (err) {
     console.log("❌ ERROR:", err.message);
     // A thrown dispatch must not leave the alert in "dispatching": mark
@@ -416,6 +446,149 @@ router.post("/alert/:id/close", trackingLimiter, requireApiKey, async (req, res)
   return res.json({ success: true, alertId: alert.id, state: "closed" });
 });
 
+// 🛡️ GUARDIAN RESPONSES (D21 — plan §6 D21, plan §3 F2).
+//
+// Shared loader + liveness guard for the alert-scoped guardian
+// routes. Liveness: closed → 410 (the emergency is over);
+// created/dispatching → 409 (the notify has not run yet);
+// delivered/acked/failed → proceed — a failed alert's contacts
+// never got the SOS, so its guardians may be the only rescue path.
+// A guardian who was never notified for this alert is a 404, same
+// as an unknown guardian: the response record is the authorization
+// to act on this alert.
+const loadAlertGuardian = async (req, res) => {
+  const alert = await alertStore.get(req.params.id);
+  if (!alert) {
+    res.status(404).json({ success: false, error: "Alert not found" });
+    return null;
+  }
+  const guardian = await guardianStore.get(req.params.guardianId);
+  if (!guardian) {
+    res.status(404).json({ success: false, error: "Guardian not found" });
+    return null;
+  }
+  if (alert.state === "closed") {
+    res.status(410).json({ success: false, error: "This alert is closed" });
+    return null;
+  }
+  if (alert.state !== "delivered" && alert.state !== "acked" && alert.state !== "failed") {
+    res.status(409).json({ success: false, error: `Alert is ${alert.state}; guardians cannot respond yet` });
+    return null;
+  }
+  const response =
+    alert.guardians && alert.guardians.responses && alert.guardians.responses[guardian.id];
+  if (!response) {
+    res.status(404).json({ success: false, error: "This guardian was not notified for this alert" });
+    return null;
+  }
+  return { alert, guardian, response };
+};
+
+// ✅ GUARDIAN ACCEPT — "I'm coming". Repeat accept is an idempotent
+// 200 (a client retry must not error); accept after decline, or
+// past the 15-min response window, is a 409.
+router.post("/alert/:id/guardian/:guardianId/accept", trackingLimiter, requireApiKey, async (req, res) => {
+  const loaded = await loadAlertGuardian(req, res);
+  if (!loaded) return;
+  const { alert, guardian } = loaded;
+  let already;
+  try {
+    ({ already } = acceptResponse(alert.guardians, guardian.id));
+  } catch (err) {
+    audit("guardian.response_denied", { actorKey: req.header("x-api-key"), ip: req.ip, meta: { alertId: alert.id, guardianId: guardian.id } });
+    return res.status(409).json({ success: false, error: err.message });
+  }
+  alertStore.save(alert);
+  audit("guardian.accepted", { actorKey: req.header("x-api-key"), ip: req.ip, meta: { alertId: alert.id, guardianId: guardian.id, already } });
+  res.json({ success: true, alertId: alert.id, guardianId: guardian.id, state: "accepted", already });
+});
+
+// ❌ GUARDIAN DECLINE — "I can't come". Same idempotency/terminal
+// rules as accept, mirrored.
+router.post("/alert/:id/guardian/:guardianId/decline", trackingLimiter, requireApiKey, async (req, res) => {
+  const loaded = await loadAlertGuardian(req, res);
+  if (!loaded) return;
+  const { alert, guardian } = loaded;
+  let already;
+  try {
+    ({ already } = declineResponse(alert.guardians, guardian.id));
+  } catch (err) {
+    audit("guardian.response_denied", { actorKey: req.header("x-api-key"), ip: req.ip, meta: { alertId: alert.id, guardianId: guardian.id } });
+    return res.status(409).json({ success: false, error: err.message });
+  }
+  alertStore.save(alert);
+  audit("guardian.declined", { actorKey: req.header("x-api-key"), ip: req.ip, meta: { alertId: alert.id, guardianId: guardian.id, already } });
+  res.json({ success: true, alertId: alert.id, guardianId: guardian.id, state: "declined", already });
+});
+
+// 📍 GUARDIAN LIVE LOCATION — the accepted guardian's pin, so the
+// victim can see "help is 400 m away". Accepted-only (a merely-
+// notified guardian has not consented to share location yet);
+// the pin NEVER comes back to anyone except the victim's API-key
+// read (GET /alert/:id) — the contacts page gets distance only.
+router.post("/alert/:id/guardian/:guardianId/location", trackingLimiter, requireApiKey, async (req, res) => {
+  const loaded = await loadAlertGuardian(req, res);
+  if (!loaded) return;
+  const { alert, guardian } = loaded;
+  const { lat, lng } = req.body;
+  if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
+    return res.status(400).json({ success: false, error: "Invalid location data" });
+  }
+  let pin;
+  try {
+    pin = recordGuardianAlertLocation(alert.guardians, guardian.id, toNumber(lat), toNumber(lng));
+  } catch (err) {
+    return res.status(409).json({ success: false, error: err.message });
+  }
+  alertStore.save(alert);
+  audit("guardian.location_update", { actorKey: req.header("x-api-key"), ip: req.ip, meta: { alertId: alert.id, guardianId: guardian.id } });
+  const distanceKm =
+    Number.isFinite(alert.lat) && Number.isFinite(alert.lng)
+      ? Math.round(haversineKm(alert.lat, alert.lng, pin.lat, pin.lng) * 10) / 10
+      : null;
+  res.json({ success: true, alertId: alert.id, guardianId: guardian.id, locationUpdatedAt: pin.updatedAt, distanceKm });
+});
+
+// 💬 PRESET MESSAGE (D21 chat-lite). Body: {sender: "victim" |
+// "guardian", guardianId?, key}. Keys are role-bound and the text is
+// server-rendered from the key (services/guardianAlert.js) — no free
+// text ever reaches a screen. A guardian sender must be a known,
+// accepted responder; an unknown key or sender is a 400.
+router.post("/alert/:id/message", trackingLimiter, requireApiKey, async (req, res) => {
+  const alert = await alertStore.get(req.params.id);
+  if (!alert) return res.status(404).json({ success: false, error: "Alert not found" });
+  if (alert.state === "closed") return res.status(410).json({ success: false, error: "This alert is closed" });
+  if (alert.state !== "delivered" && alert.state !== "acked" && alert.state !== "failed") {
+    return res.status(409).json({ success: false, error: `Alert is ${alert.state}; messages cannot be sent yet` });
+  }
+  const sender = req.body.sender;
+  const key = req.body.key;
+  const guardianId = typeof req.body.guardianId === "string" ? req.body.guardianId : "";
+  if (sender !== "victim" && sender !== "guardian") {
+    return res.status(400).json({ success: false, error: "Invalid message sender" });
+  }
+  if (typeof key !== "string" || !key) {
+    return res.status(400).json({ success: false, error: "Invalid message" });
+  }
+  if (sender === "guardian") {
+    const guardian = await guardianStore.get(guardianId);
+    if (!guardian) return res.status(404).json({ success: false, error: "Guardian not found" });
+  }
+  if (!alert.guardians) {
+    return res.status(404).json({ success: false, error: "No guardians were notified for this alert" });
+  }
+  let message;
+  try {
+    message = addMessage(alert.guardians, { sender, guardianId, key });
+  } catch (err) {
+    const status = /Unknown message/.test(err.message) ? 400 : 409;
+    return res.status(status).json({ success: false, error: err.message });
+  }
+  alertStore.save(alert);
+  audit("guardian.message", { actorKey: req.header("x-api-key"), ip: req.ip, meta: { alertId: alert.id, key } });
+  res.json({ success: true, alertId: alert.id, message });
+});
+
 // 🪜 ESCALATION CALLBACK (QStash — D10)
 //
 // Auth is the HMAC token over (alertId, step) keyed by API_SECRET
@@ -594,6 +767,20 @@ const renderAlertPage = (alert, token) => {
   const state = escapeHtml(alert.state || "");
   const ackCount = (alert.acks || []).length;
   const canAck = alert.state === "delivered" || alert.state === "acked";
+  // D21: counts + nearest accepted distance only — a guardian's exact
+  // pin never reaches this token-authenticated page (the victim's
+  // API-key read is the only place it appears).
+  const g = alert.guardians ? guardianAlertSummary(alert.guardians, { lat: alert.lat, lng: alert.lng }) : null;
+  const nearestAccepted = g
+    ? g.locations.reduce(
+        (min, l) => (typeof l.distanceKm === "number" && (min === null || l.distanceKm < min) ? l.distanceKm : min),
+        null
+      )
+    : null;
+  const guardianLine =
+    g && g.notified > 0
+      ? `<p>🛡️ Guardians: <strong>${g.notified} guardian${g.notified === 1 ? "" : "s"} notified</strong>${g.accepted > 0 ? ` — <strong>${g.accepted} on the way</strong>${nearestAccepted !== null ? ` (nearest ${nearestAccepted} km away)` : ""}` : " — none accepted yet"}.</p>`
+      : "";
   const ackAction = `/alert/${escapeHtml(alert.id)}/ack?token=${encodeURIComponent(token || "")}`;
   const mapsUrl = hasFix
     ? `https://maps.google.com/?q=${encodeURIComponent(`${lat},${lng}`)}`
@@ -618,6 +805,7 @@ const renderAlertPage = (alert, token) => {
 <h1>🚨 SafeLife live alert</h1>
 <p>Status: <strong>${state}</strong></p>
 <p>Confirmations received: <strong>${ackCount} of ${ACK_THRESHOLD} needed</strong> — when 2 contacts confirm, automatic escalation calls stop.</p>
+${guardianLine}
 <p class="muted">Last location update: ${at}</p>
 ${
   hasFix
