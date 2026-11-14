@@ -94,3 +94,41 @@ test("transport errors never throw — they return ok:false", async () => {
     setEnv(OLD_URL, OLD_KEY);
   }
 });
+
+test("dbSelectBySuffix: like-query on last digits, first row wins", async () => {
+  setEnv("https://example.supabase.co", "service-role-key");
+  const calls = [];
+  _setDbTransport(async (call) => {
+    calls.push(call);
+    return { data: [{ id: "u1", phone: "98765 43210", email: "a@b.c" }] };
+  });
+  try {
+    const { dbSelectBySuffix } = require("../services/supabaseDb");
+    const res = await dbSelectBySuffix("profiles", "phone", "9876543210");
+    assert.equal(res.ok, true);
+    assert.equal(res.row.id, "u1");
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.includes("/rest/v1/profiles?phone=like."));
+    // encodeURIComponent leaves `*` unescaped — the wildcard rides as-is.
+    assert.ok(calls[0].url.includes("like.*9876543210"));
+    assert.ok(calls[0].url.includes("limit=1"));
+  } finally {
+    _setDbTransport(null);
+    setEnv(OLD_URL, OLD_KEY);
+  }
+});
+
+test("dbSelectBySuffix: invalid table/column/suffix and empty result fail honestly", async () => {
+  setEnv("https://example.supabase.co", "service-role-key");
+  const { dbSelectBySuffix } = require("../services/supabaseDb");
+  assert.deepEqual(await dbSelectBySuffix("profiles; DROP", "phone", "9876543210"), { ok: false, reason: "invalid-table-or-column" });
+  assert.deepEqual(await dbSelectBySuffix("profiles", "phone; DROP", "9876543210"), { ok: false, reason: "invalid-table-or-column" });
+  assert.deepEqual(await dbSelectBySuffix("profiles", "phone", "98a765"), { ok: false, reason: "invalid-suffix" });
+  _setDbTransport(async () => ({ data: [] }));
+  try {
+    assert.deepEqual(await dbSelectBySuffix("profiles", "phone", "9876543210"), { ok: false, reason: "not_found" });
+  } finally {
+    _setDbTransport(null);
+    setEnv(OLD_URL, OLD_KEY);
+  }
+});
