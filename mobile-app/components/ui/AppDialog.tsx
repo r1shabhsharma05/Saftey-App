@@ -95,19 +95,23 @@ const styles = StyleSheet.create({
   },
   actions: { marginTop: 18, gap: 10 },
   btn: {
-    backgroundColor: Theme.colors.primaryContainer,
+    // Filled system blue (primaryFill), white text: passes 4.5:1 in
+    // both appearances. The old primaryContainer is a 12–15% tint —
+    // dark navy in dark mode — with near-black text, so OK was
+    // unreadable.
+    backgroundColor: Theme.colors.primaryFill,
     borderRadius: 14,
     paddingVertical: 12,
     alignItems: 'center',
   },
-  btnDestructive: { backgroundColor: Theme.colors.errorContainer },
+  btnDestructive: { backgroundColor: Theme.colors.errorFill },
   btnCancel: { backgroundColor: 'rgba(255, 255, 255, 0.08)' },
   btnText: {
     fontFamily: Theme.fonts.label,
     fontSize: 13,
     letterSpacing: 1,
     fontWeight: 'bold',
-    color: '#06222b',
+    color: Theme.colors.onPrimary,
   },
   btnTextDestructive: { color: '#fff' },
   btnTextCancel: { color: Theme.colors.onSurfaceVariant },

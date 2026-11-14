@@ -283,6 +283,7 @@ function DigitBox({
         ref={inputRef}
         style={[
           styles.box,
+          digit ? styles.boxFilled : null,
           focused && styles.boxFocused,
           phase === 'error' && styles.boxError,
           phase === 'success' && styles.boxOk,
@@ -979,18 +980,22 @@ const styles = StyleSheet.create({
   },
   box: {
     flex: 1,
-    height: 52,
+    height: 60,
     textAlign: 'center',
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: '600',
     color: '#ffffff',
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: 'rgba(255,255,255,0.08)',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.14)',
+    borderColor: 'rgba(255,255,255,0.32)',
     borderRadius: 13,
+  },
+  boxFilled: {
+    borderColor: 'rgba(255,255,255,0.55)',
   },
   boxFocused: {
     borderColor: ACCENT,
+    borderWidth: 2,
     backgroundColor: 'rgba(123,108,255,0.12)',
     shadowColor: ACCENT,
     shadowOpacity: 0.5,

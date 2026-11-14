@@ -89,6 +89,13 @@ const styles = StyleSheet.create({
     height: 52,
     alignItems: 'center',
     justifyContent: 'center',
+    // Lift off the black card so the CTA reads as a solid control
+    // even when a dialog backdrop dims the screen behind it.
+    elevation: 2,
+    shadowColor: '#000000',
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
   },
   whiteTitle: {
     color: '#000',

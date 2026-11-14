@@ -9,6 +9,7 @@ import {
   Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../utils/supabase';
@@ -41,6 +42,7 @@ const BACKEND_URL = getBackendUrl();
  */
 export default function RegisterScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [phone, setPhone] = useState('');
@@ -112,7 +114,9 @@ export default function RegisterScreen() {
       if (!res.reached) {
         showAppDialog(
           'No Connection',
-          'Could not reach the SafeLife servers. Check your internet and try again.'
+          res.failure === 'timeout'
+            ? 'The request timed out — the SafeLife servers took too long to answer. Check your connection and try again.'
+            : 'Could not reach the SafeLife servers. Check your internet and try again.'
         );
         return;
       }
@@ -134,7 +138,12 @@ export default function RegisterScreen() {
   };
 
   // Step 3: create the Supabase account, only after the OTP verified.
-  const finishSignUp = async () => {
+  // minDelayMs keeps the success animation visible: the account is
+  // created IN PARALLEL with the animation (total wait is the longer
+  // of the two, not their sum — the old code waited 2.2 s and only
+  // then started sign-up).
+  const finishSignUp = async (minDelayMs = 0) => {
+    const startedAt = Date.now();
     const cleanEmail = email.trim().toLowerCase();
     try {
       const { data, error } = await supabase.auth.signUp({
@@ -156,6 +165,10 @@ export default function RegisterScreen() {
       }
       if (data.session && data.user) {
         await ensureProfile(data.user);
+        const elapsed = Date.now() - startedAt;
+        if (minDelayMs > elapsed) {
+          await new Promise((r) => setTimeout(r, minDelayMs - elapsed));
+        }
         router.replace('/(tabs)');
       } else {
         // Email confirmation is off, so a session is expected — never
@@ -176,8 +189,9 @@ export default function RegisterScreen() {
 
   // OTP V4: the 6 digits arrive complete from OtpCubes; verification
   // is ONLY the server endpoint — no local comparison, no demo code.
-  // On success the cube animation plays first (2.2 s), then the
-  // Supabase account is created.
+  // On success the cube animation plays AND the Supabase account is
+  // created at the same time (finishSignUp(2200) waits out the
+  // animation only if sign-up finished first).
   const handleCodeComplete = async (submitted: string) => {
     if (!/^\d{6}$/.test(submitted)) return;
     setOtpPhase('verifying');
@@ -188,7 +202,9 @@ export default function RegisterScreen() {
       if (!res.reached) {
         showAppDialog(
           'No Connection',
-          'Could not reach the SafeLife servers. Check your internet and try again.'
+          res.failure === 'timeout'
+            ? 'The request timed out — the SafeLife servers took too long to answer. Your code may still be unused; try again.'
+            : 'Could not reach the SafeLife servers. Check your internet and try again.'
         );
         setOtpPhase('idle');
         setOtpNonce((n) => n + 1);
@@ -200,9 +216,7 @@ export default function RegisterScreen() {
         return;
       }
       setOtpPhase('success');
-      setTimeout(() => {
-        void finishSignUp();
-      }, 2200);
+      void finishSignUp(2200);
     } finally {
       setOtpBusy(false);
     }
@@ -240,7 +254,7 @@ export default function RegisterScreen() {
         style={styles.flex}
       >
         <ScrollView
-          contentContainerStyle={styles.scroll}
+          contentContainerStyle={[styles.scroll, { paddingTop: insets.top + 16 }]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
@@ -386,7 +400,6 @@ const styles = StyleSheet.create({
   scroll: {
     flexGrow: 1,
     paddingHorizontal: 24,
-    paddingTop: 48,
     paddingBottom: 30,
     justifyContent: 'center',
   },
