@@ -22,6 +22,15 @@ contacts — to the people who protect you, in seconds. Even offline. Even on a 
 
 ---
 
+## About
+
+SafeLife is a personal-safety app built by [Rishabh Sharma](https://github.com/r1shabhsharma05). One tap sends an emergency alert — your live location, your name, and your emergency contacts — to the people who protect you, in seconds. Even offline. Even on a dying phone. It runs on Android, iOS and Web from one TypeScript codebase, backed by a security-hardened Express API.
+
+🌐 **Live web app:** https://safelife-ai.vercel.app
+⚙️ **Backend:** https://safelife-backend-rish0000-dots-projects.vercel.app
+
+---
+
 ## 📖 Overview
 
 Emergencies don't wait for you to unlock your phone, open a chat, type a message, and
