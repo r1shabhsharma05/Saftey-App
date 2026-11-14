@@ -77,7 +77,24 @@ const verifyCode = (phone = PHONE, code) => post("/auth/signup/verify-code", { p
 
 // Issues a code through the in-process service seam — the same code
 // the route would hand to the SMS adapter when it is configured.
-const issueSeam = (phone = PHONE) => signupCode.issueSignupCode(phone).code;
+const issueSeam = async (phone = PHONE) => (await signupCode.issueSignupCode(phone)).code;
+
+// Minimal in-memory PostgREST fake for the cross-instance test:
+// POST upserts by id, GET ?phone=eq.<value> returns the matching row.
+const fakeDb = () => {
+  const rows = new Map();
+  const transport = async (call) => {
+    const u = new URL(call.url);
+    if (call.method === "POST") {
+      rows.set(call.body.id, { ...call.body });
+      return { data: null };
+    }
+    const value = (u.searchParams.get("phone") || "").replace(/^eq\./, "");
+    const row = [...rows.values()].find((r) => r.phone === value);
+    return { data: row ? [row] : [] };
+  };
+  return { transport, rows };
+};
 
 test("POST /auth/signup/request-code: invalid phone → 400", async () => {
   assert.equal((await requestCode("junk")).status, 400);
@@ -125,9 +142,9 @@ test("POST /auth/signup/request-code: 4th code in an hour → 429 (per-phone led
   // The ledger is filled through the service seam so the HTTP
   // request-code budget (codeLimiter 10/hr) is spent only once.
   // SMS must look configured or the route 503s before issuing.
-  issueSeam();
-  issueSeam();
-  issueSeam();
+  await issueSeam();
+  await issueSeam();
+  await issueSeam();
   process.env.HTTPSMS_API_KEY = "test-key";
   process.env.HTTPSMS_FROM = "+919999999999";
   try {
@@ -141,7 +158,7 @@ test("POST /auth/signup/request-code: 4th code in an hour → 429 (per-phone led
 });
 
 test("POST /auth/signup/verify-code: issued code → 200 verified; response carries no code or hash", async () => {
-  const code = issueSeam();
+  const code = await issueSeam();
   const res = await verifyCode(PHONE, code);
   assert.equal(res.status, 200);
   assert.equal(res.body.success, true);
@@ -153,7 +170,7 @@ test("POST /auth/signup/verify-code: issued code → 200 verified; response carr
 });
 
 test("POST /auth/signup/verify-code: wrong code → 400 with attempts left; 5th wrong → 409 killed", async () => {
-  const code = issueSeam();
+  const code = await issueSeam();
   const wrong = code === "000000" ? "000001" : "000000";
   const first = await verifyCode(PHONE, wrong);
   assert.equal(first.status, 400);
@@ -194,7 +211,7 @@ test("Namespaces are separate: guardian code cannot verify a signup, signup code
   const ownGuardian = await post(`/guardians/${guardian.id}/verify`, { code: guardianCode }, HEADERS);
   assert.equal(ownGuardian.status, 200);
   // Signup side: a signup code is worthless to the guardian endpoint.
-  const signupCodeValue = issueSeam(signupPhone);
+  const signupCodeValue = await issueSeam(signupPhone);
   const other = createGuardian({ userId: "user-10", name: "M", phone: signupPhone, role: "friend" });
   guardianStore.save(other);
   const crossGuardian = await post(`/guardians/${other.id}/verify`, { code: signupCodeValue }, HEADERS);
@@ -204,4 +221,53 @@ test("Namespaces are separate: guardian code cannot verify a signup, signup code
   const ownSignup = await verifyCode(signupPhone, signupCodeValue);
   assert.equal(ownSignup.status, 200);
   assert.equal(ownSignup.body.verified, true);
+});
+
+test("POST /auth/signup/request-code: bare 10-digit phone is sent E.164 (+91)", async () => {
+  // Regression: the gateway/carrier may not route a bare 10-digit
+  // recipient even though httpSMS accepts it (2xx, never delivered).
+  const realFetch = global.fetch;
+  process.env.HTTPSMS_API_KEY = "test-key";
+  process.env.HTTPSMS_FROM = "+919999999999";
+  let sentTo = null;
+  global.fetch = async (url, opts) => {
+    if (typeof url === "string" && url.includes("api.httpsms.com")) {
+      sentTo = JSON.parse(opts.body).to;
+      return { ok: true };
+    }
+    return realFetch(url, opts);
+  };
+  try {
+    const res = await requestCode("6396039797");
+    assert.equal(res.status, 200);
+    assert.equal(res.body.sent, true);
+    assert.equal(sentTo, "+916396039797");
+  } finally {
+    global.fetch = realFetch;
+    delete process.env.HTTPSMS_API_KEY;
+    delete process.env.HTTPSMS_FROM;
+  }
+});
+
+test("POST /auth/signup/verify-code: code survives a memory clear (cross-instance DB mirror)", async () => {
+  // Simulate a verify landing on another Vercel instance: the code
+  // was issued here, memory is gone, only Postgres still has it.
+  const { _setDbTransport } = require("../services/supabaseDb");
+  process.env.SUPABASE_URL = "https://test.supabase.co";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-key";
+  const { transport } = fakeDb();
+  _setDbTransport(transport);
+  try {
+    const code = await issueSeam();
+    assert.equal(signupCode._hasPending(PHONE), true);
+    signupCode._clearMemory();
+    assert.equal(signupCode._hasPending(PHONE), false);
+    const res = await verifyCode(PHONE, code);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.verified, true);
+  } finally {
+    _setDbTransport(null);
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  }
 });

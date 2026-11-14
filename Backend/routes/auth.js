@@ -45,7 +45,7 @@ router.post("/auth/signup/request-code", codeLimiter, async (req, res) => {
   }
   let code;
   try {
-    ({ code } = issueSignupCode(phone));
+    ({ code } = await issueSignupCode(phone));
   } catch (err) {
     const msg = err.message;
     if (/Too many verification codes/.test(msg)) {
@@ -86,7 +86,7 @@ router.post("/auth/signup/verify-code", trackingLimiter, async (req, res) => {
     return res.status(400).json({ success: false, error: "Invalid verification code" });
   }
   try {
-    verifySignupCode(phone, code);
+    await verifySignupCode(phone, code);
   } catch (err) {
     const msg = err.message;
     // A killed code is the brute-force signal — 5 wrong guesses from
