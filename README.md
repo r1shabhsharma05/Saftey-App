@@ -14,7 +14,7 @@
 **One tap sends an emergency alert — your live location, your name, and your emergency
 contacts — to the people who protect you, in seconds. Even offline. Even on a dying phone.**
 
-[🌐 Web App](https://safelife-ai.vercel.app) · [⚙️ Backend Health](https://safelife-backend-rish0000-dots-projects.vercel.app/health) · [📱 Releases](https://github.com/r1shabhsharma05/Saftey-App/releases)
+[🌐 Web App](https://safelife-ai.vercel.app) · [⚙️ Backend Health](https://safelife-backend-rish0000-dots-projects.vercel.app/health) · [🚀 Landing Page](https://landing-rosy-delta-55.vercel.app)
 
 ![Animated SOS flow — tap, queue, backend, Telegram](docs/sos-flow-animated.svg)
 
@@ -26,6 +26,7 @@ contacts — to the people who protect you, in seconds. Even offline. Even on a 
 
 SafeLife is a personal-safety app built by [Rishabh Sharma](https://github.com/r1shabhsharma05). One tap sends an emergency alert — your live location, your name, and your emergency contacts — to the people who protect you, in seconds. Even offline. Even on a dying phone. It runs on Android, iOS and Web from one TypeScript codebase, backed by a security-hardened Express API.
 
+🚀 **Landing page:** https://landing-rosy-delta-55.vercel.app
 🌐 **Live web app:** https://safelife-ai.vercel.app
 ⚙️ **Backend:** https://safelife-backend-rish0000-dots-projects.vercel.app
 
