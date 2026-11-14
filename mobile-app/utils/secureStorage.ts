@@ -20,7 +20,15 @@ import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
+// Static rendering runs in Node, where Platform.OS is 'web' but there
+// is no window — AsyncStorage dereferences `window` and crashes. A
+// render-time read has nothing to recover, so the three functions
+// below return null / no-op in that case. On a real device or browser
+// `window` exists, so behaviour there is unchanged.
+const isNodeRender = Platform.OS === 'web' && typeof window === 'undefined';
+
 export const secureGetItem = async (key: string): Promise<string | null> => {
+  if (isNodeRender) return null;
   if (Platform.OS === 'web') return AsyncStorage.getItem(key);
   let stored: string | null = null;
   try {
@@ -47,6 +55,7 @@ export const secureGetItem = async (key: string): Promise<string | null> => {
 };
 
 export const secureSetItem = async (key: string, value: string): Promise<void> => {
+  if (isNodeRender) return;
   if (Platform.OS === 'web') {
     await AsyncStorage.setItem(key, value);
     return;
@@ -55,6 +64,7 @@ export const secureSetItem = async (key: string, value: string): Promise<void> =
 };
 
 export const secureRemoveItem = async (key: string): Promise<void> => {
+  if (isNodeRender) return;
   if (Platform.OS === 'web') {
     await AsyncStorage.removeItem(key);
     return;
