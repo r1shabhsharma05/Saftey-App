@@ -1,0 +1,107 @@
+/* Fonts must be imported before Tailwind — CSS @import rules must precede
+   all other rules. Qronos-style: single neutral grotesque (Inter). */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap");
+@import "tailwindcss";
+
+/* Class-based dark mode so the whole landing (incl. the contact section's
+   dark: variants) is always dark, regardless of the visitor's OS setting. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-night: #000000;
+  --color-panel: #0a0a0a;
+  --animate-pulse-ring: pulse-ring 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-marquee: marquee 32s linear infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(2.1);
+    opacity: 0;
+  }
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: #000;
+  color: #fafafa;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Modern Web Guidance: scroll-driven hero parallax (parallax-scroll-effects) ──
+   Native CSS view-timeline; layers move at different speeds as the hero scrolls.
+   Feature-detected, transform-only, reduced-motion off. No polyfill. */
+@supports ((animation-timeline: view()) and (animation-range: entry)) {
+  @media (prefers-reduced-motion: no-preference) {
+    .hero-parallax {
+      view-timeline: --hero;
+    }
+    .hero-layer {
+      animation: hero-parallax linear both;
+      animation-timeline: --hero;
+    }
+    @keyframes hero-parallax {
+      from {
+        transform: translateY(calc(90px * var(--parallax, 1)));
+      }
+    }
+  }
+}
+
+/* ── Modern Web Guidance: scroll entry/exit (scroll-entry-exit-effects) ──
+   Sections fade + rise in as they enter, settle out as they leave. */
+@supports ((animation-timeline: view()) and (animation-range: entry)) {
+  @media (prefers-reduced-motion: no-preference) {
+    @keyframes reveal-in {
+      from {
+        opacity: 0;
+        transform: translateY(28px);
+      }
+    }
+    @keyframes reveal-out {
+      to {
+        opacity: 0;
+        transform: translateY(-18px) scale(0.985);
+      }
+    }
+    .reveal {
+      animation:
+        reveal-in auto linear backwards,
+        reveal-out auto linear forwards;
+      animation-timeline: view();
+      animation-range: entry, exit;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-layer,
+  .reveal {
+    animation: none;
+  }
+  .animate-marquee {
+    animation: none;
+  }
+  html {
+    scroll-behavior: auto;
+  }
+}
