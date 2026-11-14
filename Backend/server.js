@@ -15,6 +15,7 @@ const policeRoutes = require("./routes/police");
 const routeRoutes = require("./routes/route");
 const journeyRoutes = require("./routes/journeys");
 const guardianRoutes = require("./routes/guardians");
+const authRoutes = require("./routes/auth");
 const adminRoutes = require("./routes/admin");
 const voiceRoutes = require("./routes/voice");
 
@@ -58,6 +59,7 @@ app.use(policeRoutes);
 app.use(routeRoutes);
 app.use(journeyRoutes);
 app.use(guardianRoutes);
+app.use(authRoutes);
 app.use(adminRoutes);
 app.use(voiceRoutes);
 
