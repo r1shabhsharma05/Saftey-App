@@ -35,8 +35,11 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── Modern Web Guidance: scroll entry/exit (scroll-entry-exit-effects) ──
-   Sections fade + rise in as they enter, settle out as they leave. */
+/* ── Modern Web Guidance: scroll entry (scroll-entry-effects) ──
+   Sections fade + rise in ONCE as they enter, then stay visible.
+   There is NO exit animation: the previous reveal-out faded every
+   .reveal section to opacity 0 as it left the viewport, so content
+   vanished mid-scroll (short sections went in a blink). */
 @supports ((animation-timeline: view()) and (animation-range: entry)) {
   @media (prefers-reduced-motion: no-preference) {
     @keyframes reveal-in {
@@ -45,18 +48,10 @@ body {
         transform: translateY(28px);
       }
     }
-    @keyframes reveal-out {
-      to {
-        opacity: 0;
-        transform: translateY(-18px) scale(0.985);
-      }
-    }
     .reveal {
-      animation:
-        reveal-in auto linear backwards,
-        reveal-out auto linear forwards;
+      animation: reveal-in auto linear backwards;
       animation-timeline: view();
-      animation-range: entry, exit;
+      animation-range: entry;
     }
   }
 }
