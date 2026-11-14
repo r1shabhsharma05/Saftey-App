@@ -19,6 +19,7 @@ const {
 } = require("../lib/validate");
 const { buildSosMessage } = require("../services/sos");
 const { buildBatteryMessage, isBatteryLevelInBand } = require("../services/battery");
+const { isBlocked, recordStrike } = require("../services/strikes");
 const {
   deliverAlert,
   receiptsSummary,
@@ -108,6 +109,18 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
       pushToken: sanitizeText(c?.pushToken, 1024),
     }))
     .filter((c) => c.name || c.phone || c.pushToken);
+
+  // D23 strikes: an IP with 3 abuse strikes in 24 h is blocked from
+  // new SOS for 1 h — refused loudly (403 + audit line), never
+  // silently dropped. No alert record is created for a blocked
+  // attempt: creating one would count a fake alert that never happened.
+  if (isBlocked(`ip:${req.ip}`)) {
+    audit("alert.blocked_by_strikes", { actorKey: req.header("x-api-key"), ip: req.ip });
+    return res.status(403).json({
+      success: false,
+      error: "SOS temporarily blocked — too many abuse strikes. Try again later.",
+    });
+  }
 
   // Declared outside try so the catch path can mark the alert failed
   // instead of leaving it stuck in "dispatching" when dispatch throws.
@@ -440,9 +453,20 @@ router.post("/alert/:id/close", trackingLimiter, requireApiKey, async (req, res)
       .status(409)
       .json({ success: false, error: `Alert is ${alert.state}; only delivered/acked alerts can close` });
   }
+  // D23: the close reason is the fake-alert signal. Only a
+  // "false-alarm" close strikes the closer's IP; "resolved" and
+  // "duplicate" are not abuse. Invalid reason → 400. The reason rides
+  // the in-memory record + the audit line only (no Postgres column —
+  // same as history[], which the mirror deliberately does not carry).
+  const reason = typeof req.body.reason === "string" ? req.body.reason : "resolved";
+  if (!["resolved", "false-alarm", "duplicate"].includes(reason)) {
+    return res.status(400).json({ success: false, error: "Invalid close reason" });
+  }
   transition(alert, "closed");
+  alert.closeReason = reason;
   alertStore.save(alert);
-  audit("alert.closed", { actorKey: req.header("x-api-key"), ip: req.ip, meta: { alertId: alert.id } });
+  const strikes = reason === "false-alarm" ? recordStrike(`ip:${req.ip}`, "false-alarm") : 0;
+  audit("alert.closed", { actorKey: req.header("x-api-key"), ip: req.ip, meta: { alertId: alert.id, reason, strikes } });
   return res.json({ success: true, alertId: alert.id, state: "closed" });
 });
 

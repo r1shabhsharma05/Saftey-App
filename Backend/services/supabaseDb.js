@@ -111,11 +111,34 @@ const dbSelectBy = async (table, column, value) => {
   }
 };
 
+// D23: list the N most recent rows, newest first (admin audit
+// read-back). The table is allowlisted to a bare identifier — same
+// injection rule as dbSelectBy's column check. Never throws.
+const dbListRecent = async (table, { limit = 50 } = {}) => {
+  if (!/^[a-z_]+$/.test(table || "")) return { ok: false, reason: "invalid-table" };
+  if (!dbStatus().configured) return { ok: false, reason: "not_configured" };
+  const { url } = getConfig();
+  const n = Number.isFinite(+limit) ? Math.max(1, Math.min(100, Math.floor(+limit))) : 50;
+  try {
+    const { data } = await transport({
+      method: "GET",
+      url: `${url}/rest/v1/${table}?order=ts.desc&limit=${n}&select=*`,
+      headers: authHeaders(),
+    });
+    if (!Array.isArray(data)) return { ok: false, reason: "unexpected-response" };
+    return { ok: true, rows: data };
+  } catch (err) {
+    console.log(`❌ Supabase list ${table} failed:`, err.message);
+    return { ok: false, reason: err.message };
+  }
+};
+
 module.exports = {
   dbStatus,
   dbUpsert,
   dbSelectOne,
   dbSelectBy,
+  dbListRecent,
   // Test seam only — lets tests drive the writer without network.
   // Pass null to restore the production transport.
   _setDbTransport: (fn) => {

@@ -4,7 +4,8 @@
 // Guard matrix (explicit, in one place): every route is API-key gated
 // + tracking-limited (registration is not an SOS — it sends nothing
 // to anyone except the verification SMS — so it rides the tracking
-// bucket, not the SOS one). The verification code is the one secret
+// bucket, not the SOS one), except request-code, which rides the
+// tighter codeLimiter (D23 — each request can cost a real SMS). The verification code is the one secret
 // in this flow: it is issued by the service, handed to the SMS
 // adapter, and NEVER appears in any response, log line, or audit
 // event — a read of one's own record must not leak the material a
@@ -22,7 +23,7 @@
 // live verification waits on the httpSMS key, same as D7/D9/D10.
 const express = require("express");
 const requireApiKey = require("../middleware/requireApiKey");
-const { trackingLimiter } = require("../middleware/rateLimit");
+const { trackingLimiter, codeLimiter } = require("../middleware/rateLimit");
 const { sanitizeText, isValidLatitude, isValidLongitude, toNumber } = require("../lib/validate");
 const { normalizePhone, smsStatus, sendSms } = require("../services/sms");
 const {
@@ -34,6 +35,7 @@ const {
   toPublic,
 } = require("../services/guardian");
 const guardianStore = require("../services/guardianStore");
+const { recordStrike } = require("../services/strikes");
 const alertStore = require("../services/alertStore");
 const { guardianAlertSummary } = require("../services/guardianAlert");
 const {
@@ -123,7 +125,7 @@ router.post("/guardians", trackingLimiter, requireApiKey, async (req, res) => {
 // exist. A verified guardian needs no code (409). The per-hour cap
 // is a 429. The code itself never leaves the server except inside
 // the SMS body.
-router.post("/guardians/:id/request-code", trackingLimiter, requireApiKey, async (req, res) => {
+router.post("/guardians/:id/request-code", codeLimiter, requireApiKey, async (req, res) => {
   const guardian = await loadGuardian(req, res);
   if (!guardian) return;
   if (guardian.state === "verified") {
@@ -176,6 +178,10 @@ router.post("/guardians/:id/verify", trackingLimiter, requireApiKey, async (req,
   } catch (err) {
     guardianStore.save(guardian);
     const msg = err.message;
+    // D23: a killed code is the brute-force signal — 5 wrong guesses
+    // from one IP is a strike. A single typo is not abuse, so other
+    // verify errors do not strike.
+    if (/Too many attempts/.test(msg)) recordStrike(`ip:${req.ip}`, "code-brute-force");
     const status = /No verification code pending|expired|Too many attempts/.test(msg) ? 409 : 400;
     audit("guardian.verify_denied", { actorKey: req.header("x-api-key"), ip: req.ip, meta: { guardianId: guardian.id } });
     return res.status(status).json({ success: false, error: msg });

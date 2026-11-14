@@ -88,6 +88,18 @@ const testLimiter = rateLimit({
   ...upstashStore("test"),
 });
 
+// 📲 Verification codes (D23): each request can cost a real SMS, and
+// the per-guardian hourly ledger bounds one guardian — but one IP
+// could still burn codes across many guardians. 10/hour per IP is
+// generous for legit re-requests and caps the SMS spend from one
+// address.
+const codeLimiter = rateLimit({
+  ...baseOptions,
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  ...upstashStore("code"),
+});
+
 // 🛡️ Safe-places proxy: the only unauthenticated route that fans out to
 // shared upstream services — every cache MISS fires up to 4 Overpass
 // mirror requests in parallel. On the shared 60/min tracking bucket one IP
@@ -124,4 +136,4 @@ const systemLimiter = rateLimit({
   ...upstashStore("system"),
 });
 
-module.exports = { sosLimiter, trackingLimiter, testLimiter, safePlacesLimiter, routeLimiter, systemLimiter };
+module.exports = { sosLimiter, trackingLimiter, testLimiter, codeLimiter, safePlacesLimiter, routeLimiter, systemLimiter };

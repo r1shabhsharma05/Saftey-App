@@ -44,6 +44,7 @@ import ScreenBackground from '../../components/ui/ScreenBackground';
 import GlassCard from '../../components/ui/GlassCard';
 import StatusPill from '../../components/ui/StatusPill';
 import SectionHeader from '../../components/ui/SectionHeader';
+import { fetchAuditEvents, type AuditLogResult } from '../../utils/auditLog';
 
 export default function PremiumProfileScreen() {
   const router = useRouter();
@@ -53,9 +54,11 @@ export default function PremiumProfileScreen() {
   const [avatarDisplayUrl, setAvatarDisplayUrl] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [auditLog, setAuditLog] = useState<AuditLogResult | null>(null);
 
   useEffect(() => {
     fetchProfile();
+    fetchAuditEvents().then(setAuditLog);
   }, []);
 
   const fetchProfile = async () => {
@@ -319,6 +322,38 @@ export default function PremiumProfileScreen() {
           </GlassCard>
         </Reanimated.View>
 
+        {/* Audit log (D23 admin basics) — recent backend audit events,
+            newest first. The fetch never throws: every failure is an
+            honest state, so the profile screen cannot crash on it. */}
+        <Reanimated.View entering={FadeInUp.delay(320).duration(500)}>
+          <View style={styles.sectionWrap}>
+            <SectionHeader
+              icon={<Ionicons name="list-outline" size={18} color={Theme.colors.primary} />}
+              title="Audit Log"
+            />
+          </View>
+          {auditLog === null ? (
+            <Text style={styles.auditNote}>Loading audit log…</Text>
+          ) : !auditLog.ok ? (
+            <Text style={styles.auditNote}>
+              {auditLog.reason === 'not-configured'
+                ? 'Audit log unavailable — Supabase not configured.'
+                : auditLog.reason === 'unauthorized'
+                  ? 'Audit log unavailable — API key not configured.'
+                  : 'Audit log unavailable — backend unreachable.'}
+            </Text>
+          ) : auditLog.events.length === 0 ? (
+            <Text style={styles.auditNote}>No audit events yet.</Text>
+          ) : (
+            auditLog.events.map((event) => (
+              <GlassCard key={`${event.ts}-${event.action}`} style={styles.auditRow}>
+                <Text style={styles.auditAction}>{event.action}</Text>
+                <Text style={styles.auditTime}>{new Date(event.ts).toLocaleString()}</Text>
+              </GlassCard>
+            ))
+          )}
+        </Reanimated.View>
+
         <View style={{ height: 110 }} />
       </ScrollView>
     </ScreenBackground>
@@ -407,4 +442,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   menuLabel: { flex: 1, fontFamily: Theme.fonts.bodyBold, fontSize: 14, color: Theme.colors.onSurface },
+  auditRow: { padding: 14, marginBottom: 10, gap: 4 },
+  auditAction: { fontFamily: Theme.fonts.bodyBold, fontSize: 13.5, color: Theme.colors.onSurface },
+  auditTime: { fontFamily: Theme.fonts.label, fontSize: 10, color: Theme.colors.onSurfaceVariant, letterSpacing: 0.5 },
+  auditNote: { fontFamily: Theme.fonts.body, fontSize: 13, color: Theme.colors.onSurfaceVariant, paddingVertical: 6 },
 });
