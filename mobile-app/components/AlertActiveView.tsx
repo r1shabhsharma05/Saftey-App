@@ -13,12 +13,19 @@ import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-ico
 import { Theme } from '../constants/theme';
 import { rankSafePlaces, calculateBearing, getCardinalDirection, SafePlace } from '../utils/escapeLogic';
 import { VICTIM_PRESET_MESSAGES, type AlertGuardiansSummary } from '../utils/guardian';
+import {
+  EMERGENCY_NUMBER,
+  fetchNearestPoliceStation,
+  formatPoliceDistance,
+  type PoliceStation,
+} from '../utils/police';
 import ScreenBackground from './ui/ScreenBackground';
 import GlassCard from './ui/GlassCard';
 import GlowButton from './ui/GlowButton';
 import StatusPill from './ui/StatusPill';
 import SectionHeader from './ui/SectionHeader';
 import SafeHubCard from './ui/SafeHubCard';
+import PoliceStationCard from './ui/PoliceStationCard';
 
 interface Props {
   onStop: () => void;
@@ -51,6 +58,38 @@ export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const [bestPlace, setBestPlace] = useState<SafePlace | null>(null);
   const [bearingHint, setBearingHint] = useState<string>('Calculating...');
+  // D22: nearest police station for this alert — fetched once the SOS
+  // screen mounts with a real GPS fix. 'empty' means no station within
+  // 20 km, 'error' means the lookup failed; both are honest states,
+  // and the 112 button below never depends on the lookup.
+  const [station, setStation] = useState<PoliceStation | null>(null);
+  const [stationState, setStationState] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
+
+  useEffect(() => {
+    const latNum = parseFloat(lat);
+    const lngNum = parseFloat(lng);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+      setStationState('error');
+      return;
+    }
+    let cancelled = false;
+    fetchNearestPoliceStation(latNum, lngNum)
+      .then((res) => {
+        if (cancelled) return;
+        if (res.station) {
+          setStation(res.station);
+          setStationState('ready');
+        } else {
+          setStationState('empty');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setStationState('error');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [lat, lng]);
 
   useEffect(() => {
     const interval = setInterval(() => setTimer((t) => t + 1), 1000);
@@ -303,6 +342,53 @@ export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [
           </Reanimated.View>
         )}
 
+        {/* D22 police — nearest station card + one-tap call + 112.
+            The 112 button is always rendered: it never depends on the
+            station lookup, so it works even with no station nearby or
+            when the lookup fails. */}
+        <Reanimated.View entering={FadeInUp.delay(290).duration(500)} style={styles.deliverySection}>
+          <SectionHeader
+            icon={<MaterialCommunityIcons name="police-badge" size={18} color={Theme.colors.police} />}
+            title="Police"
+          />
+          <GlassCard style={styles.deliveryCard}>
+            {stationState === 'loading' && (
+              <Text style={styles.deliveryHint}>Finding nearest police station…</Text>
+            )}
+            {stationState === 'ready' && station && (
+              <PoliceStationCard
+                name={station.name || 'Police Station'}
+                phone={station.phone || ''}
+                distanceLabel={formatPoliceDistance(station.distanceKm)}
+                direction={
+                  Number.isFinite(parseFloat(lat)) && Number.isFinite(parseFloat(lng))
+                    ? getCardinalDirection(
+                        calculateBearing(parseFloat(lat), parseFloat(lng), station.lat, station.lng)
+                      )
+                    : ''
+                }
+                lat={station.lat}
+                lng={station.lng}
+                safety={station.safety}
+              />
+            )}
+            {stationState === 'empty' && (
+              <Text style={styles.deliveryHint}>No police station found within 20 km — call 112 for help.</Text>
+            )}
+            {stationState === 'error' && (
+              <Text style={styles.deliveryHint}>Station data unavailable — call 112 for help.</Text>
+            )}
+            <TouchableOpacity
+              style={styles.emergencyBtn}
+              activeOpacity={0.7}
+              onPress={() => Linking.openURL(`tel:${EMERGENCY_NUMBER}`)}
+            >
+              <Ionicons name="call" size={16} color="#fff" />
+              <Text style={styles.emergencyText}>CALL 112 · National Emergency Number</Text>
+            </TouchableOpacity>
+          </GlassCard>
+        </Reanimated.View>
+
         {/* Stop */}
         <Reanimated.View entering={FadeInUp.delay(300).duration(500)} style={styles.stopWrap}>
           <GlowButton
@@ -351,6 +437,18 @@ const styles = StyleSheet.create({
   deliveryState: { fontFamily: Theme.fonts.label, fontSize: 12, letterSpacing: 0.5 },
   deliveryHint: { fontFamily: Theme.fonts.body, fontSize: 11, color: Theme.colors.onSurfaceVariant, marginTop: 2 },
   presetRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
+  emergencyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: Theme.colors.error,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    borderRadius: 12,
+    marginTop: 4,
+  },
+  emergencyText: { fontFamily: Theme.fonts.headline, fontSize: 13, color: '#fff', letterSpacing: 0.5 },
   presetChip: {
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.14)',
