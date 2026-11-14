@@ -6,7 +6,6 @@ import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { ArrowRight, Mail, Headphones } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import * as SeparatorPrimitive from "@radix-ui/react-separator";
 import * as d3 from "d3";
 import { feature } from "topojson-client";
 import type {
@@ -656,61 +655,14 @@ function GlobeWireframe({
   );
 }
 
-const FormDots = React.forwardRef<
-  React.ComponentRef<typeof SeparatorPrimitive.Root>,
-  React.ComponentPropsWithoutRef<typeof SeparatorPrimitive.Root>
->(
-  (
-    { className, orientation = "horizontal", decorative = true, ...props },
-    ref,
-  ) => {
-    const isHorizontal = orientation === "horizontal";
-    return (
-      <SeparatorPrimitive.Root
-        ref={ref}
-        decorative={decorative}
-        orientation={orientation}
-        className={cn(
-          "shrink-0 flex items-center justify-center overflow-hidden",
-          isHorizontal ? "w-full" : "h-full",
-          className,
-        )}
-        {...props}
-      >
-        <div
-          className={cn("relative", isHorizontal ? "w-full h-4" : "h-full w-4")}
-        >
-          <div
-            className={cn(
-              "absolute inset-0 bg-repeat",
-              "text-neutral-400 dark:text-white/20",
-            )}
-            style={{
-              backgroundImage:
-                "radial-gradient(circle, currentColor 0.8px, transparent 0.8px)",
-              backgroundSize: isHorizontal ? "6px 100%" : "100% 6px",
-              maskImage: isHorizontal
-                ? "linear-gradient(to right, transparent 0%, black 10%, black 90%, transparent 100%)"
-                : "linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%)",
-            }}
-          />
-        </div>
-      </SeparatorPrimitive.Root>
-    );
-  },
-);
-FormDots.displayName = "FormDots";
-
 interface ContactWithGlobeProps {
   title?: string;
-  subtitle?: string;
   description?: string;
   className?: string;
 }
 
 export default function ContactWithGlobe({
   title = "Contact SafeLife",
-  subtitle = "Contact",
   description = "Questions, feedback, or a safety feature you need? Write to us — every message goes straight to the builder, and SOS help is always prioritised.",
   className,
 }: ContactWithGlobeProps) {
@@ -743,19 +695,7 @@ export default function ContactWithGlobe({
       )}
     >
       <div className="relative mx-auto max-w-7xl px-4 sm:px-6">
-        <div className="flex flex-col items-center text-center gap-4 mb-12">
-          <motion.div
-            initial={{ opacity: 0, y: -12 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.8, ease: smoothEase }}
-            className="inline-flex items-center px-4 py-1.5 rounded-full bg-white/10 border border-white/25"
-          >
-            <span className="text-sm text-white font-medium">
-              {subtitle}
-            </span>
-          </motion.div>
-
+        <div className="flex flex-col items-start text-left gap-4 mb-12">
           <motion.h2
             initial={{ opacity: 0, y: 14 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -812,7 +752,7 @@ export default function ContactWithGlobe({
                   }}
                   className="group flex items-center gap-3 w-fit text-sm text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors duration-200"
                 >
-                  <div className="w-8 h-8 rounded-lg bg-zinc-100 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 group-hover:border-white/40 dark:group-hover:border-white/30 group-hover:bg-white/10 dark:group-hover:bg-white/10 flex items-center justify-center shrink-0 transition-all duration-200">
+                  <div className="w-8 h-8 rounded-lg bg-zinc-100 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 group-hover:border-white/40 dark:group-hover:border-white/30 group-hover:bg-white/10 dark:group-hover:bg-white/10 flex items-center justify-center shrink-0 transition-colors duration-200">
                     <Icon className="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-500 group-hover:text-white dark:group-hover:text-white transition-colors duration-200" />
                   </div>
                   {label}
@@ -849,23 +789,21 @@ export default function ContactWithGlobe({
               </p>
             </div>
 
-            <FormDots />
-
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="flex flex-col gap-2">
-                <label className="text-xs font-semibold tracking-widest uppercase text-zinc-400 dark:text-zinc-500">
-                  Full Name
+                <label className="text-xs font-medium text-zinc-400 dark:text-zinc-500">
+                  Full name
                 </label>
                 <input
                   type="text"
                   placeholder="Your name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="w-full bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-600 outline-none focus:border-white/60 dark:focus:border-white/50 focus:ring-2 focus:ring-white/10 transition-all duration-200"
+                  className="w-full bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-600 outline-none focus:border-white/60 dark:focus:border-white/50 focus:ring-2 focus:ring-white/10 transition-colors duration-200"
                 />
               </div>
               <div className="flex flex-col gap-2">
-                <label className="text-xs font-semibold tracking-widest uppercase text-zinc-400 dark:text-zinc-500">
+                <label className="text-xs font-medium text-zinc-400 dark:text-zinc-500">
                   Phone (optional)
                 </label>
                 <input
@@ -873,26 +811,26 @@ export default function ContactWithGlobe({
                   placeholder="+91 …"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  className="w-full bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-600 outline-none focus:border-white/60 dark:focus:border-white/50 focus:ring-2 focus:ring-white/10 transition-all duration-200"
+                  className="w-full bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-600 outline-none focus:border-white/60 dark:focus:border-white/50 focus:ring-2 focus:ring-white/10 transition-colors duration-200"
                 />
               </div>
             </div>
 
             <div className="flex flex-col gap-2">
-              <label className="text-xs font-semibold tracking-widest uppercase text-zinc-400 dark:text-zinc-500">
-                Email Address
+              <label className="text-xs font-medium text-zinc-400 dark:text-zinc-500">
+                Email address
               </label>
               <input
                 type="email"
                 placeholder="you@example.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-600 outline-none focus:border-white/60 dark:focus:border-white/50 focus:ring-2 focus:ring-white/10 transition-all duration-200"
+                className="w-full bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-600 outline-none focus:border-white/60 dark:focus:border-white/50 focus:ring-2 focus:ring-white/10 transition-colors duration-200"
               />
             </div>
 
             <div className="flex flex-col gap-2">
-              <label className="text-xs font-semibold tracking-widest uppercase text-zinc-400 dark:text-zinc-500">
+              <label className="text-xs font-medium text-zinc-400 dark:text-zinc-500">
                 Message
               </label>
               <textarea
@@ -900,7 +838,7 @@ export default function ContactWithGlobe({
                 rows={4}
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
-                className="w-full bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-600 outline-none focus:border-white/60 dark:focus:border-white/50 focus:ring-2 focus:ring-white/10 resize-none transition-all duration-200"
+                className="w-full bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-600 outline-none focus:border-white/60 dark:focus:border-white/50 focus:ring-2 focus:ring-white/10 resize-none transition-colors duration-200"
               />
             </div>
 
