@@ -22,6 +22,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { supabase } from '../../utils/supabase';
 import { ensureProfile } from '../../utils/auth';
 import { getBackendUrl } from '../../utils/backendUrl';
+import { cacheFix, getFastFix } from '../../utils/location';
 import { Theme } from '../../constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
@@ -407,15 +408,11 @@ export default function TacticalDashboard() {
     setLng(currentLng);
     setIsMoving(coords.speed != null && coords.speed > 0.5);
     // Persist every fix so the next cold start can seed instantly.
-    AsyncStorage.setItem(
-      'lastCoords',
-      JSON.stringify({
-        latitude: coords.latitude,
-        longitude: coords.longitude,
-        speed: coords.speed ?? null,
-        timestamp: Date.now(),
-      })
-    ).catch(() => {});
+    void cacheFix({
+      latitude: coords.latitude,
+      longitude: coords.longitude,
+      timestamp: Date.now(),
+    });
     fetchSafePlacesCache(currentLat, currentLng);
   };
 
@@ -424,11 +421,11 @@ export default function TacticalDashboard() {
   };
 
   /**
-   * Location strategy: permission → last-known fix → fresh fix raced
-   * against a 12s timeout → live watch. The watch starts even if the
-   * first fixes fail, so a late GPS lock still lands. Failures are
-   * logged (never fatal) and permission problems surface via
-   * `locationError` in the Live Location card.
+   * Location strategy: permission → cached fix first (instant) with
+   * a fresh fix refining in the background → live watch. The watch
+   * starts even if the first fixes fail, so a late GPS lock still
+   * lands. Failures are logged (never fatal) and permission problems
+   * surface via `locationError` in the Live Location card.
    */
   const startLocationWatch = async () => {
     const { status: permissionStatus, canAskAgain } = await Location.requestForegroundPermissionsAsync();
@@ -442,27 +439,14 @@ export default function TacticalDashboard() {
     }
     setLocationError(null);
 
-    // (b) Last-known fix — usually instant, may be stale.
-    try {
-      const lastKnown = await Location.getLastKnownPositionAsync();
-      if (lastKnown) updateLocationData(lastKnown);
-    } catch (err) {
-      console.log('Last-known position failed:', err);
+    // (b) Cached last-known fix — instant — with a fresh fix refining
+    // it in the background (utils/location.ts).
+    const cached = await getFastFix();
+    if (cached) {
+      applyCoords({ latitude: cached.latitude, longitude: cached.longitude, speed: null });
     }
 
-    // (c) Fresh fix, raced against a 12s timeout so a hung GPS chip
-    // can't block the rest of setup.
-    try {
-      const fresh = await Promise.race([
-        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 12000)),
-      ]);
-      if (fresh) updateLocationData(fresh);
-    } catch (err) {
-      console.log('Current position failed:', err);
-    }
-
-    // (d) Live watch — starts regardless of whether a fix landed yet.
+    // (c) Live watch — starts regardless of whether a fix landed yet.
     try {
       locSubRef.current?.remove();
       locSubRef.current = await Location.watchPositionAsync(

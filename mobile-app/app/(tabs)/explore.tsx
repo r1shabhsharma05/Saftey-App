@@ -7,6 +7,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  Switch,
 } from 'react-native';
 import Reanimated, { FadeInUp } from 'react-native-reanimated';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -16,6 +17,12 @@ import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../utils/supabase';
 import { showAppDialog } from '../../utils/dialog';
 import { ensureProfile } from '../../utils/auth';
+import {
+  authenticateForUnlock,
+  getBiometricCapability,
+  isBiometricLockEnabled,
+  setBiometricLockEnabled,
+} from '../../utils/biometricLock';
 import { MAX_AVATAR_BYTES, detectImageMime } from '../../utils/mediaValidation';
 
 // The avatars bucket is PRIVATE (locked down 2026-10-22): profiles.avatar_url
@@ -55,11 +62,40 @@ export default function PremiumProfileScreen() {
   const [userId, setUserId] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [auditLog, setAuditLog] = useState<AuditLogResult | null>(null);
+  // Biometric app lock: the row below is the real toggle now.
+  const [bioEnabled, setBioEnabled] = useState(false);
+  const [bioAvailable, setBioAvailable] = useState(false);
+  const [bioLoading, setBioLoading] = useState(true);
 
   useEffect(() => {
     fetchProfile();
     fetchAuditEvents().then(setAuditLog);
   }, []);
+
+  useEffect(() => {
+    void (async () => {
+      const { hasHardware, isEnrolled } = await getBiometricCapability();
+      setBioAvailable(hasHardware && isEnrolled);
+      setBioEnabled(await isBiometricLockEnabled());
+      setBioLoading(false);
+    })();
+  }, []);
+
+  // Enabling proves it is the owner enrolling the lock; disabling
+  // needs no prompt. Unavailable hardware → plain message, never a
+  // lock the user cannot open.
+  const toggleBiometricLock = async (value: boolean) => {
+    if (!bioAvailable) {
+      showAppDialog(
+        'Biometrics Unavailable',
+        'This device has no fingerprint or face unlock set up. Set one up in your device settings first.'
+      );
+      return;
+    }
+    if (value && !(await authenticateForUnlock())) return;
+    await setBiometricLockEnabled(value);
+    setBioEnabled(value);
+  };
 
   const fetchProfile = async () => {
     try {
@@ -304,7 +340,13 @@ export default function PremiumProfileScreen() {
               <Ionicons name="finger-print-outline" size={20} color={Theme.colors.onSurface} />
             </View>
             <Text style={styles.menuLabel}>Biometric Lockdown</Text>
-            <StatusPill label="READY" color={Theme.colors.primaryContainer} />
+            {bioLoading ? (
+              <ActivityIndicator size="small" color={Theme.colors.onSurfaceVariant} />
+            ) : bioAvailable ? (
+              <Switch value={bioEnabled} onValueChange={toggleBiometricLock} />
+            ) : (
+              <Text style={styles.menuNote}>Unavailable</Text>
+            )}
           </GlassCard>
           <GlassCard style={styles.menuItem}>
             <View style={styles.menuIconBox}>
@@ -442,6 +484,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   menuLabel: { flex: 1, fontFamily: Theme.fonts.bodyBold, fontSize: 14, color: Theme.colors.onSurface },
+  menuNote: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant },
   auditRow: { padding: 14, marginBottom: 10, gap: 4 },
   auditAction: { fontFamily: Theme.fonts.bodyBold, fontSize: 13.5, color: Theme.colors.onSurface },
   auditTime: { fontFamily: Theme.fonts.label, fontSize: 10, color: Theme.colors.onSurfaceVariant, letterSpacing: 0.5 },
