@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "942569143689",
+    "project_id": "safelife-16b79",
+    "storage_bucket": "safelife-16b79.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:942569143689:android:cfcbd59f7fd5483dfcb558",
+        "android_client_info": {
+          "package_name": "com.rishabh.safelifeai"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBzOnQi06KSQX_TiX4aYzwO62QM_hWX4cs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
