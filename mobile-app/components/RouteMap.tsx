@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, InteractionManager } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Mapbox, { Camera, LineLayer, MapView, PointAnnotation, ShapeSource } from '@rnmapbox/maps';
 import { Theme } from '../constants/theme';
@@ -79,6 +79,16 @@ export default function RouteMap({
     };
   }, [coordinates]);
 
+  // The native map is heavy to mount (GL context + tiles). Defer it
+  // until after the dashboard's first paint so the tab opens instantly
+  // and the map fills in a beat later — a safety app must never make
+  // the user wait on the map to see SOS and location.
+  const [mapReady, setMapReady] = useState(false);
+  useEffect(() => {
+    const task = InteractionManager.runAfterInteractions(() => setMapReady(true));
+    return () => task.cancel();
+  }, []);
+
   return (
     <Card style={styles.card}>
       <View style={styles.header}>
@@ -104,7 +114,7 @@ export default function RouteMap({
         accessibilityRole="image"
         accessibilityLabel={`Walking route to ${destinationName}, ${formatRouteDistance(distanceM)}, about ${formatDuration(durationS)}`}
       >
-        {MAPBOX_TOKEN && route ? (
+        {MAPBOX_TOKEN && route && mapReady ? (
           <MapView style={styles.mapView} styleURL={Mapbox.StyleURL.Street}>
             <Camera
               bounds={route.bounds}
@@ -150,7 +160,9 @@ export default function RouteMap({
             <Text style={styles.mapFallbackText}>
               {!MAPBOX_TOKEN
                 ? 'Map unavailable — Mapbox token not configured.'
-                : 'No route to show.'}
+                : !route
+                  ? 'No route to show.'
+                  : 'Loading map…'}
             </Text>
           </View>
         )}
