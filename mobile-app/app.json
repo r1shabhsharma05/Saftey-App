@@ -58,7 +58,8 @@
           "contactsPermission": "SafeLife lets you pick emergency contacts to receive your SOS location."
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "@rnmapbox/maps"
     ],
     "experiments": {
       "typedRoutes": true,
