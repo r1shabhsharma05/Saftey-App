@@ -18,6 +18,10 @@ export default function TabLayout() {
         tabBarActiveTintColor: Theme.colors.primaryText,
         tabBarInactiveTintColor: Theme.colors.onSurfaceVariant,
         headerShown: false,
+        // Mount each tab only on first focus: the contacts/profile
+        // screens (and their data fetches) must not slow the first
+        // paint of the Guardian tab after login.
+        lazy: true,
       }}
     >
       <Tabs.Screen
