@@ -1,8 +1,8 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native';
-import { Ionicons, FontAwesome5 } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { Theme } from '../../constants/theme';
-import GlassCard from './GlassCard';
+import Card from './Card';
 import SafetyBadge from './SafetyBadge';
 import type { SafetyScore } from '../../utils/escapeLogic';
 import { sanitizePhone } from '../../utils/escapeLogic';
@@ -17,7 +17,7 @@ interface Props {
   safety?: SafetyScore;
 }
 
-/** Premium police-station row: glass card, call + navigation actions. */
+/** Police-station row: call + navigation actions, no decoration. */
 export default function PoliceStationCard({ name, phone, distanceLabel, direction, lat, lng, safety }: Props) {
   // (M3) The phone is OSM crowd-edited text: allowlist it here (the
   // parser does too — this is the last stop before tel:). Anything
@@ -26,7 +26,7 @@ export default function PoliceStationCard({ name, phone, distanceLabel, directio
   const dialNumber = sanitizePhone(phone, '100');
 
   return (
-    <GlassCard style={styles.card} edgeColor={Theme.colors.police} intensity={16}>
+    <Card style={styles.card}>
       <View style={styles.header}>
         <Text style={styles.name} numberOfLines={1}>
           {name}
@@ -57,11 +57,11 @@ export default function PoliceStationCard({ name, phone, distanceLabel, directio
             Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`)
           }
         >
-          <FontAwesome5 name="directions" size={13} color="#00331a" />
-          <Text style={styles.navText}>GO</Text>
+          <Ionicons name="navigate" size={13} color="#FFFFFF" />
+          <Text style={styles.navText}>Go</Text>
         </TouchableOpacity>
       </View>
-    </GlassCard>
+    </Card>
   );
 }
 
@@ -70,49 +70,36 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', marginBottom: 14, gap: 8 },
   name: {
     flex: 1,
-    fontFamily: Theme.fonts.headline,
-    fontSize: 14,
+    ...Theme.type.subhead,
+    fontWeight: '600',
     color: Theme.colors.onSurface,
   },
   distBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 255, 136, 0.10)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 255, 136, 0.20)',
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 9,
     gap: 5,
   },
-  distText: { fontFamily: Theme.fonts.headline, fontSize: 11, color: Theme.colors.success },
+  distText: { ...Theme.type.caption1, fontWeight: '600', color: Theme.colors.successText },
   actions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   callBtn: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.10)',
+    backgroundColor: Theme.colors.systemFill,
     paddingHorizontal: 13,
     paddingVertical: 11,
     borderRadius: 12,
   },
-  callText: { fontFamily: Theme.fonts.label, fontSize: 12, color: Theme.colors.onSurfaceVariant },
+  callText: { ...Theme.type.caption1, color: Theme.colors.onSurfaceVariant },
   navBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
-    backgroundColor: Theme.colors.success,
+    backgroundColor: Theme.colors.primaryFill,
     paddingHorizontal: 20,
     paddingVertical: 11,
     borderRadius: 12,
-    shadowColor: Theme.colors.success,
-    shadowOpacity: 0.45,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
   },
-  navText: { fontFamily: Theme.fonts.headline, fontSize: 12, color: '#00331a', fontWeight: '900' },
+  navText: { ...Theme.type.caption1, fontWeight: '700', color: '#FFFFFF' },
 });

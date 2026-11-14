@@ -6,11 +6,14 @@ import { Theme } from '../../constants/theme';
 interface Props {
   label: string;
   color: string;
-  /** pulsing dot for live states */
+  /** Pulsing dot — live states ONLY (an active SOS, a live GPS fix). A static state never pulses. */
   pulse?: boolean;
 }
 
-/** Status pill with an (optionally pulsing) signal dot. */
+/**
+ * Small status pill: tinted fill, signal dot, sentence-case label.
+ * The dot is the signal; the word is never tracked caps.
+ */
 export default function StatusPill({ label, color, pulse = false }: Props) {
   const opacity = useSharedValue(1);
 
@@ -24,13 +27,7 @@ export default function StatusPill({ label, color, pulse = false }: Props) {
 
   return (
     <View style={styles.pill}>
-      <Animated.View
-        style={[
-          styles.dot,
-          { backgroundColor: color, shadowColor: color },
-          pulse && dotStyle,
-        ]}
-      />
+      <Animated.View style={[styles.dot, { backgroundColor: color }, pulse && dotStyle]} />
       <Text style={styles.label}>{label}</Text>
     </View>
   );
@@ -40,28 +37,16 @@ const styles = StyleSheet.create({
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    paddingHorizontal: 13,
-    paddingVertical: 7,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.10)',
-    gap: 8,
+    backgroundColor: Theme.colors.systemFill,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    gap: 6,
   },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    shadowOpacity: 0.9,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 4,
-  },
+  dot: { width: 8, height: 8, borderRadius: 4 },
   label: {
-    fontFamily: Theme.fonts.label,
-    fontSize: 10,
+    ...Theme.type.footnote,
+    fontWeight: '600',
     color: Theme.colors.onSurface,
-    fontWeight: 'bold',
-    letterSpacing: 1.5,
   },
 });

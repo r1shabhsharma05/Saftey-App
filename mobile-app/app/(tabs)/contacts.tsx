@@ -10,9 +10,7 @@ import {
   Alert,
   Linking,
 } from 'react-native';
-import Reanimated, { FadeInUp } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import * as Contacts from 'expo-contacts';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
@@ -20,7 +18,8 @@ import { supabase } from '../../utils/supabase';
 import { showAppDialog } from '../../utils/dialog';
 import { Theme } from '../../constants/theme';
 import ScreenBackground from '../../components/ui/ScreenBackground';
-import GlassCard from '../../components/ui/GlassCard';
+import Card from '../../components/ui/Card';
+import AppleButton from '../../components/ui/AppleButton';
 import StatusPill from '../../components/ui/StatusPill';
 import SectionHeader from '../../components/ui/SectionHeader';
 
@@ -248,65 +247,65 @@ export default function EmergencyContactsScreen() {
   const selectedCount = selected.size;
 
   return (
-    <ScreenBackground>
+    <View style={styles.root}>
       <View style={styles.container}>
-        <Reanimated.View entering={FadeInUp.duration(500)} style={styles.header}>
+        <View style={styles.header}>
           <Text style={styles.headerTitle}>Emergency Contacts</Text>
           <Text style={styles.headerSub}>
             Pick who should be alerted when you trigger SOS. Selected contacts are attached to every SOS alert.
           </Text>
-        </Reanimated.View>
+        </View>
 
-        <Reanimated.View entering={FadeInUp.delay(80).duration(500)}>
-          <GlassCard style={styles.countCard}>
+        <View>
+          <Card style={styles.countCard}>
             <Ionicons name="people" size={20} color={Theme.colors.primary} />
             <Text style={styles.countText}>
               {selectedCount} contact{selectedCount === 1 ? '' : 's'} will receive your SOS
             </Text>
             <StatusPill
-              label={selectedCount > 0 ? 'ARMED' : 'EMPTY'}
+              label={selectedCount > 0 ? 'Armed' : 'Empty'}
               color={selectedCount > 0 ? Theme.colors.success : Theme.colors.warning}
               pulse={selectedCount > 0}
             />
-          </GlassCard>
-        </Reanimated.View>
+          </Card>
+        </View>
 
         {loading ? (
           <View style={styles.centerBox}>
             <ActivityIndicator size="large" color={Theme.colors.primary} />
-            <Text style={styles.centerText}>LOADING CONTACTS…</Text>
+            <Text style={styles.centerText}>Loading contacts…</Text>
           </View>
         ) : signedOut ? (
-          <Reanimated.View entering={FadeInUp.delay(140).duration(500)}>
-            <GlassCard style={styles.permCard}>
+          <View>
+            <Card style={styles.permCard}>
               <Ionicons name="person-circle-outline" size={30} color={Theme.colors.primary} />
               <Text style={styles.permTitle}>Sign in needed</Text>
               <Text style={styles.permText}>
                 You are signed out. Sign in again to choose and save your SOS contacts.
               </Text>
-              <TouchableOpacity style={styles.permBtn} onPress={() => router.replace('/login')} activeOpacity={0.8}>
-                <Text style={styles.permBtnText}>GO TO SIGN IN</Text>
-              </TouchableOpacity>
-            </GlassCard>
-          </Reanimated.View>
+              <AppleButton title="Go to sign in" variant="tinted" onPress={() => router.replace('/login')} />
+            </Card>
+          </View>
         ) : permission !== 'granted' ? (
-          <Reanimated.View entering={FadeInUp.delay(140).duration(500)}>
-            <GlassCard style={styles.permCard}>
+          <View>
+            <Card style={styles.permCard}>
               <Ionicons name="lock-closed-outline" size={30} color={Theme.colors.primary} />
               <Text style={styles.permTitle}>Contacts access needed</Text>
               <Text style={styles.permText}>
                 SafeLife reads your contacts only to let you choose SOS recipients. Nothing is uploaded
                 unless you select it and tap Save.
               </Text>
-              <TouchableOpacity style={styles.permBtn} onPress={handleGrantPermission} activeOpacity={0.8}>
-                <Text style={styles.permBtnText}>{canAskAgain ? 'ALLOW CONTACTS' : 'OPEN SETTINGS'}</Text>
-              </TouchableOpacity>
-            </GlassCard>
-          </Reanimated.View>
+              <AppleButton
+                title={canAskAgain ? 'Allow contacts' : 'Open settings'}
+                variant="tinted"
+                onPress={handleGrantPermission}
+              />
+            </Card>
+          </View>
         ) : (
           <>
-            <Reanimated.View entering={FadeInUp.delay(140).duration(500)}>
-              <GlassCard style={styles.searchCard}>
+            <View>
+              <View style={styles.searchCard}>
                 <Ionicons name="search-outline" size={18} color={Theme.colors.onSurfaceVariant} />
                 <TextInput
                   style={styles.searchInput}
@@ -321,15 +320,15 @@ export default function EmergencyContactsScreen() {
                     <Ionicons name="close-circle" size={18} color={Theme.colors.onSurfaceVariant} />
                   </TouchableOpacity>
                 )}
-              </GlassCard>
-            </Reanimated.View>
+              </View>
+            </View>
 
-            <Reanimated.View entering={FadeInUp.delay(200).duration(500)} style={styles.sectionWrap}>
+            <View style={styles.sectionWrap}>
               <SectionHeader
                 icon={<Ionicons name="call-outline" size={18} color={Theme.colors.primary} />}
-                title={`All Contacts · ${filtered.length}`}
+                title={`All contacts · ${filtered.length}`}
               />
-            </Reanimated.View>
+            </View>
 
             <ScrollView style={styles.list} contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
               {filtered.length === 0 ? (
@@ -349,7 +348,7 @@ export default function EmergencyContactsScreen() {
                       activeOpacity={0.75}
                     >
                       <View style={[styles.checkbox, isSelected && styles.checkboxChecked]}>
-                        {isSelected && <Ionicons name="checkmark" size={15} color="#06202b" />}
+                        {isSelected && <Ionicons name="checkmark" size={15} color="#FFFFFF" />}
                       </View>
                       <View style={styles.rowTextBox}>
                         <Text style={styles.rowName} numberOfLines={1}>{contact.name}</Text>
@@ -368,54 +367,40 @@ export default function EmergencyContactsScreen() {
             </ScrollView>
 
             <View style={styles.saveBar}>
-              <TouchableOpacity onPress={handleSave} activeOpacity={0.85} disabled={saving} style={styles.saveBtnWrap}>
-                <LinearGradient colors={Theme.gradients.sosCore} style={styles.saveBtn}>
-                  {saving ? (
-                    <ActivityIndicator size="small" color={Theme.colors.primary} />
-                  ) : (
-                    <>
-                      <Ionicons name="save-outline" size={17} color={Theme.colors.primary} />
-                      <Text style={styles.saveBtnText}>SAVE CONTACTS</Text>
-                    </>
-                  )}
-                </LinearGradient>
-              </TouchableOpacity>
+              <AppleButton
+                title="Save contacts"
+                onPress={handleSave}
+                loading={saving}
+                disabled={saving}
+                icon={<Ionicons name="save-outline" size={17} color="#FFFFFF" />}
+              />
             </View>
           </>
         )}
       </View>
-    </ScreenBackground>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: Theme.colors.surface },
   container: { flex: 1, paddingHorizontal: 20, paddingTop: 64 },
   header: { marginBottom: 18 },
-  headerTitle: { fontFamily: Theme.fonts.headline, fontSize: 26, color: Theme.colors.onSurface, letterSpacing: -0.5 },
-  headerSub: { fontFamily: Theme.fonts.body, fontSize: 12.5, lineHeight: 18, color: Theme.colors.onSurfaceVariant, marginTop: 8 },
+  headerTitle: { ...Theme.type.title1, color: Theme.colors.onSurface },
+  headerSub: { ...Theme.type.body, fontSize: 12.5, lineHeight: 18, color: Theme.colors.onSurfaceVariant, marginTop: 8 },
   countCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, marginBottom: 16 },
-  countText: { flex: 1, fontFamily: Theme.fonts.bodyBold, fontSize: 13.5, color: Theme.colors.onSurface },
+  countText: { flex: 1, ...Theme.type.subhead, fontWeight: '600', fontSize: 13.5, color: Theme.colors.onSurface },
   centerBox: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14 },
-  centerText: { fontFamily: Theme.fonts.label, fontSize: 11, color: Theme.colors.primary, letterSpacing: 3 },
+  centerText: { ...Theme.type.caption1, fontSize: 11, color: Theme.colors.primaryText },
   permCard: { padding: 24, alignItems: 'center', gap: 12 },
-  permTitle: { fontFamily: Theme.fonts.headline, fontSize: 18, color: Theme.colors.onSurface },
-  permText: { fontFamily: Theme.fonts.body, fontSize: 13, lineHeight: 19, color: Theme.colors.onSurfaceVariant, textAlign: 'center' },
-  permBtn: {
-    marginTop: 6,
-    paddingHorizontal: 18,
-    paddingVertical: 11,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 227, 253, 0.35)',
-    backgroundColor: 'rgba(0, 227, 253, 0.10)',
-  },
-  permBtnText: { fontFamily: Theme.fonts.label, fontSize: 11, letterSpacing: 1.5, color: Theme.colors.primary },
-  searchCard: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 4 },
-  searchInput: { flex: 1, fontFamily: Theme.fonts.body, fontSize: 14, color: Theme.colors.onSurface, paddingVertical: 10 },
+  permTitle: { ...Theme.type.title3, color: Theme.colors.onSurface },
+  permText: { ...Theme.type.body, fontSize: 13, lineHeight: 19, color: Theme.colors.onSurfaceVariant, textAlign: 'center' },
+  searchCard: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 4, backgroundColor: Theme.colors.systemFill, borderRadius: 12 },
+  searchInput: { flex: 1, ...Theme.type.body, fontSize: 14, color: Theme.colors.onSurface, paddingVertical: 10 },
   sectionWrap: { marginTop: 18, marginBottom: 4 },
   list: { flex: 1 },
   listContent: { paddingTop: 6 },
-  emptyText: { fontFamily: Theme.fonts.body, fontSize: 13, color: Theme.colors.onSurfaceVariant, textAlign: 'center', marginTop: 30, lineHeight: 19 },
+  emptyText: { ...Theme.type.body, fontSize: 13, color: Theme.colors.onSurfaceVariant, textAlign: 'center', marginTop: 30, lineHeight: 19 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -425,34 +410,22 @@ const styles = StyleSheet.create({
     marginBottom: 9,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    backgroundColor: 'rgba(30, 30, 55, 0.42)',
+    borderColor: Theme.colors.outlineVariant,
+    backgroundColor: Theme.colors.surfaceContainer,
   },
-  rowSelected: { borderColor: 'rgba(0, 227, 253, 0.35)', backgroundColor: 'rgba(0, 227, 253, 0.07)' },
+  rowSelected: { borderColor: Theme.colors.primary, backgroundColor: Theme.colors.primaryContainer },
   checkbox: {
     width: 24,
     height: 24,
     borderRadius: 8,
     borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.35)',
+    borderColor: Theme.colors.outlineVariant,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  checkboxChecked: { backgroundColor: Theme.colors.primary, borderColor: Theme.colors.primary },
+  checkboxChecked: { backgroundColor: Theme.colors.primaryFill, borderColor: Theme.colors.primaryFill },
   rowTextBox: { flex: 1 },
-  rowName: { fontFamily: Theme.fonts.bodyBold, fontSize: 14.5, color: Theme.colors.onSurface },
-  rowPhone: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant, marginTop: 2 },
+  rowName: { ...Theme.type.subhead, fontWeight: '600', fontSize: 14.5, color: Theme.colors.onSurface },
+  rowPhone: { ...Theme.type.body, fontSize: 12, color: Theme.colors.onSurfaceVariant, marginTop: 2 },
   saveBar: { paddingTop: 10, paddingBottom: 112 },
-  saveBtnWrap: { borderRadius: 16, overflow: 'hidden' },
-  saveBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 9,
-    paddingVertical: 15,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: Theme.colors.primary + '30',
-  },
-  saveBtnText: { fontFamily: Theme.fonts.label, fontSize: 12, letterSpacing: 2, color: Theme.colors.primary },
 });

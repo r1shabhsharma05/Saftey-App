@@ -8,11 +8,14 @@ interface Props {
   right?: React.ReactNode;
 }
 
-/** Consistent section header: icon in a tinted box + title + optional right slot. */
+/**
+ * Plain section title (HIG lists-and-tables.md): no tinted icon box,
+ * no tracked caps. An icon, when given, renders plain at 18px.
+ */
 export default function SectionHeader({ icon, title, right }: Props) {
   return (
     <View style={styles.row}>
-      <View style={styles.iconBox}>{icon}</View>
+      {icon}
       <Text style={styles.title}>{title}</Text>
       <View style={styles.right}>{right}</View>
     </View>
@@ -20,23 +23,11 @@ export default function SectionHeader({ icon, title, right }: Props) {
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 14 },
-  iconBox: {
-    width: 34,
-    height: 34,
-    borderRadius: 11,
-    backgroundColor: 'rgba(0, 227, 253, 0.10)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 227, 253, 0.18)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   title: {
     flex: 1,
-    fontFamily: Theme.fonts.headline,
-    fontSize: 16,
+    ...Theme.type.title3,
     color: Theme.colors.onSurface,
-    letterSpacing: 0.3,
   },
   right: {},
 });

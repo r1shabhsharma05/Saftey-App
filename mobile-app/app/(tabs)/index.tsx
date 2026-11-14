@@ -4,7 +4,6 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Animated,
   Alert,
   ActivityIndicator,
   AppState,
@@ -12,9 +11,8 @@ import {
   ScrollView,
   Share,
 } from 'react-native';
-import Reanimated, { FadeInUp } from 'react-native-reanimated';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import Reanimated, { useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
@@ -51,9 +49,7 @@ import {
   type Journey,
 } from '../../utils/journey';
 import { decideBatteryAlert, BATTERY_LOW_THRESHOLD, BATTERY_FINAL_THRESHOLD, BATTERY_REARM_LEVEL } from '../../utils/batteryAlerts';
-import ScreenBackground from '../../components/ui/ScreenBackground';
-import GlassCard from '../../components/ui/GlassCard';
-import TiltCard from '../../components/ui/TiltCard';
+import Card from '../../components/ui/Card';
 import StatusPill from '../../components/ui/StatusPill';
 import SectionHeader from '../../components/ui/SectionHeader';
 import SafeHubCard from '../../components/ui/SafeHubCard';
@@ -229,9 +225,13 @@ export default function TacticalDashboard() {
   const batSubRef = useRef<{ remove: () => void } | null>(null);
   const batStateSubRef = useRef<{ remove: () => void } | null>(null);
 
-  // --- Animations ---
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-  const sosScale = useRef(new Animated.Value(1)).current;
+  // --- SOS press feedback (animate-expo): a 0.97 scale in 100ms on
+  // press-in, back on release. No loops, no tilt, no pulse — the SOS
+  // button is a critical control and must sit still.
+  const sosScale = useSharedValue(1);
+  const sosStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: sosScale.value }],
+  }));
 
   // --- Effects ---
   useEffect(() => {
@@ -370,13 +370,6 @@ export default function TacticalDashboard() {
         }
       })
       .catch(() => {});
-
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.08, duration: 1600, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1, duration: 1600, useNativeDriver: true }),
-      ])
-    ).start();
 
     return () => {
       locSubRef.current?.remove();
@@ -1294,10 +1287,11 @@ export default function TacticalDashboard() {
   };
 
   const handleSOSPress = () => {
-    Animated.sequence([
-      Animated.spring(sosScale, { toValue: 0.92, useNativeDriver: true }),
-      Animated.spring(sosScale, { toValue: 1, useNativeDriver: true }),
-    ]).start(() => sendSOSAlert());
+    // One haptic on the semantic event, in the same frame as the
+    // visual press (animate-expo). The scale itself is driven by the
+    // button's press-in / press-out handlers below.
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    sendSOSAlert();
   };
 
   const handleShareLocation = async () => {
@@ -1441,27 +1435,25 @@ export default function TacticalDashboard() {
   }
 
   return (
-    <ScreenBackground>
+    <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* Header */}
-        <Reanimated.View entering={FadeInUp.duration(500)} style={styles.header}>
+        <View style={styles.header}>
           <View style={styles.headerTitleRow}>
-            <View style={styles.brandDot}>
-              <MaterialCommunityIcons name="shield-check" size={20} color={Theme.colors.primaryContainer} />
-            </View>
+            <Ionicons name="shield-checkmark" size={22} color={Theme.colors.primary} />
             <Text style={styles.brandTitle}>SafeLife</Text>
           </View>
           <StatusPill
-            label={status}
+            label={status === 'SAFE' ? 'Safe' : 'Alert active'}
             color={status === 'SAFE' ? Theme.colors.success : Theme.colors.error}
             pulse={status !== 'SAFE'}
           />
-        </Reanimated.View>
+        </View>
 
         {/* Guardian badge */}
-        <Reanimated.View entering={FadeInUp.delay(80).duration(500)} style={styles.badgeRow}>
-          <StatusPill label="SYSTEM GUARDIAN ACTIVE" color={Theme.colors.success} pulse />
-        </Reanimated.View>
+        <View style={styles.badgeRow}>
+          <StatusPill label="Guardian active" color={Theme.colors.success} pulse />
+        </View>
 
         {/* SOS feedback banner — styled, in-app, honest. Replaces the
             old raw system dialogs for SOS results. */}
@@ -1476,13 +1468,13 @@ export default function TacticalDashboard() {
                     sendSOSAlert();
                   }}
                 >
-                  <Text style={styles.sosBannerAction}>RETRY</Text>
+                  <Text style={styles.sosBannerAction}>Retry</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={sendSOSviaSMS}>
-                  <Text style={styles.sosBannerAction}>SEND VIA SMS</Text>
+                  <Text style={styles.sosBannerAction}>Send via SMS</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => setSosBanner(null)}>
-                  <Text style={styles.sosBannerAction}>DISMISS</Text>
+                  <Text style={styles.sosBannerAction}>Dismiss</Text>
                 </TouchableOpacity>
               </View>
             ) : (
@@ -1505,58 +1497,71 @@ export default function TacticalDashboard() {
             </Text>
             <View style={styles.sosBannerActions}>
               <TouchableOpacity onPress={() => flushPendingSOS(true)}>
-                <Text style={styles.sosBannerAction}>RETRY NOW</Text>
+                <Text style={styles.sosBannerAction}>Retry now</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={sendSOSviaSMS}>
-                <Text style={styles.sosBannerAction}>SEND VIA SMS</Text>
+                <Text style={styles.sosBannerAction}>Send via SMS</Text>
               </TouchableOpacity>
             </View>
           </View>
         )}
 
-        {/* SOS Core — 3D tilt orb */}
-        <Reanimated.View entering={FadeInUp.delay(140).duration(600)} style={styles.sosWrap}>
-          <Animated.View style={[styles.pulseRing, { transform: [{ scale: pulseAnim }] }]} />
-          <Animated.View style={[styles.pulseRing2, { transform: [{ scale: pulseAnim }] }]} />
-          <TiltCard style={styles.sosTilt} maxTilt={7} borderRadius={110}>
-            <Animated.View style={{ transform: [{ scale: sosScale }], flex: 1 }}>
-              <TouchableOpacity onPress={handleSOSPress} activeOpacity={0.92} style={styles.sosButton}>
-                <LinearGradient colors={Theme.gradients.sosCore} style={styles.sosGradient}>
-                  <MaterialCommunityIcons name="fingerprint" size={62} color={Theme.colors.primary} />
-                  <Text style={styles.sosButtonText}>SOS</Text>
-                  <Text style={styles.sosButtonSub}>TAP FOR SOS</Text>
-                </LinearGradient>
-              </TouchableOpacity>
-            </Animated.View>
-          </TiltCard>
-        </Reanimated.View>
+        {/* SOS Core — one solid red button, the screen's signature
+            element. No tilt, no pulse, no gradient: a critical control
+            sits still, and the press is a 0.97 scale in 100ms. */}
+        <View style={styles.sosWrap}>
+          <View style={styles.sosRing} pointerEvents="none" />
+          <Reanimated.View style={[styles.sosCircle, sosStyle]}>
+            <TouchableOpacity
+              onPress={handleSOSPress}
+              onPressIn={() => {
+                sosScale.value = withTiming(0.97, { duration: 100 });
+              }}
+              onPressOut={() => {
+                sosScale.value = withTiming(1, { duration: 100 });
+              }}
+              activeOpacity={1}
+              style={styles.sosTouch}
+              accessibilityRole="button"
+              accessibilityLabel="Send SOS alert"
+            >
+              <Text style={styles.sosButtonText}>SOS</Text>
+            </TouchableOpacity>
+          </Reanimated.View>
+          <Text style={styles.sosButtonSub}>Tap for SOS</Text>
+        </View>
 
-        {/* Live location glass card */}
-        <Reanimated.View entering={FadeInUp.delay(200).duration(500)}>
-          <GlassCard style={styles.locationCard}>
+        {/* Live location card */}
+        <View>
+          <Card style={styles.locationCard}>
             <View style={styles.cardHeader}>
-              <View style={styles.iconBox}>
-                <Ionicons name="location" size={20} color={Theme.colors.primary} />
-              </View>
+              <Ionicons name="location" size={20} color={Theme.colors.primary} />
               <View style={styles.cardTitleBox}>
                 <Text style={styles.cardTitle}>Live Location</Text>
                 <Text style={styles.cardSubTitle}>{userData?.address || 'Current Zone'}</Text>
               </View>
-              <StatusPill label={isMoving ? 'MOVING' : 'STEADY'} color={isMoving ? Theme.colors.warning : Theme.colors.primaryContainer} />
+              <StatusPill label={isMoving ? 'Moving' : 'Steady'} color={isMoving ? Theme.colors.warning : Theme.colors.primaryContainer} />
             </View>
             <View style={styles.coordsRow}>
               <View style={styles.coordBox}>
-                <Text style={styles.coordLabel}>LATITUDE</Text>
+                <Text style={styles.coordLabel}>Latitude</Text>
                 <Text style={styles.coordValue}>{lat}°</Text>
               </View>
               <View style={styles.coordBox}>
-                <Text style={styles.coordLabel}>LONGITUDE</Text>
+                <Text style={styles.coordLabel}>Longitude</Text>
                 <Text style={styles.coordValue}>{lng}°</Text>
               </View>
               <View style={styles.coordBox}>
-                <Text style={styles.coordLabel}>BATTERY</Text>
-                <Text style={[styles.coordValue, { color: batteryLevel < 20 ? Theme.colors.error : Theme.colors.success }]}>
-                  {batteryLevel}%{batteryCharging ? ' ⚡' : ''}
+                <Text style={styles.coordLabel}>Battery</Text>
+                <Text style={[styles.coordValue, { color: batteryLevel < 20 ? Theme.colors.errorText : Theme.colors.successText }]}>
+                  {batteryLevel}%
+                  {batteryCharging && (
+                    <Ionicons
+                      name="flash"
+                      size={12}
+                      color={batteryLevel < 20 ? Theme.colors.errorText : Theme.colors.successText}
+                    />
+                  )}
                 </Text>
               </View>
             </View>
@@ -1572,21 +1577,21 @@ export default function TacticalDashboard() {
                   activeOpacity={0.8}
                 >
                   <Ionicons name="location-outline" size={14} color={Theme.colors.primary} />
-                  <Text style={styles.enableLocationText}>ENABLE LOCATION</Text>
+                  <Text style={styles.enableLocationText}>Enable location</Text>
                 </TouchableOpacity>
               </View>
             )}
-          </GlassCard>
-        </Reanimated.View>
+          </Card>
+        </View>
 
         {/* Quick actions */}
-        <Reanimated.View entering={FadeInUp.delay(260).duration(500)} style={styles.actionsGrid}>
+        <View style={styles.actionsGrid}>
           {[
-            { icon: 'call', label: 'CALL', action: () => Linking.openURL('tel:112') },
-            { icon: 'share-social', label: 'SHARE', action: handleShareLocation },
+            { icon: 'call', label: 'Call', action: () => Linking.openURL('tel:112') },
+            { icon: 'share-social', label: 'Share', action: handleShareLocation },
             {
               icon: 'map',
-              label: 'MAP',
+              label: 'Map',
               action: () => {
                 // Guard like SHARE has: without a GPS fix this used to
                 // open Maps at "Loading...,Loading...".
@@ -1597,19 +1602,19 @@ export default function TacticalDashboard() {
                 Linking.openURL(`https://maps.google.com/?q=${lat},${lng}`);
               },
             },
-            { icon: 'navigate', label: 'RESCUE', action: handleNavigateNearest },
+            { icon: 'navigate', label: 'Rescue', action: handleNavigateNearest },
           ].map((item, idx) => (
             <TouchableOpacity key={idx} style={styles.actionItem} onPress={item.action} activeOpacity={0.7}>
               <View style={styles.actionIconBox}>
-                <Ionicons name={item.icon as any} size={23} color={Theme.colors.onSurface} />
+                <Ionicons name={item.icon as any} size={22} color={Theme.colors.onSurface} />
               </View>
               <Text style={styles.actionLabel}>{item.label}</Text>
             </TouchableOpacity>
           ))}
-        </Reanimated.View>
+        </View>
 
         {/* D16: Journey Guardian — share a trip, contacts follow live */}
-        <Reanimated.View entering={FadeInUp.delay(280).duration(500)}>
+        <View>
           <JourneyCard
             places={rankedPlaces}
             journey={journey}
@@ -1622,19 +1627,19 @@ export default function TacticalDashboard() {
             onCheckIn={answerJourneyCheckIn}
             checkInBusy={checkInBusy}
           />
-        </Reanimated.View>
+        </View>
 
         {/* D19: Guardian Network — onboarding + availability */}
-        <Reanimated.View entering={FadeInUp.delay(290).duration(500)}>
+        <View>
           <GuardianCard guardian={guardian} onOpen={() => router.push('/guardian')} />
-        </Reanimated.View>
+        </View>
 
         {/* D14: in-app walking route to the nearest-best safe place */}
         {lat !== 'Loading...' && rankedPlaces.length > 0 && (
-          <Reanimated.View entering={FadeInUp.delay(300).duration(500)} style={styles.routeSection}>
+          <View style={styles.routeSection}>
             <SectionHeader
-              icon={<MaterialCommunityIcons name="routes" size={18} color={Theme.colors.primary} />}
-              title="Route to Safety · Walking"
+              icon={<Ionicons name="map-outline" size={18} color={Theme.colors.primary} />}
+              title="Route to safety"
             />
             {routeState === 'ready' && route && routePlace ? (
               <RouteMap
@@ -1649,7 +1654,7 @@ export default function TacticalDashboard() {
                 }
               />
             ) : routeState === 'error' ? (
-              <GlassCard style={styles.scanningCard}>
+              <Card style={styles.scanningCard}>
                 <Text style={styles.scanningText}>Walking route unavailable right now.</Text>
                 <TouchableOpacity
                   onPress={() =>
@@ -1658,23 +1663,23 @@ export default function TacticalDashboard() {
                   }
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
-                  <Text style={styles.retryText}>OPEN IN GOOGLE MAPS</Text>
+                  <Text style={styles.retryText}>Open in Google Maps</Text>
                 </TouchableOpacity>
-              </GlassCard>
+              </Card>
             ) : (
-              <GlassCard style={styles.scanningCard}>
+              <Card style={styles.scanningCard}>
                 <ActivityIndicator size="small" color={Theme.colors.primary} />
                 <Text style={styles.scanningText}>Finding your walking route…</Text>
-              </GlassCard>
+              </Card>
             )}
-          </Reanimated.View>
+          </View>
         )}
 
         {/* Police radar */}
-        <Reanimated.View entering={FadeInUp.delay(320).duration(500)}>
+        <View>
           <SectionHeader
-            icon={<MaterialCommunityIcons name="police-badge" size={18} color={Theme.colors.police} />}
-            title="Police Radar · 20km"
+            icon={<Ionicons name="shield-outline" size={18} color={Theme.colors.primary} />}
+            title="Police nearby · 20 km"
           />
           {policeStations.length > 0 ? (
             policeStations.map((station: any, idx: number) => {
@@ -1696,19 +1701,19 @@ export default function TacticalDashboard() {
               );
             })
           ) : (
-            <GlassCard style={styles.bannerCard}>
-              <MaterialCommunityIcons name="police-badge" size={20} color={Theme.colors.primary} />
+            <Card style={styles.bannerCard}>
+              <Ionicons name="shield-outline" size={20} color={Theme.colors.primary} />
               <Text style={styles.bannerText}>Nearest: {nearestStation}</Text>
-            </GlassCard>
+            </Card>
           )}
-        </Reanimated.View>
+        </View>
 
         {/* Safe hubs */}
         {lat !== 'Loading...' && (
-          <Reanimated.View entering={FadeInUp.delay(380).duration(500)} style={styles.hubsSection}>
+          <View style={styles.hubsSection}>
             <SectionHeader
               icon={<Ionicons name="shield-half" size={18} color={Theme.colors.primary} />}
-              title="Nearby Safe Hubs"
+              title="Nearby safe hubs"
             />
             {cachedSafePlaces.length > 0 ? (
               <ScrollView
@@ -1723,11 +1728,11 @@ export default function TacticalDashboard() {
                   ))}
               </ScrollView>
             ) : safePlacesState === 'error' || safePlacesState === 'empty' ? (
-              <GlassCard style={styles.scanningCard}>
+              <Card style={styles.scanningCard}>
                 <Text style={styles.scanningText}>
                   {safePlacesState === 'error'
                     ? 'Safe areas could not be loaded. Check your internet connection.'
-                    : 'No safe areas found within 10km.'}
+                    : 'No safe areas found within 10 km.'}
                 </Text>
                 <TouchableOpacity
                   onPress={() => fetchSafePlacesCache(lat, lng, true)}
@@ -1735,14 +1740,14 @@ export default function TacticalDashboard() {
                 >
                   <Text style={styles.retryText}>Retry</Text>
                 </TouchableOpacity>
-              </GlassCard>
+              </Card>
             ) : (
-              <GlassCard style={styles.scanningCard}>
+              <Card style={styles.scanningCard}>
                 <ActivityIndicator size="small" color={Theme.colors.primary} />
-                <Text style={styles.scanningText}>Scanning 10km radius for safe areas…</Text>
-              </GlassCard>
+                <Text style={styles.scanningText}>Scanning 10 km radius for safe areas…</Text>
+              </Card>
             )}
-          </Reanimated.View>
+          </View>
         )}
 
         <View style={{ height: 110 }} />
@@ -1752,103 +1757,67 @@ export default function TacticalDashboard() {
       {isLoading && (
         <View style={styles.loader}>
           <ActivityIndicator size="large" color={Theme.colors.primary} />
-          <Text style={styles.loaderText}>ACTIVATING SOS…</Text>
+          <Text style={styles.loaderText}>Activating SOS…</Text>
         </View>
       )}
-    </ScreenBackground>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: Theme.colors.surface },
   scrollContent: { paddingHorizontal: 20, paddingTop: 60 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
   headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  brandDot: {
-    width: 38,
-    height: 38,
-    borderRadius: 13,
-    backgroundColor: 'rgba(0, 227, 253, 0.10)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 227, 253, 0.22)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: Theme.colors.primaryContainer,
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    elevation: 6,
-  },
-  brandTitle: { fontFamily: Theme.fonts.headline, fontSize: 23, color: Theme.colors.primary, letterSpacing: -0.5 },
+  brandTitle: { ...Theme.type.title2, fontSize: 23, color: Theme.colors.onSurface },
   badgeRow: { alignItems: 'center', marginBottom: 8 },
-  sosWrap: { height: 300, alignItems: 'center', justifyContent: 'center', marginBottom: 20 },
-  pulseRing: {
+  sosWrap: { height: 300, alignItems: 'center', justifyContent: 'center', gap: 14, marginBottom: 20 },
+  sosRing: {
     position: 'absolute',
-    width: 284,
-    height: 284,
-    borderRadius: 142,
-    borderWidth: 2,
-    borderColor: Theme.colors.primary + '2e',
-  },
-  pulseRing2: {
-    position: 'absolute',
-    width: 330,
-    height: 330,
-    borderRadius: 165,
+    width: 252,
+    height: 252,
+    borderRadius: 126,
     borderWidth: 1,
-    borderColor: Theme.colors.primary + '14',
+    borderColor: Theme.colors.error + '33',
   },
-  sosTilt: { width: 220, height: 220, borderRadius: 110 },
-  sosButton: { flex: 1, borderRadius: 110, overflow: 'hidden' },
-  sosGradient: {
-    flex: 1,
+  sosCircle: {
+    width: 220,
+    height: 220,
+    borderRadius: 110,
+    backgroundColor: Theme.colors.errorFill,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: Theme.colors.primary + '30',
-    borderRadius: 110,
-    shadowColor: Theme.colors.primaryContainer,
-    shadowOpacity: 0.5,
-    shadowRadius: 36,
-    elevation: 18,
   },
-  sosButtonText: { fontFamily: Theme.fonts.headline, color: Theme.colors.primary, fontSize: 44, fontWeight: '900', letterSpacing: 2, marginTop: 6 },
-  sosButtonSub: { fontFamily: Theme.fonts.label, color: Theme.colors.onSurfaceVariant, fontSize: 10, letterSpacing: 3, marginTop: 2 },
+  sosTouch: { flex: 1, width: '100%', alignItems: 'center', justifyContent: 'center', borderRadius: 110 },
+  sosButtonText: { fontSize: 44, fontWeight: '800', color: '#FFFFFF' },
+  sosButtonSub: { ...Theme.type.footnote, color: Theme.colors.onSurfaceVariant },
   locationCard: { padding: 18, marginBottom: 18 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, gap: 12 },
-  iconBox: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    backgroundColor: 'rgba(0, 227, 253, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 227, 253, 0.20)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   cardTitleBox: { flex: 1 },
-  cardTitle: { fontFamily: Theme.fonts.headline, fontSize: 17, color: Theme.colors.onSurface },
-  cardSubTitle: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant, marginTop: 2 },
+  cardTitle: { ...Theme.type.headline, fontSize: 17, color: Theme.colors.onSurface },
+  cardSubTitle: { ...Theme.type.body, fontSize: 12, color: Theme.colors.onSurfaceVariant, marginTop: 2 },
   coordsRow: { flexDirection: 'row', gap: 10 },
   coordBox: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.25)',
+    backgroundColor: Theme.colors.surfaceContainerLow,
     padding: 12,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: Theme.colors.outlineVariant,
   },
-  coordLabel: { fontFamily: Theme.fonts.label, fontSize: 8, color: Theme.colors.onSurfaceVariant, letterSpacing: 1.5, marginBottom: 5 },
-  coordValue: { fontFamily: Theme.fonts.headline, fontSize: 13, color: Theme.colors.onSurface },
+  coordLabel: { ...Theme.type.caption2, fontWeight: '600', color: Theme.colors.onSurfaceVariant, marginBottom: 5 },
+  coordValue: { ...Theme.type.headline, fontSize: 13, color: Theme.colors.onSurface },
   locationErrorBox: {
     marginTop: 14,
-    backgroundColor: 'rgba(245, 51, 53, 0.08)',
+    backgroundColor: Theme.colors.errorContainer,
     borderWidth: 1,
-    borderColor: 'rgba(245, 51, 53, 0.25)',
+    borderColor: Theme.colors.error,
     borderRadius: 14,
     padding: 12,
     gap: 10,
   },
   locationErrorRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  locationErrorText: { flex: 1, fontFamily: Theme.fonts.body, fontSize: 12, lineHeight: 17, color: Theme.colors.onSurface },
+  locationErrorText: { flex: 1, ...Theme.type.body, fontSize: 12, lineHeight: 17, color: Theme.colors.onSurface },
   enableLocationBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1856,36 +1825,28 @@ const styles = StyleSheet.create({
     gap: 7,
     paddingVertical: 9,
     borderRadius: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 227, 253, 0.35)',
-    backgroundColor: 'rgba(0, 227, 253, 0.10)',
+    backgroundColor: Theme.colors.primaryContainer,
   },
-  enableLocationText: { fontFamily: Theme.fonts.label, fontSize: 10, letterSpacing: 1.5, color: Theme.colors.primary },
+  enableLocationText: { ...Theme.type.caption1, fontWeight: '600', color: Theme.colors.primaryText },
   actionsGrid: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 22, paddingHorizontal: 4 },
   actionItem: { alignItems: 'center', gap: 8 },
   actionIconBox: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: Theme.colors.systemFill,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: Theme.colors.primaryContainer,
-    shadowOpacity: 0.18,
-    shadowRadius: 12,
-    elevation: 5,
   },
-  actionLabel: { fontFamily: Theme.fonts.label, fontSize: 10, color: Theme.colors.onSurface, fontWeight: 'bold', letterSpacing: 1.5 },
+  actionLabel: { ...Theme.type.caption2, fontWeight: '600', color: Theme.colors.onSurface },
   bannerCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, marginBottom: 8 },
   routeSection: { marginBottom: 10 },
-  bannerText: { fontFamily: Theme.fonts.body, fontSize: 13, color: Theme.colors.onSurface, flex: 1 },
+  bannerText: { ...Theme.type.body, fontSize: 13, color: Theme.colors.onSurface, flex: 1 },
   hubsSection: { marginTop: 6 },
   hubsRow: { gap: 12, paddingBottom: 8, paddingRight: 20 },
   scanningCard: { paddingVertical: 30, alignItems: 'center', gap: 12 },
-  scanningText: { fontFamily: Theme.fonts.label, color: Theme.colors.onSurfaceVariant, fontSize: 12 },
-  retryText: { fontFamily: Theme.fonts.label, color: Theme.colors.primary, fontSize: 13, letterSpacing: 1 },
+  scanningText: { ...Theme.type.caption1, color: Theme.colors.onSurfaceVariant, fontSize: 12 },
+  retryText: { ...Theme.type.caption1, fontWeight: '600', color: Theme.colors.primaryText, fontSize: 13 },
   loader: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.85)',
@@ -1894,12 +1855,12 @@ const styles = StyleSheet.create({
     zIndex: 100,
     gap: 16,
   },
-  loaderText: { fontFamily: Theme.fonts.headline, color: Theme.colors.primary, letterSpacing: 4, fontSize: 14 },
-  sosBanner: { borderRadius: 16, padding: 14, marginBottom: 14, borderWidth: 1 },
-  queuedBanner: { backgroundColor: 'rgba(255, 193, 7, 0.10)', borderColor: 'rgba(255, 193, 7, 0.45)' },
-  sosBannerSuccess: { backgroundColor: 'rgba(46, 204, 140, 0.13)', borderColor: 'rgba(46, 204, 140, 0.5)' },
-  sosBannerError: { backgroundColor: 'rgba(255, 113, 108, 0.12)', borderColor: 'rgba(255, 113, 108, 0.5)' },
-  sosBannerText: { fontFamily: Theme.fonts.body, fontSize: 13, lineHeight: 18, color: Theme.colors.onSurface },
+  loaderText: { ...Theme.type.headline, color: '#FFFFFF', fontSize: 14 },
+  sosBanner: { borderRadius: 16, padding: 14, marginBottom: 14 },
+  queuedBanner: { backgroundColor: Theme.colors.warningContainer },
+  sosBannerSuccess: { backgroundColor: Theme.colors.successContainer },
+  sosBannerError: { backgroundColor: Theme.colors.errorContainer },
+  sosBannerText: { ...Theme.type.body, fontSize: 13, lineHeight: 18, color: Theme.colors.onSurface },
   sosBannerActions: { flexDirection: 'row', gap: 18, marginTop: 10 },
-  sosBannerAction: { fontFamily: Theme.fonts.label, fontSize: 12, letterSpacing: 1, color: Theme.colors.primary, fontWeight: 'bold' },
+  sosBannerAction: { ...Theme.type.caption1, fontSize: 12, color: Theme.colors.primaryText, fontWeight: 'bold' },
 });

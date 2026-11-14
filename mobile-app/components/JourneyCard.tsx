@@ -12,10 +12,11 @@
 // Journey Guardian trip yet.
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { Theme } from '../constants/theme';
-import GlassCard from './ui/GlassCard';
+import Card from './ui/Card';
 import StatusPill from './ui/StatusPill';
+import AppleButton from './ui/AppleButton';
 import type { SafePlace } from '../utils/escapeLogic';
 import {
   JOURNEY_ETA_OPTIONS,
@@ -79,20 +80,18 @@ export default function JourneyCard({
   const selected = options.find((p) => p.id === selectedId) ?? options[0] ?? null;
 
   return (
-    <GlassCard style={styles.card} borderRadius={20} intensity={16}>
+    <Card style={styles.card} borderRadius={20}>
       <View style={styles.header}>
-        <View style={styles.iconBox}>
-          <MaterialCommunityIcons name="map-marker-path" size={20} color={Theme.colors.primary} />
-        </View>
+        <Ionicons name="map-outline" size={20} color={Theme.colors.primary} />
         <View style={styles.titleBox}>
-          <Text style={styles.title}>Journey Guardian</Text>
+          <Text style={styles.title}>Journey guardian</Text>
           <Text style={styles.subtitle}>
             {journey ? 'Your contacts can follow this trip live' : 'Share a trip so contacts can follow you'}
           </Text>
         </View>
         {journey && (
           <StatusPill
-            label={journey.overdue ? 'OVERDUE' : 'ON THE WAY'}
+            label={journey.overdue ? 'Overdue' : 'On the way'}
             color={journey.overdue ? Theme.colors.error : Theme.colors.success}
             pulse={!journey.overdue}
           />
@@ -114,7 +113,7 @@ export default function JourneyCard({
           <Text style={styles.updated}>{formatUpdated(journey.locationAt)}</Text>
           {journey.overdue && (
             <Text style={styles.overdueText}>
-              Past your ETA — if you are safe, tap ARRIVED so your contacts stop worrying.
+              Past your ETA — if you are safe, tap Arrived so your contacts stop worrying.
             </Text>
           )}
           {journey.checkIn && (
@@ -131,7 +130,7 @@ export default function JourneyCard({
                   disabled={checkInBusy}
                   activeOpacity={0.8}
                 >
-                  <Text style={styles.buttonText}>I&apos;M OK</Text>
+                  <Text style={[styles.buttonText, { color: Theme.colors.primaryText }]}>I&apos;m OK</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.button, styles.helpButton]}
@@ -139,14 +138,14 @@ export default function JourneyCard({
                   disabled={checkInBusy}
                   activeOpacity={0.8}
                 >
-                  <Text style={styles.buttonText}>I NEED HELP</Text>
+                  <Text style={[styles.buttonText, { color: Theme.colors.errorText }]}>I need help</Text>
                 </TouchableOpacity>
               </View>
             </View>
           )}
           <View style={styles.buttonRow}>
             <TouchableOpacity style={[styles.button, styles.shareButton]} onPress={onShare} activeOpacity={0.8}>
-              <Text style={styles.buttonText}>SHARE LINK</Text>
+              <Text style={styles.buttonText}>Share link</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.button, styles.arrivedButton]}
@@ -154,16 +153,16 @@ export default function JourneyCard({
               disabled={busy}
               activeOpacity={0.8}
             >
-              <Text style={styles.buttonText}>I ARRIVED</Text>
+              <Text style={[styles.buttonText, { color: '#FFFFFF' }]}>I arrived</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[styles.button, styles.cancelButton]} onPress={onCancel} disabled={busy} activeOpacity={0.8}>
-              <Text style={styles.buttonText}>CANCEL</Text>
+              <Text style={styles.buttonText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
       ) : (
         <View style={styles.idleBody}>
-          <Text style={styles.pickerLabel}>DESTINATION</Text>
+          <Text style={styles.pickerLabel}>Destination</Text>
           {options.length > 0 ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
               {options.map((place) => (
@@ -185,7 +184,7 @@ export default function JourneyCard({
           ) : (
             <Text style={styles.noPlaces}>No nearby safe places yet — the trip picker appears once places load.</Text>
           )}
-          <Text style={styles.pickerLabel}>ARRIVE IN</Text>
+          <Text style={styles.pickerLabel}>Arrive in</Text>
           <View style={styles.chipRow}>
             {JOURNEY_ETA_OPTIONS.map((mins) => (
               <TouchableOpacity
@@ -198,87 +197,64 @@ export default function JourneyCard({
               </TouchableOpacity>
             ))}
           </View>
-          <TouchableOpacity
-            style={[styles.startButton, (!selected || busy) && styles.startButtonDisabled]}
+          <AppleButton
+            title="Start journey"
+            variant="tinted"
             onPress={() => selected && onStart(selected, etaMinutes)}
             disabled={!selected || busy}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="navigate" size={16} color={Theme.colors.primary} />
-            <Text style={styles.startButtonText}>START JOURNEY</Text>
-          </TouchableOpacity>
+            icon={<Ionicons name="navigate" size={16} color={Theme.colors.primaryText} />}
+          />
         </View>
       )}
-    </GlassCard>
+    </Card>
   );
 }
 
 const styles = StyleSheet.create({
   card: { padding: 16, gap: 12 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  iconBox: {
-    width: 40,
-    height: 40,
-    borderRadius: 13,
-    backgroundColor: 'rgba(0, 227, 253, 0.10)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   titleBox: { flex: 1 },
-  title: { fontFamily: Theme.fonts.headline, fontSize: 15, color: Theme.colors.onSurface },
-  subtitle: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant },
+  title: { ...Theme.type.headline, color: Theme.colors.onSurface },
+  subtitle: { ...Theme.type.caption1, color: Theme.colors.onSurfaceVariant },
   idleBody: { gap: 10 },
   activeBody: { gap: 8 },
-  pickerLabel: { fontFamily: Theme.fonts.label, fontSize: 10, color: Theme.colors.onSurfaceVariant, letterSpacing: 1 },
+  pickerLabel: { ...Theme.type.caption2, color: Theme.colors.onSurfaceVariant },
   chipRow: { flexDirection: 'row', gap: 8 },
   chip: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
+    backgroundColor: Theme.colors.systemFill,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.10)',
+    borderColor: Theme.colors.outlineVariant,
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 12,
     maxWidth: 180,
   },
-  chipSelected: { borderColor: Theme.colors.primary, backgroundColor: 'rgba(0, 227, 253, 0.10)' },
-  chipText: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant },
-  chipTextSelected: { color: Theme.colors.primary },
-  noPlaces: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant, lineHeight: 16 },
-  startButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: 'rgba(0, 227, 253, 0.10)',
-    borderWidth: 1,
-    borderColor: Theme.colors.primary,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  startButtonDisabled: { opacity: 0.4 },
-  startButtonText: { fontFamily: Theme.fonts.label, fontSize: 12, color: Theme.colors.primary, letterSpacing: 1 },
-  destination: { fontFamily: Theme.fonts.headline, fontSize: 16, color: Theme.colors.onSurface },
+  chipSelected: { borderColor: Theme.colors.primary, backgroundColor: Theme.colors.primaryContainer },
+  chipText: { ...Theme.type.caption1, color: Theme.colors.onSurfaceVariant },
+  chipTextSelected: { color: Theme.colors.primaryText, fontWeight: '600' },
+  noPlaces: { ...Theme.type.caption1, color: Theme.colors.onSurfaceVariant, lineHeight: 16 },
+  destination: { ...Theme.type.subhead, fontWeight: '600', color: Theme.colors.onSurface },
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  meta: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant },
-  updated: { fontFamily: Theme.fonts.body, fontSize: 11, color: Theme.colors.onSurfaceVariant },
-  overdueText: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.error, lineHeight: 16 },
+  meta: { ...Theme.type.caption1, color: Theme.colors.onSurfaceVariant },
+  updated: { ...Theme.type.caption2, color: Theme.colors.onSurfaceVariant },
+  overdueText: { ...Theme.type.caption1, color: Theme.colors.errorText, lineHeight: 16 },
   checkInBox: {
     borderWidth: 1,
     borderColor: Theme.colors.error,
-    backgroundColor: 'rgba(255, 80, 80, 0.08)',
+    backgroundColor: Theme.colors.errorContainer,
     borderRadius: 12,
     padding: 12,
     gap: 8,
   },
-  checkInTitle: { fontFamily: Theme.fonts.headline, fontSize: 15, color: Theme.colors.onSurface },
-  checkInText: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant, lineHeight: 16 },
+  checkInTitle: { ...Theme.type.headline, color: Theme.colors.onSurface },
+  checkInText: { ...Theme.type.caption1, color: Theme.colors.onSurfaceVariant, lineHeight: 16 },
   checkInRow: { flexDirection: 'row', gap: 8 },
-  okButton: { backgroundColor: 'rgba(0, 227, 253, 0.10)', borderWidth: 1, borderColor: Theme.colors.primary },
-  helpButton: { backgroundColor: 'rgba(255, 80, 80, 0.16)', borderWidth: 1, borderColor: Theme.colors.error },
+  okButton: { backgroundColor: Theme.colors.primaryContainer },
+  helpButton: { backgroundColor: Theme.colors.errorContainer },
   buttonRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
   button: { flex: 1, paddingVertical: 10, borderRadius: 12, alignItems: 'center' },
-  shareButton: { backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)' },
-  arrivedButton: { backgroundColor: 'rgba(0, 227, 253, 0.10)', borderWidth: 1, borderColor: Theme.colors.primary },
-  cancelButton: { backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.10)' },
-  buttonText: { fontFamily: Theme.fonts.label, fontSize: 10, color: Theme.colors.primary, letterSpacing: 1 },
+  shareButton: { backgroundColor: Theme.colors.systemFill },
+  arrivedButton: { backgroundColor: Theme.colors.primaryFill },
+  cancelButton: { backgroundColor: Theme.colors.systemFill },
+  buttonText: { ...Theme.type.footnote, fontWeight: '600', color: Theme.colors.onSurface },
 });

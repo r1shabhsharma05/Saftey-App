@@ -7,11 +7,11 @@
 // onboarding / verification / toggle flow lives in app/guardian.tsx.
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { Theme } from '../constants/theme';
-import GlassCard from './ui/GlassCard';
+import Card from './ui/Card';
 import StatusPill from './ui/StatusPill';
-import GlowButton from './ui/GlowButton';
+import AppleButton from './ui/AppleButton';
 import type { Guardian } from '../utils/guardian';
 
 interface GuardianCardProps {
@@ -22,12 +22,12 @@ interface GuardianCardProps {
 
 export default function GuardianCard({ guardian, onOpen }: GuardianCardProps) {
   const status = !guardian
-    ? { pill: 'NOT A GUARDIAN', color: Theme.colors.onSurfaceVariant, pulse: false }
+    ? { pill: 'Not a guardian', color: Theme.colors.onSurfaceVariant, pulse: false }
     : guardian.state === 'pending'
-      ? { pill: 'VERIFYING', color: Theme.colors.warning, pulse: true }
+      ? { pill: 'Verifying', color: Theme.colors.warning, pulse: true }
       : guardian.available
-        ? { pill: 'ON DUTY', color: Theme.colors.success, pulse: true }
-        : { pill: 'VERIFIED · OFF DUTY', color: Theme.colors.primary, pulse: false };
+        ? { pill: 'On duty', color: Theme.colors.success, pulse: true }
+        : { pill: 'Verified · Off duty', color: Theme.colors.primary, pulse: false };
 
   const copy = !guardian
     ? 'Become a verified Guardian — when someone near you sends an SOS, guardians on duty get the alert.'
@@ -44,36 +44,26 @@ export default function GuardianCard({ guardian, onOpen }: GuardianCardProps) {
       : 'Guardian home';
 
   return (
-    <GlassCard edgeColor={Theme.colors.primaryContainer}>
+    <Card>
       <View style={styles.header}>
-        <View style={styles.iconBox}>
-          <MaterialCommunityIcons name="shield-check" size={24} color={Theme.colors.primary} />
-        </View>
+        <Ionicons name="shield-checkmark" size={24} color={Theme.colors.primary} />
         <View style={styles.titleBox}>
-          <Text style={styles.title}>Guardian Network</Text>
+          <Text style={styles.title}>Guardian network</Text>
           <Text style={styles.subtitle}>Nearby rescue, by verified people</Text>
         </View>
         <StatusPill label={status.pill} color={status.color} pulse={status.pulse} />
       </View>
       <Text style={styles.copy}>{copy}</Text>
-      <GlowButton title={cta} onPress={onOpen} variant="ghost" style={styles.button} />
-    </GlassCard>
+      <AppleButton title={cta} onPress={onOpen} variant="tinted" style={styles.button} />
+    </Card>
   );
 }
 
 const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  iconBox: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    backgroundColor: 'rgba(0, 227, 253, 0.12)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   titleBox: { flex: 1 },
-  title: { fontFamily: Theme.fonts.headline, fontSize: 17, color: Theme.colors.onSurface },
-  subtitle: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant, marginTop: 2 },
-  copy: { fontFamily: Theme.fonts.body, fontSize: 13, color: Theme.colors.onSurfaceVariant, lineHeight: 19, marginTop: 12 },
+  title: { ...Theme.type.headline, color: Theme.colors.onSurface },
+  subtitle: { ...Theme.type.subhead, color: Theme.colors.onSurfaceVariant, marginTop: 2 },
+  copy: { ...Theme.type.footnote, lineHeight: 19, color: Theme.colors.onSurfaceVariant, marginTop: 12 },
   button: { marginTop: 14 },
 });

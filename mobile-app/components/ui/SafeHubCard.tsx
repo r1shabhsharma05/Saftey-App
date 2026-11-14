@@ -1,8 +1,8 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { Theme, categoryMeta } from '../../constants/theme';
-import GlassCard from './GlassCard';
+import Card from './Card';
 import SafetyBadge from './SafetyBadge';
 import type { SafetyScore } from '../../utils/escapeLogic';
 
@@ -26,16 +26,16 @@ interface Props {
  * Shared safe-place card — one implementation used by the dashboard
  * and the alert HUD (was duplicated in both).
  */
-export default function SafeHubCard({ place, width = 148, ctaLabel = 'GET DIRECTIONS' }: Props) {
+export default function SafeHubCard({ place, width = 148, ctaLabel = 'Get directions' }: Props) {
   const meta = categoryMeta(place.category);
   const dist = place.distance ?? 0;
-  const displayDist = dist > 1000 ? `${(dist / 1000).toFixed(1)}km` : `${Math.round(dist)}m`;
+  const displayDist = dist > 1000 ? `${(dist / 1000).toFixed(1)} km` : `${Math.round(dist)} m`;
 
   return (
-    <GlassCard style={[styles.card, { width }]} borderRadius={20} intensity={16}>
+    <Card style={[styles.card, { width }]} borderRadius={20}>
       <View style={styles.header}>
-        <View style={[styles.iconDot, { backgroundColor: meta.color + '1f' }]}>
-          <MaterialCommunityIcons name={meta.icon as any} size={22} color={meta.color} />
+        <View style={[styles.iconDot, { backgroundColor: meta.color + '1F' }]}>
+          <Ionicons name={meta.icon as any} size={22} color={meta.color} />
         </View>
         <Text style={styles.distance}>{displayDist}</Text>
       </View>
@@ -52,7 +52,7 @@ export default function SafeHubCard({ place, width = 148, ctaLabel = 'GET DIRECT
       >
         <Text style={styles.ctaText}>{ctaLabel}</Text>
       </TouchableOpacity>
-    </GlassCard>
+    </Card>
   );
 }
 
@@ -66,27 +66,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  distance: { fontFamily: Theme.fonts.headline, fontSize: 13, color: Theme.colors.primary },
+  distance: { ...Theme.type.subhead, fontWeight: '600', color: Theme.colors.primaryText },
   name: {
     flex: 1,
-    fontFamily: Theme.fonts.body,
-    fontSize: 12,
-    color: Theme.colors.onSurfaceVariant,
-    lineHeight: 16,
+    fontSize: 14,
+    fontWeight: '600',
+    lineHeight: 18,
+    color: Theme.colors.onSurface,
   },
   cta: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.10)',
+    backgroundColor: Theme.colors.systemFill,
     paddingVertical: 9,
     borderRadius: 12,
     alignItems: 'center',
   },
   ctaText: {
-    fontFamily: Theme.fonts.label,
-    fontSize: 10,
-    color: Theme.colors.primary,
-    fontWeight: 'bold',
-    letterSpacing: 1,
+    ...Theme.type.caption1,
+    fontWeight: '600',
+    color: Theme.colors.primaryText,
   },
 });

@@ -1,9 +1,10 @@
 import React, { useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { View, Text, StyleSheet } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import Mapbox, { Camera, LineLayer, MapView, PointAnnotation, ShapeSource } from '@rnmapbox/maps';
 import { Theme } from '../constants/theme';
-import GlassCard from './ui/GlassCard';
+import Card from './ui/Card';
+import AppleButton from './ui/AppleButton';
 import SafetyBadge from './ui/SafetyBadge';
 import type { SafetyScore } from '../utils/escapeLogic';
 import { formatDuration, formatRouteDistance, type LngLat } from '../utils/routeMath';
@@ -79,7 +80,7 @@ export default function RouteMap({
   }, [coordinates]);
 
   return (
-    <GlassCard style={styles.card} intensity={16}>
+    <Card style={styles.card}>
       <View style={styles.header}>
         <View style={styles.titleBox}>
           <Text style={styles.title} numberOfLines={1}>
@@ -91,8 +92,8 @@ export default function RouteMap({
         </View>
         {isBest && (
           <View style={styles.bestPill}>
-            <MaterialCommunityIcons name="star" size={12} color="#00331a" />
-            <Text style={styles.bestText}>BEST</Text>
+            <Ionicons name="sparkles" size={12} color={Theme.colors.primaryText} />
+            <Text style={styles.bestText}>Best route</Text>
           </View>
         )}
         {safety && <SafetyBadge safety={safety} />}
@@ -130,7 +131,7 @@ export default function RouteMap({
               <LineLayer
                 id="route-line"
                 style={{
-                  lineColor: Theme.colors.primaryContainer,
+                  lineColor: Theme.colors.primary,
                   lineWidth: 4,
                   lineCap: 'round',
                   lineJoin: 'round',
@@ -141,12 +142,7 @@ export default function RouteMap({
               <View style={styles.startDot} />
             </PointAnnotation>
             <PointAnnotation id="end" coordinate={route.end} anchor={{ x: 0.5, y: 1 }}>
-              <MaterialCommunityIcons
-                name="map-marker"
-                size={30}
-                color={Theme.colors.success}
-                style={styles.endPin}
-              />
+              <Ionicons name="location-sharp" size={30} color={Theme.colors.error} />
             </PointAnnotation>
           </MapView>
         ) : (
@@ -160,11 +156,13 @@ export default function RouteMap({
         )}
       </View>
 
-      <TouchableOpacity style={styles.external} onPress={onOpenExternal} activeOpacity={0.7}>
-        <MaterialCommunityIcons name="google-maps" size={16} color={Theme.colors.primary} />
-        <Text style={styles.externalText}>OPEN IN GOOGLE MAPS</Text>
-      </TouchableOpacity>
-    </GlassCard>
+      <AppleButton
+        title="Open in Google Maps"
+        variant="tinted"
+        onPress={onOpenExternal}
+        icon={<Ionicons name="map-outline" size={16} color={Theme.colors.primaryText} />}
+      />
+    </Card>
   );
 }
 
@@ -172,18 +170,18 @@ const styles = StyleSheet.create({
   card: { padding: 16, marginBottom: 12, gap: 12 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   titleBox: { flex: 1, gap: 2 },
-  title: { fontFamily: Theme.fonts.headline, fontSize: 15, color: Theme.colors.onSurface },
-  meta: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant },
+  title: { ...Theme.type.headline, color: Theme.colors.onSurface },
+  meta: { ...Theme.type.caption1, color: Theme.colors.onSurfaceVariant },
   bestPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: Theme.colors.success,
+    backgroundColor: Theme.colors.primaryContainer,
     paddingHorizontal: 9,
     paddingVertical: 5,
     borderRadius: 9,
   },
-  bestText: { fontFamily: Theme.fonts.headline, fontSize: 11, color: '#00331a', fontWeight: '900' },
+  bestText: { ...Theme.type.caption1, fontWeight: '700', color: Theme.colors.primaryText },
   map: {
     height: MAP_HEIGHT,
     borderRadius: 16,
@@ -193,8 +191,7 @@ const styles = StyleSheet.create({
   mapView: { flex: 1 },
   mapFallback: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 16 },
   mapFallbackText: {
-    fontFamily: Theme.fonts.body,
-    fontSize: 12,
+    ...Theme.type.caption1,
     color: Theme.colors.onSurfaceVariant,
     textAlign: 'center',
   },
@@ -206,17 +203,4 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#ffffff',
   },
-  endPin: { textShadowColor: 'rgba(0,0,0,0.45)', textShadowRadius: 4 },
-  external: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 227, 253, 0.35)',
-    backgroundColor: 'rgba(0, 227, 253, 0.10)',
-  },
-  externalText: { fontFamily: Theme.fonts.label, fontSize: 11, letterSpacing: 1, color: Theme.colors.primary, fontWeight: 'bold' },
 });

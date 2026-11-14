@@ -9,9 +9,7 @@ import {
   Alert,
   Switch,
 } from 'react-native';
-import Reanimated, { FadeInUp } from 'react-native-reanimated';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../utils/supabase';
@@ -48,7 +46,7 @@ const resolveAvatarDisplayUrl = async (stored: string | null, uid: string | null
 import { useRouter } from 'expo-router';
 import { Theme } from '../../constants/theme';
 import ScreenBackground from '../../components/ui/ScreenBackground';
-import GlassCard from '../../components/ui/GlassCard';
+import Card from '../../components/ui/Card';
 import StatusPill from '../../components/ui/StatusPill';
 import SectionHeader from '../../components/ui/SectionHeader';
 import { fetchAuditEvents, type AuditLogResult } from '../../utils/auditLog';
@@ -213,18 +211,18 @@ export default function PremiumProfileScreen() {
 
   if (loading) {
     return (
-      <ScreenBackground>
+      <View style={styles.root}>
         <View style={styles.loaderContainer}>
           <ActivityIndicator size="large" color={Theme.colors.primary} />
-          <Text style={styles.loaderText}>LOADING GUARDIAN…</Text>
+          <Text style={styles.loaderText}>Loading profile…</Text>
         </View>
-      </ScreenBackground>
+      </View>
     );
   }
 
   if (loadError && !profile) {
     return (
-      <ScreenBackground>
+      <View style={styles.root}>
         <View style={styles.loaderContainer}>
           <Text style={styles.loaderText}>{loadError}</Text>
           <TouchableOpacity
@@ -233,33 +231,33 @@ export default function PremiumProfileScreen() {
               fetchProfile();
             }}
           >
-            <Text style={[styles.loaderText, { color: Theme.colors.primary, marginTop: 14 }]}>RETRY</Text>
+            <Text style={[styles.loaderText, { color: Theme.colors.primaryText, marginTop: 14 }]}>Retry</Text>
           </TouchableOpacity>
         </View>
-      </ScreenBackground>
+      </View>
     );
   }
 
   return (
-    <ScreenBackground>
+    <View style={styles.root}>
       <TouchableOpacity
         onPress={handleSignOut}
         style={styles.fixedLogoutBtn}
         activeOpacity={0.7}
         hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
       >
-        <LinearGradient colors={['rgba(245, 51, 53, 0.22)', 'rgba(245, 51, 53, 0.06)']} style={styles.logoutBtnGrad}>
-          <MaterialCommunityIcons name="logout-variant" size={22} color={Theme.colors.tertiary} />
-        </LinearGradient>
+        <View style={styles.logoutBtn}>
+          <Ionicons name="log-out-outline" size={22} color={Theme.colors.error} />
+        </View>
       </TouchableOpacity>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <Reanimated.View entering={FadeInUp.duration(500)} style={styles.header}>
-          <Text style={styles.headerTitle}>Guardian Profile</Text>
-        </Reanimated.View>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Profile</Text>
+        </View>
 
         {/* Profile hero */}
-        <Reanimated.View entering={FadeInUp.delay(80).duration(500)} style={styles.profileHero}>
+        <View style={styles.profileHero}>
           <View style={styles.avatarGlow}>
             <View style={styles.avatarInner}>
               {avatarDisplayUrl ? (
@@ -285,61 +283,59 @@ export default function PremiumProfileScreen() {
             ) : (
               <Ionicons name="camera-outline" size={15} color={Theme.colors.primary} />
             )}
-            <Text style={styles.changePhotoText}>{uploadingPhoto ? 'UPLOADING…' : 'CHANGE PHOTO'}</Text>
+            <Text style={styles.changePhotoText}>{uploadingPhoto ? 'Uploading…' : 'Change photo'}</Text>
           </TouchableOpacity>
           <Text style={styles.userName}>
             {profile?.first_name} {profile?.last_name}
           </Text>
           <View style={styles.idRow}>
-            <StatusPill label={`TACTICAL ID · ${profile?.unique_id ?? '—'}`} color={Theme.colors.primaryContainer} />
+            <StatusPill label={`ID · ${profile?.unique_id ?? '—'}`} color={Theme.colors.primaryContainer} />
           </View>
-        </Reanimated.View>
+        </View>
 
         {/* Info grid */}
-        <Reanimated.View entering={FadeInUp.delay(140).duration(500)} style={styles.infoGrid}>
-          <GlassCard style={styles.infoCard}>
+        <View style={styles.infoGrid}>
+          <Card style={styles.infoCard}>
             <View style={styles.cardHeader}>
               <Ionicons name="mail-outline" size={15} color={Theme.colors.primary} />
-              <Text style={styles.cardLabel}>Verified Email</Text>
+              <Text style={styles.cardLabel}>Email</Text>
             </View>
             <Text style={styles.cardValue} numberOfLines={1}>
               {profile?.email ?? '—'}
             </Text>
-          </GlassCard>
-          <GlassCard style={styles.infoCard}>
+          </Card>
+          <Card style={styles.infoCard}>
             <View style={styles.cardHeader}>
               <Ionicons name="call-outline" size={15} color={Theme.colors.primary} />
-              <Text style={styles.cardLabel}>Emergency Comms</Text>
+              <Text style={styles.cardLabel}>Phone</Text>
             </View>
             <Text style={styles.cardValue} numberOfLines={1}>
               {profile?.phone ?? '—'}
             </Text>
-          </GlassCard>
-        </Reanimated.View>
+          </Card>
+        </View>
 
-        <Reanimated.View entering={FadeInUp.delay(200).duration(500)}>
-          <GlassCard style={[styles.infoCard, { marginTop: 14 }]}>
+        <View>
+          <Card style={[styles.infoCard, { marginTop: 14 }]}>
             <View style={styles.cardHeader}>
               <Ionicons name="map-outline" size={15} color={Theme.colors.primary} />
-              <Text style={styles.cardLabel}>Deployment Base</Text>
+              <Text style={styles.cardLabel}>Address</Text>
             </View>
             <Text style={[styles.cardValue, styles.addressValue]}>{profile?.address ?? '—'}</Text>
-          </GlassCard>
-        </Reanimated.View>
+          </Card>
+        </View>
 
         {/* Security protocol */}
-        <Reanimated.View entering={FadeInUp.delay(260).duration(500)}>
+        <View>
           <View style={styles.sectionWrap}>
             <SectionHeader
               icon={<Ionicons name="shield-checkmark-outline" size={18} color={Theme.colors.primary} />}
-              title="Security Protocol"
+              title="Security"
             />
           </View>
-          <GlassCard style={styles.menuItem}>
-            <View style={styles.menuIconBox}>
-              <Ionicons name="finger-print-outline" size={20} color={Theme.colors.onSurface} />
-            </View>
-            <Text style={styles.menuLabel}>Biometric Lockdown</Text>
+          <Card style={styles.menuItem}>
+            <Ionicons name="finger-print-outline" size={20} color={Theme.colors.onSurface} />
+            <Text style={styles.menuLabel}>Biometric lock</Text>
             {bioLoading ? (
               <ActivityIndicator size="small" color={Theme.colors.onSurfaceVariant} />
             ) : bioAvailable ? (
@@ -347,31 +343,27 @@ export default function PremiumProfileScreen() {
             ) : (
               <Text style={styles.menuNote}>Unavailable</Text>
             )}
-          </GlassCard>
-          <GlassCard style={styles.menuItem}>
-            <View style={styles.menuIconBox}>
-              <Ionicons name="shield-half-outline" size={20} color={Theme.colors.onSurface} />
-            </View>
-            <Text style={styles.menuLabel}>Vault Protection</Text>
-            <StatusPill label="ACTIVE" color={Theme.colors.success} pulse />
-          </GlassCard>
-          <GlassCard style={styles.menuItem}>
-            <View style={styles.menuIconBox}>
-              <Ionicons name="notifications-outline" size={20} color={Theme.colors.onSurface} />
-            </View>
-            <Text style={styles.menuLabel}>SOS Broadcast Channel</Text>
-            <StatusPill label="ARMED" color={Theme.colors.warning} />
-          </GlassCard>
-        </Reanimated.View>
+          </Card>
+          <Card style={styles.menuItem}>
+            <Ionicons name="shield-half-outline" size={20} color={Theme.colors.onSurface} />
+            <Text style={styles.menuLabel}>Vault protection</Text>
+            <StatusPill label="Active" color={Theme.colors.success} pulse />
+          </Card>
+          <Card style={styles.menuItem}>
+            <Ionicons name="notifications-outline" size={20} color={Theme.colors.onSurface} />
+            <Text style={styles.menuLabel}>SOS broadcast</Text>
+            <StatusPill label="Armed" color={Theme.colors.warning} />
+          </Card>
+        </View>
 
         {/* Audit log (D23 admin basics) — recent backend audit events,
             newest first. The fetch never throws: every failure is an
             honest state, so the profile screen cannot crash on it. */}
-        <Reanimated.View entering={FadeInUp.delay(320).duration(500)}>
+        <View>
           <View style={styles.sectionWrap}>
             <SectionHeader
               icon={<Ionicons name="list-outline" size={18} color={Theme.colors.primary} />}
-              title="Audit Log"
+              title="Audit log"
             />
           </View>
           {auditLog === null ? (
@@ -388,57 +380,53 @@ export default function PremiumProfileScreen() {
             <Text style={styles.auditNote}>No audit events yet.</Text>
           ) : (
             auditLog.events.map((event) => (
-              <GlassCard key={`${event.ts}-${event.action}`} style={styles.auditRow}>
+              <Card key={`${event.ts}-${event.action}`} style={styles.auditRow}>
                 <Text style={styles.auditAction}>{event.action}</Text>
                 <Text style={styles.auditTime}>{new Date(event.ts).toLocaleString()}</Text>
-              </GlassCard>
+              </Card>
             ))
           )}
-        </Reanimated.View>
+        </View>
 
         <View style={{ height: 110 }} />
       </ScrollView>
-    </ScreenBackground>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: Theme.colors.surface },
   loaderContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14 },
-  loaderText: { fontFamily: Theme.fonts.label, fontSize: 11, color: Theme.colors.primary, letterSpacing: 3 },
+  loaderText: { ...Theme.type.caption1, fontSize: 11, color: Theme.colors.primaryText },
   scrollContent: { padding: 20, paddingTop: 64 },
   header: { marginBottom: 26 },
-  headerTitle: { fontFamily: Theme.fonts.headline, fontSize: 26, color: Theme.colors.onSurface, letterSpacing: -0.5 },
-  fixedLogoutBtn: { position: 'absolute', right: 20, top: 62, zIndex: 999, elevation: 10 },
-  logoutBtnGrad: {
+  headerTitle: { ...Theme.type.title1, color: Theme.colors.onSurface },
+  fixedLogoutBtn: { position: 'absolute', right: 20, top: 62, zIndex: 999 },
+  logoutBtn: {
     width: 46,
     height: 46,
     borderRadius: 23,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(245, 51, 53, 0.25)',
+    backgroundColor: Theme.colors.errorContainer,
   },
   profileHero: { alignItems: 'center', marginBottom: 30 },
   avatarGlow: {
     width: 112,
     height: 112,
-    borderRadius: 34,
-    padding: 3,
-    backgroundColor: 'rgba(0, 227, 253, 0.10)',
+    borderRadius: 56,
+    backgroundColor: Theme.colors.surfaceContainerLow,
     borderWidth: 1,
-    borderColor: 'rgba(0, 227, 253, 0.30)',
-    shadowColor: Theme.colors.primaryContainer,
-    shadowOpacity: 0.55,
-    shadowRadius: 30,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 12,
+    borderColor: Theme.colors.outlineVariant,
+    alignItems: 'center',
+    justifyContent: 'center',
     overflow: 'hidden',
   },
   avatarInner: {
     width: '100%',
     height: '100%',
-    borderRadius: 31,
-    backgroundColor: '#101024',
+    borderRadius: 56,
+    backgroundColor: Theme.colors.surfaceContainerLow,
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
@@ -452,18 +440,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 227, 253, 0.30)',
-    backgroundColor: 'rgba(0, 227, 253, 0.08)',
+    backgroundColor: Theme.colors.primaryContainer,
   },
-  changePhotoText: { fontFamily: Theme.fonts.label, fontSize: 10, letterSpacing: 1.5, color: Theme.colors.primary },
-  userName: { fontFamily: Theme.fonts.headline, fontSize: 24, color: Theme.colors.onSurface, marginTop: 16 },
+  changePhotoText: { ...Theme.type.caption1, fontWeight: '600', color: Theme.colors.primaryText },
+  userName: { ...Theme.type.title2, color: Theme.colors.onSurface, marginTop: 16 },
   idRow: { marginTop: 10 },
   infoGrid: { flexDirection: 'row', gap: 12 },
   infoCard: { flex: 1, padding: 16 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 9 },
-  cardLabel: { fontFamily: Theme.fonts.label, fontSize: 9, color: Theme.colors.onSurfaceVariant, letterSpacing: 1.5 },
-  cardValue: { fontFamily: Theme.fonts.bodyBold, fontSize: 13.5, color: Theme.colors.onSurface },
+  cardLabel: { ...Theme.type.caption2, fontWeight: '600', color: Theme.colors.onSurfaceVariant },
+  cardValue: { ...Theme.type.subhead, fontWeight: '600', fontSize: 13.5, color: Theme.colors.onSurface },
   addressValue: { fontSize: 13, lineHeight: 20 },
   sectionWrap: { marginTop: 28 },
   menuItem: {
@@ -473,20 +459,10 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     gap: 14,
   },
-  menuIconBox: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  menuLabel: { flex: 1, fontFamily: Theme.fonts.bodyBold, fontSize: 14, color: Theme.colors.onSurface },
-  menuNote: { fontFamily: Theme.fonts.body, fontSize: 12, color: Theme.colors.onSurfaceVariant },
+  menuLabel: { flex: 1, ...Theme.type.subhead, fontWeight: '600', fontSize: 14, color: Theme.colors.onSurface },
+  menuNote: { ...Theme.type.body, fontSize: 12, color: Theme.colors.onSurfaceVariant },
   auditRow: { padding: 14, marginBottom: 10, gap: 4 },
-  auditAction: { fontFamily: Theme.fonts.bodyBold, fontSize: 13.5, color: Theme.colors.onSurface },
-  auditTime: { fontFamily: Theme.fonts.label, fontSize: 10, color: Theme.colors.onSurfaceVariant, letterSpacing: 0.5 },
-  auditNote: { fontFamily: Theme.fonts.body, fontSize: 13, color: Theme.colors.onSurfaceVariant, paddingVertical: 6 },
+  auditAction: { ...Theme.type.subhead, fontWeight: '600', fontSize: 13.5, color: Theme.colors.onSurface },
+  auditTime: { ...Theme.type.caption2, color: Theme.colors.onSurfaceVariant },
+  auditNote: { ...Theme.type.body, fontSize: 13, color: Theme.colors.onSurfaceVariant, paddingVertical: 6 },
 });
