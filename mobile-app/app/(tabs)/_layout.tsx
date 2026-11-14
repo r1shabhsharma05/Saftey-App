@@ -1,23 +1,25 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Theme } from '@/constants/theme';
+import SpotlightTabBar from '@/components/SpotlightTabBar';
 
 /**
- * Floating glass tab bar — the 2026 premium pattern:
- * detached pill, hairline border, cyan glow, active icon in a tinted orb.
+ * Spotlight tab bar — the @coding.stella "Floating Spotlight Tab Menu
+ * with Laser Scanner" ported to React Native (see
+ * components/SpotlightTabBar.tsx for the tokens). Same 3 routes,
+ * labels and icons as before; the cyan orb is gone, replaced by the
+ * indicator bar + beam + laser scan on the active tab.
  */
 export default function TabLayout() {
   return (
     <Tabs
+      tabBar={(props) => <SpotlightTabBar {...props} />}
       screenOptions={{
-        tabBarActiveTintColor: Theme.colors.primary,
-        tabBarInactiveTintColor: Theme.colors.onSurfaceVariant,
+        tabBarActiveTintColor: '#ffffff',
+        tabBarInactiveTintColor: '#55596b',
         headerShown: false,
-        tabBarStyle: styles.bar,
-        tabBarLabelStyle: styles.label,
-        tabBarIconStyle: styles.icon,
       }}
     >
       <Tabs.Screen
@@ -25,13 +27,12 @@ export default function TabLayout() {
         options={{
           title: 'GUARDIAN',
           tabBarIcon: ({ color, focused }) => (
-            <View style={[styles.iconOrb, focused && styles.iconOrbActive]}>
-              <MaterialCommunityIcons
-                name={focused ? 'shield-check' : 'shield-check-outline'}
-                size={23}
-                color={color}
-              />
-            </View>
+            <MaterialCommunityIcons
+              name={focused ? 'shield-check' : 'shield-check-outline'}
+              size={22}
+              color={color}
+              style={focused ? styles.iconGlow : undefined}
+            />
           ),
         }}
       />
@@ -40,9 +41,12 @@ export default function TabLayout() {
         options={{
           title: 'CONTACTS',
           tabBarIcon: ({ color, focused }) => (
-            <View style={[styles.iconOrb, focused && styles.iconOrbActive]}>
-              <Ionicons name={focused ? 'people' : 'people-outline'} size={23} color={color} />
-            </View>
+            <Ionicons
+              name={focused ? 'people' : 'people-outline'}
+              size={22}
+              color={color}
+              style={focused ? styles.iconGlow : undefined}
+            />
           ),
         }}
       />
@@ -51,9 +55,12 @@ export default function TabLayout() {
         options={{
           title: 'PROFILE',
           tabBarIcon: ({ color, focused }) => (
-            <View style={[styles.iconOrb, focused && styles.iconOrbActive]}>
-              <Ionicons name={focused ? 'person' : 'person-outline'} size={23} color={color} />
-            </View>
+            <Ionicons
+              name={focused ? 'person' : 'person-outline'}
+              size={22}
+              color={color}
+              style={focused ? styles.iconGlow : undefined}
+            />
           ),
         }}
       />
@@ -62,42 +69,11 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
-  bar: {
-    position: 'absolute',
-    left: 22,
-    right: 22,
-    bottom: 26,
-    height: 78,
-    borderRadius: 26,
-    backgroundColor: 'rgba(20, 20, 38, 0.88)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.10)',
-    borderTopWidth: 1,
-    elevation: 14,
-    shadowColor: Theme.colors.primaryContainer,
-    shadowOpacity: 0.22,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 8 },
-    paddingTop: 8,
-  },
-  label: {
-    fontFamily: Theme.fonts.label,
-    fontSize: 9,
-    fontWeight: 'bold',
-    letterSpacing: 1.5,
-    marginBottom: 10,
-  },
-  icon: { marginTop: 6 },
-  iconOrb: {
-    width: 44,
-    height: 30,
-    borderRadius: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  iconOrbActive: {
-    backgroundColor: 'rgba(0, 227, 253, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 227, 253, 0.25)',
+  // The web's drop-shadow(0 0 5px rgba(255,255,255,0.3)) on the
+  // active icon. Ionicons renders Text, so a text shadow is the glow.
+  iconGlow: {
+    textShadowColor: 'rgba(255, 255, 255, 0.3)',
+    textShadowRadius: 5,
+    textShadowOffset: { width: 0, height: 0 },
   },
 });
