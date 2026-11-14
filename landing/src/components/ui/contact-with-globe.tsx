@@ -160,7 +160,7 @@ function interpolateProjection(
   return projection;
 }
 
-function GlobeWireframe({
+export function GlobeWireframe({
   width,
   height,
   className = "aspect-square w-full max-w-150",

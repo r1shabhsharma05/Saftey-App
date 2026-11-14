@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import {
   Shield,
@@ -15,6 +16,7 @@ import {
   Timer,
 } from "lucide-react";
 import ContactWithGlobe from "@/components/ui/contact-with-globe";
+import AuthWithGlobe from "@/components/ui/auth-with-globe";
 import VortexCanvas from "@/components/VortexCanvas";
 
 const RELEASES_URL =
@@ -132,6 +134,25 @@ function SosButton() {
 }
 
 export default function App() {
+  // Hash view: #auth shows the login / sign-up page (same globe layout
+  // as the contact section). Supabase returns from email confirmation
+  // and password reset with tokens appended to the hash, so match the
+  // prefix, not the exact hash.
+  const [isAuth, setIsAuth] = useState(() => {
+    const h = window.location.hash;
+    return h === "#auth" || h.startsWith("#auth&") || h.startsWith("#auth#");
+  });
+  useEffect(() => {
+    const onHash = () => {
+      const h = window.location.hash;
+      setIsAuth(
+        h === "#auth" || h.startsWith("#auth&") || h.startsWith("#auth#"),
+      );
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
   return (
     <div className="dark min-h-screen bg-black font-sans text-zinc-50 antialiased overflow-x-clip">
       {/* ── Qronos-style thin frame around the whole page ── */}
@@ -168,18 +189,32 @@ export default function App() {
               Contact
             </a>
           </nav>
-          <a
-            href={RELEASES_URL}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex h-10 items-center gap-1.5 rounded-full border border-white/25 bg-transparent px-5 text-sm font-semibold tracking-wide text-white transition-colors hover:border-white hover:bg-white hover:text-black"
-          >
-            DOWNLOAD APK
-            <ArrowRight className="h-4 w-4" />
-          </a>
+          <div className="flex items-center gap-2">
+            <a
+              href="#auth"
+              className="inline-flex h-10 items-center rounded-full bg-white px-5 text-sm font-semibold tracking-wide text-black transition-opacity hover:opacity-90"
+            >
+              Sign in
+            </a>
+            <a
+              href={RELEASES_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-10 items-center gap-1.5 rounded-full border border-white/25 bg-transparent px-5 text-sm font-semibold tracking-wide text-white transition-colors hover:border-white hover:bg-white hover:text-black"
+            >
+              DOWNLOAD APK
+              <ArrowRight className="h-4 w-4" />
+            </a>
+          </div>
         </div>
       </header>
 
+      {isAuth ? (
+        <div id="auth">
+          <AuthWithGlobe />
+        </div>
+      ) : (
+        <>
       {/* ── Hero ── */}
       <section id="top" className="relative overflow-hidden">
         <VortexCanvas className="absolute inset-0 h-full w-full" />
@@ -552,6 +587,9 @@ export default function App() {
       <div id="contact">
         <ContactWithGlobe />
       </div>
+
+        </>
+      )}
 
       {/* ── Footer ── */}
       <footer className="border-t border-white/10">
