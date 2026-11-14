@@ -1,58 +1,201 @@
-// 📞 Voice-call channel service — SafeLife 2.0 Day 10 (plan §6 D10,
-// escalation ladder step 3: automated voice call at T+2min).
+// 🎙️ Voice speech service — Gnani Vachana (Prisma STT + Timbre TTS).
+// Replaces the Day 10 Bolna adapter (2026-11-14, Gnani challenge:
+// the project must be built on Gnani's own speech models).
 //
-// Provider decision (recorded, overturnable): Bolna, not Twilio.
-// Bolna is already connected in this workspace (custom.bolna, key
-// live, agency voice-agent infra exists); Twilio would need a new
-// account, number and cost line for the same job. If Rishabh picks
-// Twilio, this adapter is the seam to replace — the ladder calls
-// sendVoiceAlert, never Bolna directly.
+// Provider facts, verified against the official gnani-vachana Python
+// client (~/workspace/tmp-work/gnani-venv, v0.9.0) — NOT docs hearsay:
+//   TTS: POST https://api.vachana.ai/api/v1/tts/inference, headers
+//        X-API-Key-ID + Content-Type: application/json +
+//        X-API-Request-ID, body {text, model, voice, language, speed,
+//        audio_config}. 200 -> raw audio bytes.
+//   STT: POST https://api.vachana.ai/stt/v3, multipart form, file field
+//        "audio_file" + fields language_code / format / model.
+//        200 -> JSON {success, request_id, transcript, ...}.
+// The key is GNANI_API_KEY (the client itself falls back to it).
 //
-// Bolna API shape verified against the connector client
-// (~/workspace/custom-connectors/custom.bolna/bin/client.py, itself
-// verified against Bolna's quickstart docs 2026-10-17): POST
-// https://api.bolna.ai/call, Bearer key, body {agent_id,
-// recipient_phone_number, user_data?}. A 2xx means Bolna ACCEPTED
-// the call placement, not that anyone answered — call outcome lives
-// in Bolna executions, which no webhook reads here.
+// What Vachana is NOT: it has no phone-call / telephony endpoint —
+// the package ships only stt + tts, and no Gnani outbound-call REST
+// API is documented anywhere public (Gnani Agents is a console
+// builder product). So the old sendVoiceCall phone leg CANNOT be
+// re-pointed at Gnani: it honestly reports voice-call-not-supported
+// instead of faking a call or guessing a calls URL. The escalation
+// ladder already treats a failed voice step as a counted failure and
+// continues, so this is honest telemetry, not a silent no-op. The
+// outbound-call leg needs the Agent Builder console agent + its calls
+// API — a separate, unverified piece. What this adapter DOES give the
+// app, live: Timbre TTS for the spoken SOS message, and Prisma STT
+// for the voice-trigger SOS (distress-phrase detection, Phase 1) —
+// both exposed as thin routes in routes/voice.js.
 //
-// The agent does the talking, not this adapter: BOLNA_AGENT_ID must
-// point at an SOS agent Rishabh creates in the Bolna dashboard whose
-// prompt speaks the user_data.sos_message (see .env.example). Until
-// that agent exists, pointing this at the agency sales agent would
-// pitch a prospect script to an emergency contact — so the adapter
-// stays unconfigured without BOTH vars, and no default agent is
-// guessed. Trial accounts can only call dashboard-verified numbers;
-// automated calls go only to the victim's own chosen contacts, who
-// opted in by being emergency contacts — the first live call must
-// still be a supervised test, never a real SOS.
-//
-// Config (server-side only, never in the app): BOLNA_API_KEY,
-// BOLNA_AGENT_ID. Without both, every call honestly reports
-// channel-not-configured — the same reason string D4's stub used.
-// Phones are validated, deduplicated, and never logged in full.
+// Config (server-side only, never in the app): GNANI_API_KEY. Without
+// it, every call honestly reports channel-not-configured. Phones are
+// validated, deduplicated, and never logged in full; transcripts and
+// synthesised text are never logged either.
 const { normalizePhone } = require("./sms");
 
-const BOLNA_CALL_URL = "https://api.bolna.ai/call";
+const GNANI_BASE_URL = "https://api.vachana.ai";
+const TTS_URL = `${GNANI_BASE_URL}/api/v1/tts/inference`;
+const STT_URL = `${GNANI_BASE_URL}/stt/v3`;
 
-const voiceConfig = () => ({
-  apiKey: process.env.BOLNA_API_KEY || "",
-  agentId: (process.env.BOLNA_AGENT_ID || "").trim(),
-});
-
-// Config-status for /health — booleans only, never secret values.
-const voiceStatus = () => {
-  const { apiKey, agentId } = voiceConfig();
-  return { configured: Boolean(apiKey && agentId) };
+// Live-verified 2026-11-14: Hindi TTS, timbre-v2.5, voice Nalini.
+const TTS_MODEL = "timbre-v2.5";
+const TTS_VOICE = "Nalini";
+const TTS_LANGUAGE = "hi-IN";
+const TTS_AUDIO_CONFIG = {
+  sample_rate: 44100,
+  encoding: "linear_pcm",
+  num_channels: 1,
+  sample_width: 2,
+  container: "wav",
 };
 
-// One voice call to one recipient. Never throws: every failure mode
-// returns a counted failure with a reason, so one bad number cannot
-// kill the rest of the escalation (delivery.js enforces the same
-// contract for the other channels).
+// Prisma v3.0 + indic-auto: the multilingual model, right for
+// Hinglish distress phrases ("help me" / "mujhe bachao"). Audio is
+// limited to 30 s per request — 2 MB decoded is a generous cap for
+// a 30 s clip at telephony rates.
+const STT_MODEL = "prisma-v3.0";
+const STT_LANGUAGE = "indic-auto";
+const MAX_AUDIO_BYTES = 2 * 1024 * 1024;
+const STT_EXTENSIONS = new Set([".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"]);
+const STT_MIME = {
+  ".wav": "audio/wav",
+  ".mp3": "audio/mpeg",
+  ".flac": "audio/flac",
+  ".ogg": "audio/ogg",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+};
+
+const voiceConfig = () => ({
+  apiKey: process.env.GNANI_API_KEY || "",
+});
+
+// Config-status for callers — booleans only, never secret values.
+const voiceStatus = () => {
+  const { apiKey } = voiceConfig();
+  return { configured: Boolean(apiKey) };
+};
+
+// Same request-id shape as the Python client (req_<12 hex>).
+const newRequestId = () =>
+  `req_${require("node:crypto").randomUUID().replace(/-/g, "").slice(0, 12)}`;
+
+const gnaniHeaders = (apiKey) => ({
+  "X-API-Key-ID": apiKey,
+  "X-API-Request-ID": newRequestId(),
+});
+
+// Synthesise speech with Timbre TTS. Never throws: every failure mode
+// returns a counted failure with a reason. Returns the raw audio bytes
+// — the caller decides what to do with them (play, store, attach).
+const synthesizeSpeech = async ({ text, voice, language, fetchImpl = fetch } = {}) => {
+  const { apiKey } = voiceConfig();
+  if (!apiKey) {
+    return { ok: false, reason: "channel-not-configured" };
+  }
+  if (typeof text !== "string" || text.length === 0) {
+    return { ok: false, reason: "empty-content" };
+  }
+  try {
+    const res = await fetchImpl(TTS_URL, {
+      method: "POST",
+      headers: {
+        ...gnaniHeaders(apiKey),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        text: text.slice(0, 1000),
+        model: TTS_MODEL,
+        voice: typeof voice === "string" && voice.trim() ? voice.trim() : TTS_VOICE,
+        language: typeof language === "string" && language.trim() ? language.trim() : TTS_LANGUAGE,
+        speed: 1.0,
+        audio_config: TTS_AUDIO_CONFIG,
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      console.log("❌ Gnani TTS rejected synthesis: HTTP", res.status);
+      return { ok: false, reason: "voice-rejected" };
+    }
+    const audio = Buffer.from(await res.arrayBuffer());
+    return { ok: true, audio, contentType: "audio/wav", bytes: audio.length };
+  } catch (err) {
+    console.log("❌ Gnani TTS failed:", err.name || "transport-error");
+    return { ok: false, reason: "voice-transport-error" };
+  }
+};
+
+const audioExtension = (filename) => {
+  const m = /(?:\.)([A-Za-z0-9]+)$/.exec(typeof filename === "string" ? filename : "");
+  return m ? `.${m[1].toLowerCase()}` : "";
+};
+
+// Transcribe audio with Prisma STT. Never throws. `audio` is a Buffer
+// (or Uint8Array); `filename` only decides the multipart file name
+// and the validated extension — it is never trusted as a path.
+const transcribeAudio = async ({ audio, filename, languageCode, fetchImpl = fetch } = {}) => {
+  const { apiKey } = voiceConfig();
+  if (!apiKey) {
+    return { ok: false, reason: "channel-not-configured" };
+  }
+  if ((!Buffer.isBuffer(audio) && !(audio instanceof Uint8Array)) || audio.length === 0) {
+    return { ok: false, reason: "invalid-audio" };
+  }
+  if (audio.length > MAX_AUDIO_BYTES) {
+    return { ok: false, reason: "audio-too-large" };
+  }
+  const name = typeof filename === "string" && filename.trim() ? filename.trim() : "clip.wav";
+  const ext = audioExtension(name);
+  if (!STT_EXTENSIONS.has(ext)) {
+    return { ok: false, reason: "unsupported-audio-format" };
+  }
+  const form = new FormData();
+  form.append(
+    "language_code",
+    typeof languageCode === "string" && languageCode.trim() ? languageCode.trim() : STT_LANGUAGE
+  );
+  form.append("format", "verbatim");
+  form.append("model", STT_MODEL);
+  // No manual Content-Type: fetch sets the multipart boundary itself.
+  form.append("audio_file", new Blob([audio], { type: STT_MIME[ext] }), name);
+  try {
+    const res = await fetchImpl(STT_URL, {
+      method: "POST",
+      headers: gnaniHeaders(apiKey),
+      body: form,
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) {
+      console.log("❌ Gnani STT rejected transcription: HTTP", res.status);
+      return { ok: false, reason: "voice-rejected" };
+    }
+    const data = await res.json().catch(() => null);
+    if (!data || typeof data.transcript !== "string") {
+      return { ok: false, reason: "voice-bad-response" };
+    }
+    return {
+      ok: true,
+      transcript: data.transcript,
+      languageCode:
+        typeof data.detected_language_code === "string" ? data.detected_language_code : STT_LANGUAGE,
+    };
+  } catch (err) {
+    console.log("❌ Gnani STT failed:", err.name || "transport-error");
+    return { ok: false, reason: "voice-transport-error" };
+  }
+};
+
+// One voice call to one recipient — KEPT for interface parity with the
+// Bolna adapter (alerts.js / escalation.js call it through
+// sendVoiceAlert and already handle a failed voice step as a counted
+// failure). Vachana provides speech synthesis and recognition, NOT
+// telephony, so no HTTP call is made and the honest reason is
+// voice-call-not-supported. `name` and `fetchImpl` stay in the
+// signature so callers don't change; neither is used.
 const sendVoiceCall = async ({ to, name, message, fetchImpl = fetch } = {}) => {
-  const { apiKey, agentId } = voiceConfig();
-  if (!apiKey || !agentId) {
+  void name;
+  void fetchImpl;
+  if (!voiceStatus().configured) {
     return { sent: 0, failed: 1, reason: "channel-not-configured" };
   }
   const recipient = normalizePhone(to);
@@ -62,31 +205,7 @@ const sendVoiceCall = async ({ to, name, message, fetchImpl = fetch } = {}) => {
   if (typeof message !== "string" || message.length === 0) {
     return { sent: 0, failed: 1, reason: "empty-content" };
   }
-  const userData = { sos_message: message.slice(0, 1000) };
-  if (typeof name === "string" && name.trim()) userData.recipient_name = name.trim().slice(0, 60);
-  try {
-    const res = await fetchImpl(BOLNA_CALL_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        agent_id: agentId,
-        recipient_phone_number: recipient,
-        user_data: userData,
-      }),
-      // Same 6s fail-fast timeout as the SMS/WhatsApp/push adapters:
-      // the escalation callback must not hang until Vercel kills it.
-      signal: AbortSignal.timeout(6000),
-    });
-    if (res.ok) return { sent: 1, failed: 0 };
-    console.log("❌ Bolna rejected voice call: HTTP", res.status);
-    return { sent: 0, failed: 1, reason: "voice-rejected" };
-  } catch (err) {
-    console.log("❌ Bolna voice call failed:", err.name || "transport-error");
-    return { sent: 0, failed: 1, reason: "voice-transport-error" };
-  }
+  return { sent: 0, failed: 1, reason: "voice-call-not-supported" };
 };
 
 // Voice fan-out over the alert's emergency contacts: one call per
@@ -122,4 +241,11 @@ const sendVoiceAlert = async ({ message, contacts = [], fetchImpl = fetch } = {}
   return out;
 };
 
-module.exports = { voiceConfig, voiceStatus, sendVoiceCall, sendVoiceAlert };
+module.exports = {
+  voiceConfig,
+  voiceStatus,
+  synthesizeSpeech,
+  transcribeAudio,
+  sendVoiceCall,
+  sendVoiceAlert,
+};
