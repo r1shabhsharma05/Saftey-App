@@ -2,9 +2,11 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet } from 'react-native';
+import { AppState, Pressable, StyleSheet } from 'react-native';
 import Reanimated, { FadeOut } from 'react-native-reanimated';
 import { supabase } from '../utils/supabase';
+import { authenticateForUnlock, getBiometricCapability, isBiometricLockEnabled } from '../utils/biometricLock';
+import BiometricLockScreen from '../components/BiometricLockScreen';
 import AnimatedLogo from '../components/AnimatedLogo';
 import AppDialogHost from '../components/ui/AppDialog';
 import * as SplashScreen from 'expo-splash-screen';
@@ -55,6 +57,8 @@ export default function RootLayout() {
   const [session, setSession] = useState<any>(null);
   const [initialized, setInitialized] = useState(false);
   const [introVisible, setIntroVisible] = useState(true);
+  // Biometric app lock: true = the lock screen covers the tabs.
+  const [locked, setLocked] = useState(false);
 
   const [fontsLoaded, fontError] = useFonts({
     SpaceGrotesk_300Light,
@@ -102,11 +106,53 @@ export default function RootLayout() {
     };
   }, []);
 
+  // Biometric app lock: when a session exists and the preference is
+  // on, arm the lock — the prompt runs when the lock screen appears.
+  // No hardware / nothing enrolled → never armed, never locks out.
+  useEffect(() => {
+    if (!initialized || !session) {
+      setLocked(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      if (!(await isBiometricLockEnabled())) return;
+      const { hasHardware, isEnrolled } = await getBiometricCapability();
+      if (!cancelled && hasHardware && isEnrolled) setLocked(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialized, session]);
+
+  // Re-arm on foreground.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' || !session) return;
+      void (async () => {
+        if (!(await isBiometricLockEnabled())) return;
+        const { hasHardware, isEnrolled } = await getBiometricCapability();
+        if (hasHardware && isEnrolled) setLocked(true);
+      })();
+    });
+    return () => sub.remove();
+  }, [session]);
+
+  // Auto-prompt once when the lock screen appears. A cancelled
+  // attempt stays on the lock screen with its Unlock button — it
+  // never loops the prompt and never navigates past the lock.
+  useEffect(() => {
+    if (!locked) return;
+    void (async () => {
+      if (await authenticateForUnlock()) setLocked(false);
+    })();
+  }, [locked]);
+
   useEffect(() => {
     if (!initialized || (!fontsLoaded && !fontError)) return;
 
     const inTabsGroup = segments[0] === '(tabs)';
-    const inAuthGroup = ['login', 'register', 'onboarding', 'verify-email', 'reset-password', 'auth-callback'].includes(
+    const inAuthGroup = ['login', 'register', 'onboarding', 'reset-password', 'auth-callback'].includes(
       segments[0] as string
     );
 
@@ -141,14 +187,17 @@ export default function RootLayout() {
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? CustomDarkTheme : DefaultTheme}>
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="onboarding" />
-        <Stack.Screen name="login" />
-        <Stack.Screen name="register" />
-        <Stack.Screen name="verify-email" />
-        <Stack.Screen name="reset-password" />
-        <Stack.Screen name="(tabs)" />
-      </Stack>
+      {locked ? (
+        <BiometricLockScreen onUnlocked={() => setLocked(false)} />
+      ) : (
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="onboarding" />
+          <Stack.Screen name="login" />
+          <Stack.Screen name="register" />
+          <Stack.Screen name="reset-password" />
+          <Stack.Screen name="(tabs)" />
+        </Stack>
+      )}
       <StatusBar style="auto" />
       <AppDialogHost />
       {introVisible && (

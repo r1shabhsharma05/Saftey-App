@@ -30,6 +30,7 @@ import { supabase } from '../utils/supabase';
 import { ensureProfile } from '../utils/auth';
 import { showAppDialog } from '../utils/dialog';
 import { getBackendUrl } from '../utils/backendUrl';
+import { getLivePinFix } from '../utils/location';
 import { secureGetItem, secureSetItem } from '../utils/secureStorage';
 import { Theme } from '../constants/theme';
 import ScreenBackground from '../components/ui/ScreenBackground';
@@ -260,8 +261,15 @@ export default function GuardianScreen() {
         setLocationShared(false);
         return false;
       }
-      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      const ok = await postGuardianLocation(BACKEND_URL, guardian.id, pos.coords.latitude, pos.coords.longitude);
+      // Fast pin: a fresh-enough cached fix goes out instantly;
+      // a stale cache waits for a fresh fix (8 s max). No fix at
+      // all → false, never a stale pin sent as live.
+      const fix = await getLivePinFix();
+      if (!fix) {
+        setLocationShared(false);
+        return false;
+      }
+      const ok = await postGuardianLocation(BACKEND_URL, guardian.id, fix.latitude, fix.longitude);
       setLocationShared(ok);
       return ok;
     } catch {
@@ -291,8 +299,9 @@ export default function GuardianScreen() {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') return false;
-      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      return await postGuardianAlertLocation(BACKEND_URL, alertId, guardian.id, pos.coords.latitude, pos.coords.longitude);
+      const fix = await getLivePinFix();
+      if (!fix) return false;
+      return await postGuardianAlertLocation(BACKEND_URL, alertId, guardian.id, fix.latitude, fix.longitude);
     } catch {
       return false;
     }

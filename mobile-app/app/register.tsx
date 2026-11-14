@@ -4,28 +4,40 @@ import {
   Text,
   StyleSheet,
   Pressable,
-  Alert,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../utils/supabase';
 import { showAppDialog } from '../utils/dialog';
 import { ensureProfile, friendlyAuthError } from '../utils/auth';
-import AuthBackground from '../components/auth/Background';
-import AuthBrand from '../components/auth/Brand';
+import { getBackendUrl } from '../utils/backendUrl';
+import { requestSignupCode, verifySignupCode } from '../utils/phoneAuth';
+import GlobeWireframe from '../components/GlobeWireframe';
+import OtpCubes, { type OtpPhase } from '../components/OtpCubes';
 import AuthInput from '../components/auth/Input';
 import AuthButton from '../components/auth/Button';
 import SocialButton, { OrDivider } from '../components/auth/SocialButton';
 import { signInWithGoogle } from '../utils/googleAuth';
 import { AuthTheme } from '../constants/auth-theme';
 
+const BACKEND_URL = getBackendUrl();
+
 /**
- * Register — Floxly reference screen 3, adapted for SafeLife AI:
- * "Create an Account", social row, guardian detail fields,
- * gradient Continue CTA. Handles email-verification flow properly.
+ * Register — the landing page's globe auth design, in the app:
+ * black background, rotating wireframe globe hero, dark card with
+ * the Sign in / Create account toggle, white Google button, and
+ * the white submit button.
+ *
+ * Signup is phone-OTP verified: the Supabase account is created
+ * ONLY after the code sent to the mobile number verifies —
+ * request-code → V4 OTP screen → verify → signUp → dashboard.
+ * Email confirmation is OFF (Supabase mailer_autoconfirm), so
+ * signUp returns a session immediately; there is no verify-email
+ * step anywhere in this flow.
  */
 export default function RegisterScreen() {
   const router = useRouter();
@@ -36,6 +48,14 @@ export default function RegisterScreen() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
+
+  // OTP stage: the digits live inside OtpCubes; the parent only
+  // holds the phase, the same way guardian.tsx wires it.
+  const [stage, setStage] = useState<'form' | 'otp'>('form');
+  const [otpPhase, setOtpPhase] = useState<OtpPhase>('idle');
+  const [otpError, setOtpError] = useState<string | null>(null);
+  const [otpNonce, setOtpNonce] = useState(0);
+  const [otpBusy, setOtpBusy] = useState(false);
 
   const handleGoogle = async () => {
     // In-flight guard: rapid taps used to stack multiple auth browser
@@ -84,48 +104,137 @@ export default function RegisterScreen() {
       return;
     }
 
+    // Step 1: SMS the code to the mobile number. No Supabase account
+    // is created yet — that waits for the verified code.
     setLoading(true);
+    try {
+      const res = await requestSignupCode(BACKEND_URL, cleanPhone);
+      if (!res.reached) {
+        showAppDialog(
+          'No Connection',
+          'Could not reach the SafeLife servers. Check your internet and try again.'
+        );
+        return;
+      }
+      if (!res.success) {
+        showAppDialog(
+          'Code Not Sent',
+          res.reason === 'channel-not-configured'
+            ? 'SMS is not configured yet. Please try again later.'
+            : res.error || 'The code could not be sent. Please try again.'
+        );
+        return;
+      }
+      setOtpPhase('idle');
+      setOtpError(null);
+      setStage('otp');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Step 3: create the Supabase account, only after the OTP verified.
+  const finishSignUp = async () => {
+    const cleanEmail = email.trim().toLowerCase();
     try {
       const { data, error } = await supabase.auth.signUp({
         email: cleanEmail,
         password,
         options: {
           data: {
-            first_name: cleanFirst,
+            first_name: firstName.trim(),
             last_name: lastName.trim(),
-            phone: cleanPhone,
+            phone: phone.trim(),
           },
         },
       });
-
       if (error) {
         showAppDialog('Sign Up Failed', friendlyAuthError(error));
+        setStage('form');
+        setOtpPhase('idle');
         return;
       }
-
       if (data.session && data.user) {
-        // No email confirmation required — create profile and enter.
         await ensureProfile(data.user);
         router.replace('/(tabs)');
-      } else if (data.user) {
-        // Email confirmation required — guide to inbox.
-        router.push({
-          pathname: '/verify-email',
-          params: { email: cleanEmail },
-        });
       } else {
-        // No error, no user, no session: never fail silently.
-        showAppDialog('Sign Up Incomplete', 'Sign-up did not finish. Please try again.');
+        // Email confirmation is off, so a session is expected — never
+        // fail silently if it does not arrive.
+        showAppDialog(
+          'Sign Up Incomplete',
+          'Your number verified, but sign-in did not finish. Please try logging in.'
+        );
+        setStage('form');
+        setOtpPhase('idle');
       }
     } catch (e: any) {
       showAppDialog('Sign Up Failed', friendlyAuthError(e));
+      setStage('form');
+      setOtpPhase('idle');
+    }
+  };
+
+  // OTP V4: the 6 digits arrive complete from OtpCubes; verification
+  // is ONLY the server endpoint — no local comparison, no demo code.
+  // On success the cube animation plays first (2.2 s), then the
+  // Supabase account is created.
+  const handleCodeComplete = async (submitted: string) => {
+    if (!/^\d{6}$/.test(submitted)) return;
+    setOtpPhase('verifying');
+    setOtpError(null);
+    setOtpBusy(true);
+    try {
+      const res = await verifySignupCode(BACKEND_URL, phone.trim(), submitted);
+      if (!res.reached) {
+        showAppDialog(
+          'No Connection',
+          'Could not reach the SafeLife servers. Check your internet and try again.'
+        );
+        setOtpPhase('idle');
+        setOtpNonce((n) => n + 1);
+        return;
+      }
+      if (!res.success) {
+        setOtpError(res.error || 'That code isn’t right. Please try again.');
+        setOtpPhase('error');
+        return;
+      }
+      setOtpPhase('success');
+      setTimeout(() => {
+        void finishSignUp();
+      }, 2200);
     } finally {
-      setLoading(false);
+      setOtpBusy(false);
+    }
+  };
+
+  // OtpCubes calls this after its error animation played out: the
+  // cubes spring back, the boxes clear, entry starts over.
+  const handleOtpReset = () => {
+    setOtpPhase('idle');
+    setOtpError(null);
+    setOtpNonce((n) => n + 1);
+  };
+
+  const handleResend = async () => {
+    setOtpBusy(true);
+    try {
+      const res = await requestSignupCode(BACKEND_URL, phone.trim());
+      if (!res.reached || !res.success) {
+        showAppDialog(
+          'Code Not Sent',
+          res.reason === 'channel-not-configured'
+            ? 'SMS is not configured yet. Please try again later.'
+            : res.error || 'The code could not be sent. Please try again.'
+        );
+      }
+    } finally {
+      setOtpBusy(false);
     }
   };
 
   return (
-    <AuthBackground>
+    <View style={styles.root}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.flex}
@@ -135,119 +244,198 @@ export default function RegisterScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          <Animated.View entering={FadeIn.duration(500)} style={styles.brand}>
-            <AuthBrand compact />
+          <Animated.View entering={FadeIn.duration(500)} style={styles.hero}>
+            <GlobeWireframe size={200} />
+            <LinearGradient colors={['transparent', '#000000']} style={styles.heroFade} />
           </Animated.View>
 
           <Animated.View entering={FadeInUp.delay(100).duration(500)}>
-            <Text style={styles.headline}>Create an Account</Text>
+            <Text style={styles.headline}>Create your account</Text>
             <Text style={styles.sub}>
-              Join the guardian network — verify your email and set a password.
+              Join the guardian network — we&apos;ll verify your mobile number.
             </Text>
           </Animated.View>
 
-          <Animated.View entering={FadeInUp.delay(180).duration(500)} style={styles.socialRow}>
-            <SocialButton provider="google" onPress={handleGoogle} />
-          </Animated.View>
-
-          <Animated.View entering={FadeInUp.delay(240).duration(500)}>
-            <OrDivider />
-
-            <View style={styles.row}>
-              <View style={styles.half}>
-                <AuthInput
-                  icon="account-outline"
-                  placeholder="First name"
-                  value={firstName}
-                  onChangeText={setFirstName}
-                />
-              </View>
-              <View style={styles.half}>
-                <AuthInput
-                  icon="account-outline"
-                  placeholder="Last name"
-                  value={lastName}
-                  onChangeText={setLastName}
-                />
-              </View>
-            </View>
-
-            <AuthInput
-              icon="phone-outline"
-              placeholder="Phone number"
-              value={phone}
-              onChangeText={setPhone}
-              keyboardType="phone-pad"
-              containerStyle={styles.fieldGap}
-            />
-            <AuthInput
-              icon="email-outline"
-              placeholder="Email address"
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              containerStyle={styles.fieldGap}
-            />
-            <AuthInput
-              icon="lock-outline"
-              placeholder="Set a password"
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              containerStyle={styles.fieldGap}
-            />
-
-            <AuthButton
-              title="Continue"
-              onPress={handleRegister}
-              loading={loading}
-              style={styles.cta}
-            />
-
-            <View style={styles.switchRow}>
-              <Text style={styles.switchText}>Have an account? </Text>
-              <Pressable onPress={() => router.push('/login')} hitSlop={8}>
-                <Text style={styles.switchLink}>Log In</Text>
+          <Animated.View entering={FadeInUp.delay(180).duration(500)} style={styles.card}>
+            <View style={styles.toggleRow}>
+              <Pressable
+                style={styles.toggleBtn}
+                onPress={() => router.push('/login')}
+                hitSlop={6}
+              >
+                <Text style={styles.toggleText}>Sign in</Text>
+              </Pressable>
+              <Pressable style={[styles.toggleBtn, styles.toggleActive]} hitSlop={6}>
+                <Text style={styles.toggleActiveText}>Create account</Text>
               </Pressable>
             </View>
+
+            {stage === 'form' ? (
+              <>
+                <SocialButton provider="google" onPress={handleGoogle} variant="light" />
+
+                <OrDivider label="or continue with mobile" />
+
+                <View style={styles.row}>
+                  <View style={styles.half}>
+                    <AuthInput
+                      icon="account-outline"
+                      placeholder="First name"
+                      value={firstName}
+                      onChangeText={setFirstName}
+                    />
+                  </View>
+                  <View style={styles.half}>
+                    <AuthInput
+                      icon="account-outline"
+                      placeholder="Last name"
+                      value={lastName}
+                      onChangeText={setLastName}
+                    />
+                  </View>
+                </View>
+
+                <AuthInput
+                  icon="phone-outline"
+                  placeholder="Phone number"
+                  value={phone}
+                  onChangeText={setPhone}
+                  keyboardType="phone-pad"
+                  containerStyle={styles.fieldGap}
+                />
+                <AuthInput
+                  icon="email-outline"
+                  placeholder="Email address"
+                  value={email}
+                  onChangeText={setEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  containerStyle={styles.fieldGap}
+                />
+                <AuthInput
+                  icon="lock-outline"
+                  placeholder="Set a password"
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry
+                  secureToggle
+                  containerStyle={styles.fieldGap}
+                />
+
+                <AuthButton
+                  title="Sign Up"
+                  onPress={handleRegister}
+                  loading={loading}
+                  variant="white"
+                  style={styles.cta}
+                />
+
+                <View style={styles.switchRow}>
+                  <Text style={styles.switchText}>Have an account? </Text>
+                  <Pressable onPress={() => router.push('/login')} hitSlop={8}>
+                    <Text style={styles.switchLink}>Log In</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.otpTitle}>Verify your number</Text>
+                <Text style={styles.otpSub}>
+                  We sent a 6-digit code to {phone.trim()}. Enter it below — it expires in 10
+                  minutes.
+                </Text>
+                <OtpCubes
+                  phone={phone.trim()}
+                  phase={otpPhase}
+                  errorMessage={otpError}
+                  busy={otpBusy}
+                  resetNonce={otpNonce}
+                  onCodeComplete={handleCodeComplete}
+                  onResend={handleResend}
+                  onReset={handleOtpReset}
+                />
+                {otpPhase === 'success' && (
+                  <Text style={styles.otpSuccess}>Number verified — creating your account…</Text>
+                )}
+                <Pressable
+                  onPress={() => {
+                    setStage('form');
+                    setOtpPhase('idle');
+                    setOtpError(null);
+                  }}
+                  hitSlop={8}
+                  style={styles.changeNumber}
+                >
+                  <Text style={styles.changeNumberText}>Change number</Text>
+                </Pressable>
+              </>
+            )}
           </Animated.View>
 
           <Text style={styles.terms}>Terms of Service | Privacy Policy</Text>
         </ScrollView>
       </KeyboardAvoidingView>
-    </AuthBackground>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#000' },
   flex: { flex: 1 },
   scroll: {
     flexGrow: 1,
-    paddingHorizontal: 30,
-    paddingTop: 64,
+    paddingHorizontal: 24,
+    paddingTop: 48,
     paddingBottom: 30,
     justifyContent: 'center',
   },
-  brand: { alignItems: 'center', marginBottom: 26 },
+  hero: { alignItems: 'center', height: 208, marginBottom: 8 },
+  heroFade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 48,
+  },
   headline: {
-    color: AuthTheme.colors.heading,
+    color: '#fff',
     fontFamily: AuthTheme.fonts.headline,
-    fontSize: 30,
+    fontSize: 28,
     textAlign: 'center',
   },
   sub: {
     color: AuthTheme.colors.subtext,
     fontFamily: AuthTheme.fonts.body,
-    fontSize: 13.5,
+    fontSize: 14,
     textAlign: 'center',
     marginTop: 8,
-    marginBottom: 24,
-    lineHeight: 19,
+    marginBottom: 22,
   },
-  socialRow: { flexDirection: 'row' },
-  socialGap: { width: 14 },
+  card: {
+    backgroundColor: '#0a0a0a',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    borderRadius: 16,
+    padding: 24,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    backgroundColor: '#18181b',
+    borderRadius: 999,
+    padding: 4,
+    marginBottom: 20,
+  },
+  toggleBtn: {
+    flex: 1,
+    height: 36,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toggleActive: { backgroundColor: '#fff' },
+  toggleText: { color: '#a1a1aa', fontFamily: AuthTheme.fonts.label, fontSize: 14 },
+  toggleActiveText: { color: '#000', fontFamily: AuthTheme.fonts.label, fontSize: 14 },
   row: { flexDirection: 'row', gap: 12 },
   half: { flex: 1 },
   fieldGap: { marginTop: 14 },
@@ -258,6 +446,35 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontFamily: AuthTheme.fonts.bodyBold,
     fontSize: 14,
+    textDecorationLine: 'underline',
+  },
+  otpTitle: {
+    color: '#fff',
+    fontFamily: AuthTheme.fonts.headline,
+    fontSize: 20,
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  otpSub: {
+    color: AuthTheme.colors.subtext,
+    fontFamily: AuthTheme.fonts.body,
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 19,
+    marginBottom: 8,
+  },
+  otpSuccess: {
+    color: '#2dd4a0',
+    fontFamily: AuthTheme.fonts.body,
+    fontSize: 13,
+    textAlign: 'center',
+    marginTop: 12,
+  },
+  changeNumber: { alignItems: 'center', marginTop: 16 },
+  changeNumberText: {
+    color: '#fff',
+    fontFamily: AuthTheme.fonts.body,
+    fontSize: 13,
     textDecorationLine: 'underline',
   },
   terms: {

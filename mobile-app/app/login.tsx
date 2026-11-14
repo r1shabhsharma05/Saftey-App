@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   Pressable,
-  Alert,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
@@ -12,44 +11,65 @@ import {
 import { useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../utils/supabase';
 import { showAppDialog } from '../utils/dialog';
 import { ensureProfile, friendlyAuthError, resendConfirmation } from '../utils/auth';
-import AuthBackground from '../components/auth/Background';
-import AuthBrand from '../components/auth/Brand';
+import { getBackendUrl } from '../utils/backendUrl';
+import { resolveLoginEmail } from '../utils/phoneAuth';
+import GlobeWireframe from '../components/GlobeWireframe';
 import AuthInput from '../components/auth/Input';
 import AuthButton from '../components/auth/Button';
 import SocialButton, { OrDivider } from '../components/auth/SocialButton';
 import { signInWithGoogle } from '../utils/googleAuth';
 import { AuthTheme } from '../constants/auth-theme';
 
+const BACKEND_URL = getBackendUrl();
+
 /**
- * Login — Floxly reference screen 2, adapted for SafeLife AI:
- * centered brand, "Welcome Back!", social row, dark pill inputs,
- * gradient CTA, footer links.
+ * Login — the landing page's globe auth design, in the app:
+ * black background, rotating wireframe globe hero, dark card with
+ * the Sign in / Create account toggle, white Google button, and
+ * the white submit button.
+ *
+ * Login is by MOBILE NUMBER + password. Supabase auth is
+ * email-based, so the phone is resolved to the account email first
+ * (POST /auth/login/resolve) and then signInWithPassword runs.
  */
 export default function LoginScreen() {
   const router = useRouter();
-  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
 
   const handleLogin = async () => {
-    const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail || !password) {
-      showAppDialog('Missing Details', 'Please enter your email and password.');
+    const cleanPhone = phone.trim();
+    if (!cleanPhone || !password) {
+      showAppDialog('Missing Details', 'Please enter your mobile number and password.');
       return;
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      showAppDialog('Invalid Email', 'Please enter a valid email address.');
+    if (cleanPhone.replace(/\D/g, '').length < 10) {
+      showAppDialog('Invalid Phone', 'Please enter a valid mobile number (min 10 digits).');
       return;
     }
 
     setLoading(true);
     try {
+      const resolved = await resolveLoginEmail(BACKEND_URL, cleanPhone);
+      if (!resolved.reached) {
+        showAppDialog(
+          'No Connection',
+          'Could not reach the SafeLife servers. Check your internet and try again.'
+        );
+        return;
+      }
+      if (!resolved.success || !resolved.email) {
+        showAppDialog('Login Failed', resolved.error || 'No account found for this mobile number.');
+        return;
+      }
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: cleanEmail,
+        email: resolved.email,
         password,
       });
 
@@ -59,7 +79,7 @@ export default function LoginScreen() {
             'Verify Your Email',
             'Your account is created but not verified yet. Check your inbox for the confirmation link.',
             [
-              { text: 'Resend Link', onPress: () => resendConfirmation(cleanEmail) },
+              { text: 'Resend Link', onPress: () => resendConfirmation(resolved.email!) },
               { text: 'OK', style: 'cancel' },
             ]
           );
@@ -73,12 +93,8 @@ export default function LoginScreen() {
         await ensureProfile(data.user);
         router.replace('/(tabs)');
       } else {
-        // No error but no session either (e.g. email not yet
-        // confirmed): the old code just stopped the spinner silently.
-        showAppDialog(
-          'Sign-In Incomplete',
-          'Sign-in did not finish. If this account is new, verify your email first, then sign in.'
-        );
+        // No error but no session either: never fail silently.
+        showAppDialog('Sign-In Incomplete', 'Sign-in did not finish. Please try again.');
       }
     } catch (e: any) {
       showAppDialog('Login Failed', friendlyAuthError(e));
@@ -105,8 +121,45 @@ export default function LoginScreen() {
     }
   };
 
+  const handleForgotPassword = () => {
+    showAppDialog(
+      'Reset Password',
+      "Enter your mobile number above, then tap OK and we'll send a reset link to the email on your account.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'OK',
+          onPress: async () => {
+            if (!phone.trim()) return;
+            const resolved = await resolveLoginEmail(BACKEND_URL, phone.trim());
+            if (!resolved.reached || !resolved.success || !resolved.email) {
+              showAppDialog(
+                'Reset Failed',
+                resolved.error || 'No account found for this mobile number.'
+              );
+              return;
+            }
+            // redirectTo matters: without it the email link dead-ends
+            // on the Supabase site URL. It opens the app's reset
+            // screen instead (the URL must also be allow-listed in
+            // the Supabase dashboard under Auth → URL Configuration).
+            const { error } = await supabase.auth.resetPasswordForEmail(resolved.email, {
+              redirectTo: Linking.createURL('reset-password'),
+            });
+            showAppDialog(
+              error ? 'Reset Failed' : 'Email Sent',
+              error
+                ? friendlyAuthError(error)
+                : 'Check your inbox for the password reset link.'
+            );
+          },
+        },
+      ]
+    );
+  };
+
   return (
-    <AuthBackground>
+    <View style={styles.root}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.flex}
@@ -116,29 +169,40 @@ export default function LoginScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          <Animated.View entering={FadeIn.duration(500)} style={styles.brand}>
-            <AuthBrand />
+          <Animated.View entering={FadeIn.duration(500)} style={styles.hero}>
+            <GlobeWireframe size={200} />
+            <LinearGradient colors={['transparent', '#000000']} style={styles.heroFade} />
           </Animated.View>
 
           <Animated.View entering={FadeInUp.delay(100).duration(500)}>
-            <Text style={styles.headline}>Welcome Back!</Text>
+            <Text style={styles.headline}>Welcome back</Text>
             <Text style={styles.sub}>Log in to your guardian network.</Text>
           </Animated.View>
 
-          <Animated.View entering={FadeInUp.delay(180).duration(500)} style={styles.socialRow}>
-            <SocialButton provider="google" onPress={handleGoogle} />
-          </Animated.View>
+          <Animated.View entering={FadeInUp.delay(180).duration(500)} style={styles.card}>
+            <View style={styles.toggleRow}>
+              <Pressable style={[styles.toggleBtn, styles.toggleActive]} hitSlop={6}>
+                <Text style={styles.toggleActiveText}>Sign in</Text>
+              </Pressable>
+              <Pressable
+                style={styles.toggleBtn}
+                onPress={() => router.push('/register')}
+                hitSlop={6}
+              >
+                <Text style={styles.toggleText}>Create account</Text>
+              </Pressable>
+            </View>
 
-          <Animated.View entering={FadeInUp.delay(240).duration(500)}>
-            <OrDivider />
+            <SocialButton provider="google" onPress={handleGoogle} variant="light" />
+
+            <OrDivider label="or continue with mobile" />
+
             <AuthInput
-              icon="email-outline"
-              placeholder="Email address"
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
+              icon="phone-outline"
+              placeholder="Mobile number"
+              value={phone}
+              onChangeText={setPhone}
+              keyboardType="phone-pad"
             />
             <AuthInput
               icon="lock-outline"
@@ -146,41 +210,10 @@ export default function LoginScreen() {
               value={password}
               onChangeText={setPassword}
               secureTextEntry
+              secureToggle
               containerStyle={styles.fieldGap}
             />
-            <Pressable
-              onPress={() =>
-                showAppDialog(
-                  'Reset Password',
-                  'Enter your email above, then tap OK and we\'ll send a reset link.',
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: 'OK',
-                      onPress: async () => {
-                        if (!email.trim()) return;
-                        // redirectTo matters: without it the email link
-                        // dead-ends on the Supabase site URL. It opens
-                        // the app's reset screen instead (the URL must
-                        // also be allow-listed in the Supabase dashboard
-                        // under Auth → URL Configuration).
-                        const { error } = await supabase.auth.resetPasswordForEmail(
-                          email.trim().toLowerCase(),
-                          { redirectTo: Linking.createURL('reset-password') }
-                        );
-                        showAppDialog(
-                          error ? 'Reset Failed' : 'Email Sent',
-                          error
-                            ? friendlyAuthError(error)
-                            : 'Check your inbox for the password reset link.'
-                        );
-                      },
-                    },
-                  ]
-                )
-              }
-              hitSlop={10}
-            >
+            <Pressable onPress={handleForgotPassword} hitSlop={10}>
               <Text style={styles.forgot}>Forgot Password?</Text>
             </Pressable>
 
@@ -188,6 +221,7 @@ export default function LoginScreen() {
               title="Log In"
               onPress={handleLogin}
               loading={loading}
+              variant="white"
               style={styles.cta}
             />
 
@@ -202,24 +236,32 @@ export default function LoginScreen() {
           <Text style={styles.terms}>Terms of Service | Privacy Policy</Text>
         </ScrollView>
       </KeyboardAvoidingView>
-    </AuthBackground>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#000' },
   flex: { flex: 1 },
   scroll: {
     flexGrow: 1,
-    paddingHorizontal: 30,
-    paddingTop: 76,
+    paddingHorizontal: 24,
+    paddingTop: 48,
     paddingBottom: 30,
     justifyContent: 'center',
   },
-  brand: { alignItems: 'center', marginBottom: 34 },
+  hero: { alignItems: 'center', height: 208, marginBottom: 8 },
+  heroFade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 48,
+  },
   headline: {
-    color: AuthTheme.colors.heading,
+    color: '#fff',
     fontFamily: AuthTheme.fonts.headline,
-    fontSize: 32,
+    fontSize: 28,
     textAlign: 'center',
   },
   sub: {
@@ -228,10 +270,32 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: 'center',
     marginTop: 8,
-    marginBottom: 26,
+    marginBottom: 22,
   },
-  socialRow: { flexDirection: 'row' },
-  socialGap: { width: 14 },
+  card: {
+    backgroundColor: '#0a0a0a',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    borderRadius: 16,
+    padding: 24,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    backgroundColor: '#18181b',
+    borderRadius: 999,
+    padding: 4,
+    marginBottom: 20,
+  },
+  toggleBtn: {
+    flex: 1,
+    height: 36,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toggleActive: { backgroundColor: '#fff' },
+  toggleText: { color: '#a1a1aa', fontFamily: AuthTheme.fonts.label, fontSize: 14 },
+  toggleActiveText: { color: '#000', fontFamily: AuthTheme.fonts.label, fontSize: 14 },
   fieldGap: { marginTop: 14 },
   forgot: {
     color: '#fff',
@@ -255,7 +319,7 @@ const styles = StyleSheet.create({
     fontFamily: AuthTheme.fonts.body,
     fontSize: 12,
     textAlign: 'center',
-    marginTop: 34,
+    marginTop: 28,
     textDecorationLine: 'underline',
   },
 });
