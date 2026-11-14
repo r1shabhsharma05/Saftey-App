@@ -111,6 +111,35 @@ const dbSelectBy = async (table, column, value) => {
   }
 };
 
+// Login-resolve: match a phone by its last 10 digits. Profiles were
+// written with the phone as typed (spaces, dashes, with/without +91),
+// so an exact match misses older rows. The last 10 digits are the
+// stable identity for Indian numbers. PostgREST `like.*suffix` — the
+// table/column are allowlisted like dbSelectBy's, the suffix is
+// digits-only, and the first match wins (limit 1).
+const dbSelectBySuffix = async (table, column, suffix) => {
+  if (!/^[a-z_]+$/.test(table || "") || !/^[a-z_]+$/.test(column || "")) {
+    return { ok: false, reason: "invalid-table-or-column" };
+  }
+  if (!/^\d+$/.test(suffix || "")) return { ok: false, reason: "invalid-suffix" };
+  if (!dbStatus().configured) return { ok: false, reason: "not_configured" };
+  const { url } = getConfig();
+  try {
+    const { data } = await transport({
+      method: "GET",
+      url: `${url}/rest/v1/${table}?${column}=like.${encodeURIComponent(`*${suffix}`)}&select=*&limit=1`,
+      headers: authHeaders(),
+    });
+    if (!Array.isArray(data) || data.length === 0) {
+      return { ok: false, reason: "not_found" };
+    }
+    return { ok: true, row: data[0] };
+  } catch (err) {
+    console.log(`❌ Supabase select ${table} failed:`, err.message);
+    return { ok: false, reason: err.message };
+  }
+};
+
 // D23: list the N most recent rows, newest first (admin audit
 // read-back). The table is allowlisted to a bare identifier — same
 // injection rule as dbSelectBy's column check. Never throws.
@@ -138,6 +167,7 @@ module.exports = {
   dbUpsert,
   dbSelectOne,
   dbSelectBy,
+  dbSelectBySuffix,
   dbListRecent,
   // Test seam only — lets tests drive the writer without network.
   // Pass null to restore the production transport.
