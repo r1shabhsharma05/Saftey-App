@@ -10,6 +10,9 @@
 // (one post on toggle-on + a 5-min foreground heartbeat) so the
 // backend's GEO matching can find them; a stale pin (10 min)
 // drops out of matching, and the screen says so plainly.
+// OTP V4: the code-entry UI is the Pixelvault_io cube screen ported
+// to OtpCubes (hexagon stage, scramble → orbit → server verdict);
+// verification is server-only, never a local digit comparison.
 import React, { useEffect, useState } from 'react';
 import {
   View,
@@ -34,6 +37,7 @@ import GlassCard from '../components/ui/GlassCard';
 import StatusPill from '../components/ui/StatusPill';
 import SectionHeader from '../components/ui/SectionHeader';
 import GlowButton from '../components/ui/GlowButton';
+import OtpCubes, { type OtpPhase } from '../components/OtpCubes';
 import {
   GUARDIAN_PRESET_MESSAGES,
   GUARDIAN_ROLES,
@@ -74,7 +78,12 @@ export default function GuardianScreen() {
   const [phone, setPhone] = useState('');
   const [role, setRole] = useState<GuardianRole>('family');
   const [guardian, setGuardian] = useState<Guardian | null>(null);
-  const [code, setCode] = useState('');
+  // OTP V4 cube screen: the digits live inside OtpCubes; the parent
+  // only owns the phase. The verdict comes from the server, never
+  // from a local digit comparison.
+  const [otpPhase, setOtpPhase] = useState<OtpPhase>('idle');
+  const [otpError, setOtpError] = useState<string | null>(null);
+  const [otpNonce, setOtpNonce] = useState(0);
   const [codeSent, setCodeSent] = useState(false);
   const [smsUnavailable, setSmsUnavailable] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -195,30 +204,49 @@ export default function GuardianScreen() {
     }
   };
 
-  const handleVerify = async () => {
+  // OTP V4: the 6 digits arrive complete from OtpCubes; verification
+  // is ONLY the server endpoint — no local comparison, no demo code.
+  // On success the cube animation plays first (2.2 s), then the
+  // screen switches to the verified home.
+  const handleCodeComplete = async (submitted: string) => {
     if (!guardian) return;
-    const cleanCode = code.trim();
-    if (!/^\d{6}$/.test(cleanCode)) {
-      showAppDialog('Invalid Code', 'Enter the 6-digit code sent to your phone.');
-      return;
-    }
+    if (!/^\d{6}$/.test(submitted)) return;
+    setOtpPhase('verifying');
+    setOtpError(null);
     setBusy(true);
     try {
-      const res = await verifyGuardianCode(BACKEND_URL, guardian.id, cleanCode);
+      const res = await verifyGuardianCode(BACKEND_URL, guardian.id, submitted);
       if (!res.reached) {
         showAppDialog('No Connection', 'Could not reach the SafeLife servers. Check your internet and try again.');
+        setOtpPhase('idle');
+        setOtpNonce((n) => n + 1);
         return;
       }
       if (!res.success || !res.guardian) {
-        showAppDialog('Verification Failed', res.error || 'Something went wrong. Please try again.');
+        setOtpError(res.error || 'That code isn’t right. Please try again.');
+        setOtpPhase('error');
         return;
       }
-      setCode('');
-      setCodeSent(false);
-      await rememberGuardian(res.guardian);
+      setOtpPhase('success');
+      const verified = res.guardian;
+      setTimeout(() => {
+        void (async () => {
+          await rememberGuardian(verified);
+          setCodeSent(false);
+          setOtpPhase('idle');
+        })();
+      }, 2200);
     } finally {
       setBusy(false);
     }
+  };
+
+  // OtpCubes calls this after its error animation played out: the
+  // cubes spring back, the boxes clear, entry starts over.
+  const handleOtpReset = () => {
+    setOtpPhase('idle');
+    setOtpError(null);
+    setOtpNonce((n) => n + 1);
   };
 
   // D20: one fresh pin for the backend's GEO matching. Permission
@@ -468,23 +496,19 @@ export default function GuardianScreen() {
                         ? `We sent a 6-digit code to ${guardian.phone}. Enter it below — it expires in 10 minutes.`
                         : `We will send a 6-digit code to ${guardian.phone}. Enter it below to prove this number is yours.`}
                     </Text>
-                    <TextInput
-                      style={[styles.input, styles.codeInput]}
-                      value={code}
-                      onChangeText={(t) => setCode(t.replace(/[^0-9]/g, '').slice(0, 6))}
-                      placeholder="6-digit code"
-                      placeholderTextColor={Theme.colors.onSurfaceVariant}
-                      keyboardType="number-pad"
-                      maxLength={6}
-                    />
-                    <GlowButton
-                      title={codeSent ? 'Verify code' : 'Send code'}
-                      onPress={codeSent ? handleVerify : () => handleRequestCode()}
-                      loading={busy}
-                      style={styles.button}
-                    />
-                    {codeSent && (
-                      <GlowButton title="Resend code" onPress={() => handleRequestCode()} variant="ghost" loading={busy} style={styles.button} />
+                    {codeSent ? (
+                      <OtpCubes
+                        phone={guardian.phone}
+                        phase={otpPhase}
+                        errorMessage={otpError}
+                        busy={busy}
+                        resetNonce={otpNonce}
+                        onCodeComplete={handleCodeComplete}
+                        onResend={() => handleRequestCode()}
+                        onReset={handleOtpReset}
+                      />
+                    ) : (
+                      <GlowButton title="Send code" onPress={() => handleRequestCode()} loading={busy} style={styles.button} />
                     )}
                   </>
                 )}
@@ -627,7 +651,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
-  codeInput: { textAlign: 'center', letterSpacing: 6, fontSize: 20, marginTop: 14 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
     borderWidth: 1,
