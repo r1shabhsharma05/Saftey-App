@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { AppState, Pressable, StyleSheet } from 'react-native';
 import Reanimated, { FadeOut } from 'react-native-reanimated';
 import { supabase } from '../utils/supabase';
-import { authenticateForUnlock, getBiometricCapability, isBiometricLockEnabled } from '../utils/biometricLock';
+import { authenticateForUnlock, backgroundedForMs, getBiometricCapability, isBiometricLockEnabled, noteBackgrounded, recentlyUnlocked } from '../utils/biometricLock';
 import BiometricLockScreen from '../components/BiometricLockScreen';
 import AnimatedLogo from '../components/AnimatedLogo';
 import AppDialogHost from '../components/ui/AppDialog';
@@ -117,6 +117,7 @@ export default function RootLayout() {
     let cancelled = false;
     void (async () => {
       if (!(await isBiometricLockEnabled())) return;
+      if (recentlyUnlocked()) return;
       const { hasHardware, isEnrolled } = await getBiometricCapability();
       if (!cancelled && hasHardware && isEnrolled) setLocked(true);
     })();
@@ -125,10 +126,20 @@ export default function RootLayout() {
     };
   }, [initialized, session]);
 
-  // Re-arm on foreground.
+  // Re-arm on foreground — but not on the 'active' event that fires
+  // when the system biometric prompt itself dismisses (that re-locked
+  // the app right after every successful unlock and looped the
+  // prompt), and not after a quick switch away (e.g. reading the OTP
+  // SMS): only a longer absence re-arms the lock.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'background' || state === 'inactive') {
+        noteBackgrounded();
+        return;
+      }
       if (state !== 'active' || !session) return;
+      if (recentlyUnlocked()) return;
+      if (backgroundedForMs() < 30000) return;
       void (async () => {
         if (!(await isBiometricLockEnabled())) return;
         const { hasHardware, isEnrolled } = await getBiometricCapability();
