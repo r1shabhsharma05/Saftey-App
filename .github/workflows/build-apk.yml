@@ -31,6 +31,7 @@ jobs:
           EXPO_PUBLIC_SUPABASE_URL=https://xkfrsjtfbylhhrvibmxk.supabase.co
           EXPO_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhrZnJzanRmYnlsaGhydmlibXhrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzODcwNDksImV4cCI6MjEwNzk2MzA0OX0.ypd-j8LROeCjqcTloC2qhUw73gJZA_Hd7fn6KtJSYPE
           EXPO_PUBLIC_API_SECRET=${{ secrets.EXPO_PUBLIC_API_SECRET }}
+          EXPO_PUBLIC_MAPBOX_TOKEN=${{ secrets.EXPO_PUBLIC_MAPBOX_TOKEN }}
           EOF
 
       - name: Install dependencies
