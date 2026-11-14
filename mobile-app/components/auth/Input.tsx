@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   TextInputProps,
   StyleProp,
   ViewStyle,
+  Pressable,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { AuthTheme } from '../../constants/auth-theme';
@@ -14,13 +15,16 @@ import { AuthTheme } from '../../constants/auth-theme';
 interface Props extends Omit<TextInputProps, 'style'> {
   icon: string;
   containerStyle?: StyleProp<ViewStyle>;
+  /** Show a show/hide eye on the right (password fields). */
+  secureToggle?: boolean;
 }
 
 /**
  * Floxly-style pill input: dark translucent rounded field
  * with a leading icon, like the reference login screen.
  */
-export default function AuthInput({ icon, containerStyle, ...rest }: Props) {
+export default function AuthInput({ icon, containerStyle, secureToggle, secureTextEntry, ...rest }: Props) {
+  const [hidden, setHidden] = useState(!!secureTextEntry);
   return (
     <View style={[styles.wrap, containerStyle]}>
       <MaterialCommunityIcons
@@ -32,8 +36,18 @@ export default function AuthInput({ icon, containerStyle, ...rest }: Props) {
       <TextInput
         style={styles.input}
         placeholderTextColor={AuthTheme.colors.pillPlaceholder}
+        secureTextEntry={secureToggle ? hidden : secureTextEntry}
         {...rest}
       />
+      {secureToggle ? (
+        <Pressable onPress={() => setHidden((h) => !h)} hitSlop={8} style={styles.eye}>
+          <MaterialCommunityIcons
+            name={hidden ? 'eye' : 'eye-off'}
+            size={20}
+            color="rgba(255,255,255,0.55)"
+          />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -61,6 +75,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     height: '100%',
   },
+  eye: { marginLeft: 8 },
   label: {
     color: AuthTheme.colors.subtext,
     fontFamily: AuthTheme.fonts.label,

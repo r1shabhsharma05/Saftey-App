@@ -15,13 +15,31 @@ interface Props {
   onPress: () => void;
   loading?: boolean;
   style?: StyleProp<ViewStyle>;
+  /** 'white' = the globe auth page's white submit button. */
+  variant?: 'gradient' | 'white';
 }
 
 /**
  * Floxly-style CTA: bright blue→cyan gradient pill with glow,
  * like the reference "Log In" / "Continue" buttons.
+ * variant="white" is the globe auth page's white submit button.
  */
-export default function AuthButton({ title, onPress, loading, style }: Props) {
+export default function AuthButton({ title, onPress, loading, style, variant = 'gradient' }: Props) {
+  if (variant === 'white') {
+    return (
+      <Pressable
+        onPress={onPress}
+        disabled={loading}
+        style={({ pressed }) => [styles.whiteTouch, pressed && styles.pressed, style]}
+      >
+        {loading ? (
+          <ActivityIndicator color="#000" />
+        ) : (
+          <Text style={styles.whiteTitle}>{title}</Text>
+        )}
+      </Pressable>
+    );
+  }
   return (
     <Pressable
       onPress={onPress}
@@ -64,5 +82,17 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontFamily: AuthTheme.fonts.title,
     fontSize: 17,
+  },
+  whiteTouch: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  whiteTitle: {
+    color: '#000',
+    fontFamily: AuthTheme.fonts.title,
+    fontSize: 16,
   },
 });
