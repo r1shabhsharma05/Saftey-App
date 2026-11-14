@@ -1,17 +1,12 @@
-import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity } from 'react-native';
+import React, { useMemo } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import Mapbox, { Camera, LineLayer, MapView, PointAnnotation, ShapeSource } from '@rnmapbox/maps';
 import { Theme } from '../constants/theme';
 import GlassCard from './ui/GlassCard';
 import SafetyBadge from './ui/SafetyBadge';
 import type { SafetyScore } from '../utils/escapeLogic';
-import {
-  fitRoute,
-  decimateCoordinates,
-  formatDuration,
-  formatRouteDistance,
-  type LngLat,
-} from '../utils/routeMath';
+import { formatDuration, formatRouteDistance, type LngLat } from '../utils/routeMath';
 
 interface Props {
   /** OSRM GeoJSON LineString coordinates: [lng, lat] pairs. */
@@ -28,12 +23,32 @@ interface Props {
 
 const MAP_HEIGHT = 220;
 
+// Mapbox — native SDK (@rnmapbox/maps), style streets-v12.
+// SECURITY: the public token is set from EXPO_PUBLIC_MAPBOX_TOKEN
+// (a config value, read at build time) via setAccessToken() — it is
+// NEVER in a URL, NEVER in git, and never in a log. The token IS
+// inside the built APK's JS bundle, which is expected for a public
+// (pk.*) token; what is forbidden is git, URLs, logs and chat.
+// Consequence: the map needs the native module, so it does NOT work
+// in Expo Go — test it in the APK (Gradle) build. No token → the map
+// area says so instead of rendering a broken map.
+//
+// Style note: the token has no styles:list scope, so the account's
+// styles could not be listed — no custom style could be verified.
+// streets-v12 (Mapbox.StyleURL.Street) is the fallback the brief
+// names. If Rishabh creates a custom style later, swap StyleURL
+// here to mapbox://styles/rishabh-tech820/<style-id>.
+const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? '';
+if (MAPBOX_TOKEN) {
+  Mapbox.setAccessToken(MAPBOX_TOKEN);
+}
+
 /**
- * D14 — in-app walking-route map. No map library: OSM raster tiles +
- * the OSRM polyline drawn as rotated Views, fitted to the route's own
- * bounding box (fixed viewport — the route IS the viewport). A tile
- * that fails to load simply leaves its patch of background: the
- * polyline, markers and ETA never depend on the tiles.
+ * D14 — in-app walking-route map on the Mapbox native SDK: the OSRM
+ * route as a GeoJSON LineString, camera fitted to the route's own
+ * bounding box (fixed viewport — the route IS the viewport), start
+ * dot + destination pin, Mapbox attribution + logo drawn by the SDK.
+ * The polyline, markers and ETA never depend on the tiles loading.
  */
 export default function RouteMap({
   coordinates,
@@ -44,35 +59,24 @@ export default function RouteMap({
   safety,
   onOpenExternal,
 }: Props) {
-  const [width, setWidth] = useState(0);
-  const fitted = useMemo(
-    () => (width > 0 ? fitRoute(decimateCoordinates(coordinates), width, MAP_HEIGHT) : null),
-    [coordinates, width]
-  );
-  const points = fitted?.points ?? [];
-  const tiles = fitted?.tiles ?? [];
-  const minTileX = tiles.length > 0 ? Math.min(...tiles.map((t) => t.x)) : 0;
-  const minTileY = tiles.length > 0 ? Math.min(...tiles.map((t) => t.y)) : 0;
-
-  const segments: { left: number; top: number; length: number; angle: number }[] = [];
-  for (let i = 0; i + 1 < points.length; i++) {
-    const a = points[i];
-    const b = points[i + 1];
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const length = Math.hypot(dx, dy);
-    if (length < 0.5) continue;
-    // A horizontal bar centered on the segment midpoint, rotated to the
-    // segment angle: rotating about the center keeps it on both endpoints.
-    segments.push({
-      left: (a.x + b.x) / 2 - length / 2,
-      top: (a.y + b.y) / 2,
-      length,
-      angle: (Math.atan2(dy, dx) * 180) / Math.PI,
-    });
-  }
-  const start = points[0];
-  const end = points[points.length - 1];
+  const route = useMemo(() => {
+    if (coordinates.length < 2) return null;
+    let minLng = Infinity;
+    let maxLng = -Infinity;
+    let minLat = Infinity;
+    let maxLat = -Infinity;
+    for (const [lng, lat] of coordinates) {
+      minLng = Math.min(minLng, lng);
+      maxLng = Math.max(maxLng, lng);
+      minLat = Math.min(minLat, lat);
+      maxLat = Math.max(maxLat, lat);
+    }
+    return {
+      bounds: { ne: [maxLng, maxLat] as [number, number], sw: [minLng, minLat] as [number, number] },
+      start: coordinates[0],
+      end: coordinates[coordinates.length - 1],
+    };
+  }, [coordinates]);
 
   return (
     <GlassCard style={styles.card} intensity={16}>
@@ -96,49 +100,63 @@ export default function RouteMap({
 
       <View
         style={styles.map}
-        onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
         accessibilityRole="image"
         accessibilityLabel={`Walking route to ${destinationName}, ${formatRouteDistance(distanceM)}, about ${formatDuration(durationS)}`}
       >
-        {fitted &&
-          tiles.map((tile) => (
-            <Image
-              key={`${tile.x}/${tile.y}`}
-              source={{ uri: tile.url }}
-              style={[
-                styles.tile,
-                {
-                  left: fitted.origin.x + (tile.x - minTileX) * 256,
-                  top: fitted.origin.y + (tile.y - minTileY) * 256,
-                },
-              ]}
-              resizeMode="cover"
+        {MAPBOX_TOKEN && route ? (
+          <MapView style={styles.mapView} styleURL={Mapbox.StyleURL.Street}>
+            <Camera
+              bounds={route.bounds}
+              padding={{ paddingLeft: 28, paddingRight: 28, paddingTop: 28, paddingBottom: 28 }}
+              animationDuration={0}
             />
-          ))}
-        {segments.map((s, i) => (
-          <React.Fragment key={i}>
-            <View
-              style={[
-                styles.segmentHalo,
-                { left: s.left, top: s.top - 4, width: s.length, transform: [{ rotate: `${s.angle}deg` }] },
-              ]}
-            />
-            <View
-              style={[
-                styles.segment,
-                { left: s.left, top: s.top - 2, width: s.length, transform: [{ rotate: `${s.angle}deg` }] },
-              ]}
-            />
-          </React.Fragment>
-        ))}
-        {start && <View style={[styles.startDot, { left: start.x - 7, top: start.y - 7 }]} />}
-        {end && (
-          <MaterialCommunityIcons
-            name="map-marker"
-            size={30}
-            color={Theme.colors.success}
-            style={[styles.endPin, { left: end.x - 15, top: end.y - 29 }]}
-          />
+            <ShapeSource
+              id="route"
+              shape={{
+                type: 'Feature',
+                properties: {},
+                geometry: { type: 'LineString', coordinates },
+              }}
+            >
+              <LineLayer
+                id="route-halo"
+                style={{
+                  lineColor: 'rgba(255,255,255,0.85)',
+                  lineWidth: 8,
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                }}
+              />
+              <LineLayer
+                id="route-line"
+                style={{
+                  lineColor: Theme.colors.primaryContainer,
+                  lineWidth: 4,
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                }}
+              />
+            </ShapeSource>
+            <PointAnnotation id="start" coordinate={route.start}>
+              <View style={styles.startDot} />
+            </PointAnnotation>
+            <PointAnnotation id="end" coordinate={route.end} anchor={{ x: 0.5, y: 1 }}>
+              <MaterialCommunityIcons
+                name="map-marker"
+                size={30}
+                color={Theme.colors.success}
+                style={styles.endPin}
+              />
+            </PointAnnotation>
+          </MapView>
+        ) : (
+          <View style={styles.mapFallback}>
+            <Text style={styles.mapFallbackText}>
+              {!MAPBOX_TOKEN
+                ? 'Map unavailable — Mapbox token not configured.'
+                : 'No route to show.'}
+            </Text>
+          </View>
         )}
       </View>
 
@@ -172,25 +190,15 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: Theme.colors.surfaceContainerLow,
   },
-  tile: { position: 'absolute', width: 256, height: 256 },
-  segmentHalo: {
-    position: 'absolute',
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: 'rgba(255,255,255,0.85)',
-  },
-  segment: {
-    position: 'absolute',
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: Theme.colors.primaryContainer,
-    shadowColor: Theme.colors.primaryContainer,
-    shadowOpacity: 0.6,
-    shadowRadius: 6,
-    elevation: 3,
+  mapView: { flex: 1 },
+  mapFallback: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 16 },
+  mapFallbackText: {
+    fontFamily: Theme.fonts.body,
+    fontSize: 12,
+    color: Theme.colors.onSurfaceVariant,
+    textAlign: 'center',
   },
   startDot: {
-    position: 'absolute',
     width: 14,
     height: 14,
     borderRadius: 7,
@@ -198,7 +206,7 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#ffffff',
   },
-  endPin: { position: 'absolute', textShadowColor: 'rgba(0,0,0,0.45)', textShadowRadius: 4 },
+  endPin: { textShadowColor: 'rgba(0,0,0,0.45)', textShadowRadius: 4 },
   external: {
     flexDirection: 'row',
     alignItems: 'center',
