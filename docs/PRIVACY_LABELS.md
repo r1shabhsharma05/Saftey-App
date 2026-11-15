@@ -13,7 +13,8 @@ answers must always match this inventory.
 | Name (first + last) | Sign-up / Google sign-in, `profiles.first_name/last_name` | Supabase `profiles` | Shown on SOS alerts as the sender's name |
 | Email | Sign-up / Google sign-in, `profiles.email` | Supabase `profiles`; Supabase Auth | Used for login, password reset, login-by-phone email lookup |
 | Phone number | Sign-up / login, `profiles.phone` | Supabase `profiles` | E.164-normalised; login + forgot-password lookup key |
-| Address | Not collected — nothing writes it; display card removed | Supabase `profiles` (column exists, always empty) | **H6 CLOSED:** no address is collected |
+| Date of birth | Sign-up / sign-in DOB prompt, `user_metadata.date_of_birth` | Supabase Auth `user_metadata` only — never in `profiles` | H15/H17: collected to enforce the 13+ age gate; not shared with anyone |
+| Address | Not collected — nothing writes it; display removed; column dropped by migration `20261116020000_drop_profiles_address.sql` | — (column no longer exists) | **H6 CLOSED:** no address is collected |
 | Profile photo | Gallery pick, `profiles.avatar_url` (storage path only) | Supabase private `avatars` bucket, signed URLs | 5 MB cap, JPEG/PNG/WebP/GIF verified by bytes |
 | Public user ID (`unique_id`, `SL-XXXXXXXX`) | Generated at profile creation | Supabase `profiles` | Display ID only; random since run-2 4.2 (CSPRNG, not `Math.random`) |
 | Precise location | SOS alert + started journeys, incl. journey trail | Supabase `sos_alerts` / `journeys`; Telegram + SMS to chosen contacts; Mapbox / Overpass / OSRM to fetch map data | Only during SOS or a journey the user starts. No background tracking |
@@ -97,7 +98,8 @@ Play Console (they are his submission, not Muse's).
 | Personal info — Name | Collected (account), not shared except with SOS recipients the user chose |
 | Personal info — Email | Collected (account), not shared |
 | Personal info — Phone number | Collected (account + login), shared with chosen SOS recipients via SMS/Telegram only |
-| Personal info — Address | Not collected (field exists in schema but nothing writes it; display removed) |
+| Personal info — Date of birth | Collected (account, age gate), not shared — stored in Supabase Auth `user_metadata` only, never in `profiles` |
+| Personal info — Address | Not collected (column dropped by migration `20261116020000_drop_profiles_address.sql`; nothing ever wrote it) |
 | Personal info — User IDs | Collected (Supabase user id + `SL-` display id), not shared |
 | Photos | Collected (profile photo), not shared — private bucket, owner-only signed URLs |
 | Location — Precise location | Collected (SOS + journeys only), shared with chosen contacts/guardians and map providers to fetch map data |
@@ -111,7 +113,7 @@ Play Console (they are his submission, not Muse's).
 | Data encrypted in transit? | Yes — HTTPS everywhere; Supabase, Gnani, Telegram, httpSMS all over TLS |
 | Data deletable? | Yes — in-app **Profile → Delete account** wipes profile, contacts, guardians, journeys, SOS alerts, avatar. Copies already sent (SMS/Telegram) and Gnani-held audio cannot be recalled — stated in the privacy policy |
 | Data collected for advertising / tracking? | No — no ads, no analytics, no tracking SDKs (§2) |
-| Children | Not intended for under-18 without verifiable parental consent (DPDP Act) — stated in the privacy policy |
+| Children | 13 and over only — the age gate is enforced at sign-up and sign-in; under-13 accounts cannot be created or used. There is no parental-consent flow, because under-13s are not admitted at all — stated in the privacy policy |
 
 ## 5. App Store — privacy label answers
 
