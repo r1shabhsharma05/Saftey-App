@@ -33,12 +33,17 @@ const fingerprint = (presentedKey) => {
 // audit must never delay or fail the request path it observes.
 let writeSink = (line) => process.stdout.write(line + "\n");
 
-const audit = (action, { actorKey, ip, meta } = {}) => {
+// When `userId` is passed (a verified JWT user id), the actor IS
+// that id — the fingerprint fallback only applies to unauthenticated
+// callers, where no user id exists. Run-3 fix round 3 (F-10.5a):
+// the admin read paths pass req.user.id so the trail names its
+// reader instead of recording actor "none".
+const audit = (action, { actorKey, userId, ip, meta } = {}) => {
   const entry = {
     ts: new Date().toISOString(),
     audit: true,
     action,
-    actor: fingerprint(actorKey),
+    actor: typeof userId === "string" && userId ? userId : fingerprint(actorKey),
     ...(ip ? { ip } : {}),
     ...(meta ? { meta } : {}),
   };
