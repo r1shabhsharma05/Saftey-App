@@ -13,8 +13,8 @@
 // so cross-site browser calls are blocked while native/curl callers —
 // which send no Origin — keep working untouched.
 //
-// x-api-key is allowlisted as a header: without it, browsers refuse to
-// send the API key on cross-origin requests (preflight rejects it).
+// Run-3 fix round 2: the shared x-api-key header is gone (1.1) —
+// browsers only need Content-Type + Authorization preflighted now.
 const cors = require("cors");
 
 const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || "")
@@ -26,6 +26,6 @@ module.exports = cors({
   // `false` disables CORS entirely — no Access-Control-* headers emitted.
   origin: allowedOrigins.length > 0 ? allowedOrigins : false,
   methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "x-api-key"],
+  allowedHeaders: ["Content-Type", "Authorization"],
   maxAge: 600,
 });

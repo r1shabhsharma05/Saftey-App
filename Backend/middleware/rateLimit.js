@@ -143,13 +143,23 @@ const systemLimiter = rateLimit({
 // invalid/missing phone falls back to a per-IP bucket (via the
 // library's ipKeyGenerator helper — a raw req.ip in a custom
 // keyGenerator is rejected by express-rate-limit's IPv6 check).
+//
+// Run-3 fix round 2: the guardian verify route carries no phone in
+// its body, so it falls back to the guardian id instead — one
+// guardian IS one phone, so per-guardian-id is the per-phone bucket
+// for that route (a shared per-IP bucket would collapse every
+// guardian's guesses into one allowance and lock out unrelated
+// guardians behind one NAT IP).
 const phoneCodeLimiter = rateLimit({
   ...baseOptions,
   windowMs: 60 * 1000,
   limit: 5,
   keyGenerator: (req) => {
     const phone = normalizePhone(req.body?.phone);
-    return phone ? `phone:${phone}` : `phone:invalid:${ipKeyGenerator(req)}`;
+    if (phone) return `phone:${phone}`;
+    const guardianId = typeof req.params?.id === "string" ? req.params.id : "";
+    if (guardianId) return `guardian:${guardianId}`;
+    return `phone:invalid:${ipKeyGenerator(req)}`;
   },
   ...upstashStore("phone-code"),
 });

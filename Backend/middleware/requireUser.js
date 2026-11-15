@@ -8,15 +8,17 @@
 // is a plain 401; an unconfigured backend cannot verify anyone, so
 // it 401s too (fail closed).
 //
-// requireUserOrKey: the same JWT check, with the shared x-api-key as
-// a fallback for old APKs. shortcut: fallback for APK ≤ #12, REMOVE
-// at Day-30 re-ship — APK #12 cannot send a JWT, and the Day-24
-// drill needs it working. Every shared-key-only authentication is
-// audit-logged (auth.shared_key_fallback). Admin + delete-account
-// routes use requireUser (JWT ONLY, no fallback).
+// Run-3 fix round 2 (1.1/2.1/3.1): the shared-key fallback is GONE.
+// requireUserOrKey and middleware/requireApiKey.js are deleted —
+// every private route is JWT-only now. Old APKs (≤ #12) that cannot
+// send a JWT can no longer call the backend at all; they must update
+// to the Day-30 re-ship. The embedded API_SECRET in those APKs is
+// retired by rotating API_SECRET at Day-30 activation (his step).
+// QStash server-to-server callbacks never used the fallback — they
+// carry their own HMAC job tokens (services/escalation.js,
+// services/delivery.js, services/journeyEscalation.js) and are
+// untouched by this change.
 const { verifyUserToken } = require("../services/supabaseAuth");
-const requireApiKey = require("./requireApiKey");
-const { audit } = require("../services/audit");
 
 const bearerToken = (req) => {
   const h = req.header("authorization") || "";
@@ -29,39 +31,24 @@ const requireUser = async (req, res, next) => {
   if (!token) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
-  const { ok, user } = await verifyUserToken(token);
+  const { ok, user, lastSignInAt, tokenIat } = await verifyUserToken(token);
   if (!ok) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
   req.user = user;
+  // Session-freshness signals for re-auth-gated actions (DELETE
+  // /auth/account, 12.3). req.user stays exactly { id, email }.
+  req.authSession = { lastSignInAt: lastSignInAt || null, tokenIat: tokenIat || null };
   return next();
 };
 
-const requireUserOrKey = async (req, res, next) => {
-  const token = bearerToken(req);
-  if (token) {
-    const { ok, user } = await verifyUserToken(token);
-    if (ok) {
-      req.user = user;
-      return next();
-    }
-    // An invalid/expired JWT falls through to the shared-key check
-    // instead of 401ing outright — an old APK sends no JWT at all,
-    // and a caller carrying the key must not be locked out by a stale
-    // token. A caller with neither a valid JWT nor the key still 401s
-    // below, via requireApiKey.
-  }
-  return requireApiKey(req, res, () => {
-    audit("auth.shared_key_fallback", { ip: req.ip, meta: { path: req.path } });
-    return next();
-  });
-};
-
 // Ownership helper (3.1): a JWT user may touch a record only when
-// the record's owner matches — or when the record predates ownership
-// (ownerId null, legacy rows). A shared-key-only caller (no req.user)
-// is the compat path and is not ownership-checked here; the audit
-// line in requireUserOrKey records that it happened.
-const owns = (req, ownerId) => !req.user || !ownerId || req.user.id === ownerId;
+// the record's owner matches. A missing/null ownerId now DENIES —
+// legacy ownerless rows are inaccessible to everyone (they predate
+// ownership and cannot be attributed to any user), instead of being
+// open to any caller as before. There is no longer a shared-key-only
+// caller to exempt: requireUser guarantees req.user is set.
+const owns = (req, ownerId) =>
+  Boolean(req?.user?.id) && typeof ownerId === "string" && ownerId.length > 0 && req.user.id === ownerId;
 
-module.exports = { requireUser, requireUserOrKey, owns };
+module.exports = { requireUser, owns };
