@@ -44,8 +44,18 @@ const buildHtml = (sitekey: string): string => `<!DOCTYPE html>
 <div id="cf-turnstile"></div>
 <script>
 function post(msg){ window.ReactNativeWebView.postMessage(JSON.stringify(msg)); }
+var renderAttempts = 0;
 function renderWidget(){
-  if (!window.turnstile) { setTimeout(renderWidget, 200); return; }
+  // O-11.2: capped retry — the old code retried every 200 ms
+  // forever when the Turnstile script never loaded. After ~25 tries
+  // (~5 s) give up and report an error so the parent can show a
+  // clear error state instead of spinning silently.
+  if (!window.turnstile) {
+    renderAttempts++;
+    if (renderAttempts > 25) { post({ type: 'error' }); return; }
+    setTimeout(renderWidget, 200);
+    return;
+  }
   window.turnstile.render('#cf-turnstile', {
     sitekey: ${JSON.stringify(sitekey)},
     callback: function(token){ post({ type: 'token', token: token }); },
