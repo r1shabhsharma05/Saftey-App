@@ -1559,7 +1559,7 @@ export default function TacticalDashboard() {
               <Ionicons name="location" size={20} color={Theme.colors.primary} />
               <View style={styles.cardTitleBox}>
                 <Text style={styles.cardTitle}>Live Location</Text>
-                <Text style={styles.cardSubTitle}>{userData?.address || 'Current Zone'}</Text>
+                <Text style={styles.cardSubTitle}>Current Zone</Text>
               </View>
               <StatusPill label={isMoving ? 'Moving' : 'Steady'} color={isMoving ? Theme.colors.warning : Theme.colors.primaryContainer} />
             </View>
