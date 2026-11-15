@@ -29,8 +29,10 @@ globalThis.fetch = async (url, opts) => {
 };
 
 const app = require("../server");
+const { setupJwtAuth, teardownJwtAuth, bearer } = require("./jwtAuth");
+setupJwtAuth();
 
-const KEY = "voice-route-secret";
+const KEY = "test-token";
 let server;
 let base;
 
@@ -49,7 +51,7 @@ const post = (path, body, key, contentType) =>
     method: "POST",
     headers: {
       ...(contentType ? { "Content-Type": contentType } : {}),
-      ...(key ? { "x-api-key": key } : {}),
+      ...(key ? { Authorization: bearer(key) } : {}),
     },
     body,
   });

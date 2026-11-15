@@ -35,6 +35,8 @@ for (const v of [
 }
 
 const app = require("../server");
+const { setupJwtAuth, teardownJwtAuth, bearer } = require("./jwtAuth");
+setupJwtAuth();
 const alertStore = require("../services/alertStore");
 const guardianStore = require("../services/guardianStore");
 const { createAlert, transition } = require("../services/alertLifecycle");
@@ -44,8 +46,8 @@ const { audit, _setWriteSink } = require("../services/audit");
 const { _setDbTransport } = require("../services/supabaseDb");
 const { _setAuthTransport } = require("../services/supabaseAuth");
 
-const KEY = "d23-route-secret";
-const HEADERS = { "Content-Type": "application/json", "x-api-key": KEY };
+const KEY = "test-token";
+const HEADERS = { "Content-Type": "application/json", Authorization: bearer() };
 const IP_ACTOR = "ip:127.0.0.1";
 
 let server;
@@ -80,7 +82,7 @@ const get = (path, headers = HEADERS) =>
   }));
 
 const seedDelivered = () => {
-  const alert = createAlert({ contactsCount: 0 });
+  const alert = createAlert({ contactsCount: 0, ownerId: "test-user" });
   transition(alert, "dispatching");
   transition(alert, "delivered");
   alertStore.save(alert);
@@ -180,8 +182,8 @@ test("GET /admin/audit: no JWT and no key → 401", async () => {
   assert.equal(res.status, 401);
 });
 
-test("GET /admin/audit: shared key alone → 401 (JWT only, run-2 3.3)", async () => {
-  const res = await get("/admin/audit");
+test("GET /admin/audit: bad JWT → 401 (JWT only, run-2 3.3; no shared-key fallback)", async () => {
+  const res = await get("/admin/audit", { ...HEADERS, Authorization: bearer("wrong") });
   assert.equal(res.status, 401);
 });
 

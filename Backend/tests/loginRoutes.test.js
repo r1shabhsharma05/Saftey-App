@@ -89,7 +89,7 @@ beforeEach(() => {
   _setAuthTransport(async (call) => {
     authCalls.push(call);
     if (call.url.includes("/auth/v1/user")) {
-      return { status: 200, data: { id: "user-1", email: "ramesh@example.com" } };
+      return { status: 200, data: { id: "user-1", email: "ramesh@example.com", last_sign_in_at: new Date().toISOString() } };
     }
     return { status: 200, data: {} };
   });
@@ -293,7 +293,7 @@ test("DELETE /auth/account: JWT → deletes auth user + wipes rows + avatar", as
   _setAuthTransport(async (call) => {
     authCalls.push(call);
     if (call.url.includes("/auth/v1/user")) {
-      return { status: 200, data: { id: "user-1", email: "ramesh@example.com" } };
+      return { status: 200, data: { id: "user-1", email: "ramesh@example.com", last_sign_in_at: new Date().toISOString() } };
     }
     if (call.url.includes("/auth/v1/admin/users/user-1")) {
       return { status: 204, data: null };
@@ -307,8 +307,86 @@ test("DELETE /auth/account: JWT → deletes auth user + wipes rows + avatar", as
   assert.equal(res.status, 200);
   assert.equal(res.body.success, true);
   const urls = dbCalls.map((c) => `${c.method} ${c.url}`);
-  for (const table of ["profiles", "emergency_contacts", "guardians", "journeys", "sos_alerts", "signup_codes"]) {
+  for (const table of ["profiles", "emergency_contacts", "guardians", "journeys", "sos_alerts", "signup_codes", "login_codes", "gnani_daily_usage"]) {
     assert.ok(urls.some((u) => u.startsWith("DELETE") && u.includes(`/rest/v1/${table}?`)), table);
   }
   assert.ok(authCalls.some((c) => c.url.includes("/storage/v1/object/avatars/user-1/avatar.jpg")));
+});
+
+// Run-3 fix round 2 (12.3): session freshness — a stale session
+// (signed in > 15 min ago) must 401 REAUTH_REQUIRED, and a session
+// with no freshness signal at all fails closed the same way.
+test("DELETE /auth/account: stale session → 401 REAUTH_REQUIRED; no freshness signal → 401", async () => {
+  profileRows = [{ ...ROW, phone: "+919876543210" }];
+  _setAuthTransport(async (call) => {
+    if (call.url.includes("/auth/v1/user")) {
+      return { status: 200, data: { id: "user-1", email: "ramesh@example.com", last_sign_in_at: new Date(Date.now() - 60 * 60 * 1000).toISOString() } };
+    }
+    return { status: 200, data: {} };
+  });
+  const stale = await del("/auth/account", { ...PLAIN, Authorization: "Bearer test-token" });
+  assert.equal(stale.status, 401);
+  assert.equal(stale.body.error, "REAUTH_REQUIRED");
+  _setAuthTransport(async (call) => {
+    if (call.url.includes("/auth/v1/user")) {
+      return { status: 200, data: { id: "user-1", email: "ramesh@example.com" } };
+    }
+    return { status: 200, data: {} };
+  });
+  const unknown = await del("/auth/account", { ...PLAIN, Authorization: "Bearer test-token" });
+  assert.equal(unknown.status, 401);
+  assert.equal(unknown.body.error, "REAUTH_REQUIRED");
+});
+
+// Run-3 fix round 2 (12.3): a failed table wipe is an honest 502
+// delete-partial naming the failed tables — never { success: true }.
+test("DELETE /auth/account: one wipe failing → 502 delete-partial with failed tables", async () => {
+  profileRows = [{ ...ROW, phone: "+919876543210" }];
+  _setDbTransport(async (call) => {
+    dbCalls.push(call);
+    if (call.method === "DELETE" && call.url.includes("/rest/v1/guardians?")) {
+      throw new Error("guardians table down");
+    }
+    if (call.method === "PATCH") return { data: [{ id: "consumed" }] };
+    if (call.method === "GET" && call.url.includes("/profiles?")) return { data: profileRows };
+    if (call.method === "GET") return { data: [] };
+    return { data: null };
+  });
+  const res = await del("/auth/account", { ...PLAIN, Authorization: "Bearer test-token" });
+  assert.equal(res.status, 502);
+  assert.equal(res.body.success, false);
+  assert.equal(res.body.error, "delete-partial");
+  assert.deepEqual(res.body.failed, ["guardians"]);
+});
+
+// Run-3 fix round 2 (12.3): in-memory alert/journey/guardian rows
+// for the user are wiped by delete-account (deleteByOwner).
+test("DELETE /auth/account: in-memory rows for the user are gone afterwards", async () => {
+  const alertStore = require("../services/alertStore");
+  const journeyStore = require("../services/journeyStore");
+  const guardianStore = require("../services/guardianStore");
+  const { createAlert } = require("../services/alertLifecycle");
+  const { createJourney } = require("../services/journey");
+  const { createGuardian } = require("../services/guardian");
+  profileRows = [{ ...ROW, phone: "+919876543210" }];
+  alertStore._clearMemory();
+  journeyStore._clearMemory();
+  guardianStore._clearMemory();
+  const alert = createAlert({ contactsCount: 0, lat: 1, lng: 1, ownerId: "user-1" });
+  alertStore.save(alert);
+  const journey = createJourney({ originLat: 1, originLng: 1, destLat: 2, destLng: 2, destinationLabel: "Home", expectedArrivalAt: new Date(Date.now() + 3600000).toISOString(), userName: "R", ownerId: "user-1", contacts: [] });
+  journeyStore.save(journey);
+  const guardian = createGuardian({ userId: "user-1", name: "G", phone: "+919876543211", role: "family" });
+  guardianStore.save(guardian);
+  assert.equal(alertStore._has(alert.id), true);
+  assert.equal(journeyStore._has(journey.id), true);
+  assert.equal(guardianStore._has(guardian.id), true);
+  const res = await del("/auth/account", { ...PLAIN, Authorization: "Bearer test-token" });
+  assert.equal(res.status, 200);
+  assert.equal(alertStore._has(alert.id), false);
+  assert.equal(journeyStore._has(journey.id), false);
+  assert.equal(guardianStore._has(guardian.id), false);
+  alertStore._clearMemory();
+  journeyStore._clearMemory();
+  guardianStore._clearMemory();
 });

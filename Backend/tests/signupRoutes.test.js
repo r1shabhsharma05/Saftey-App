@@ -41,14 +41,22 @@ for (const v of [
 }
 
 const app = require("../server");
+const { setupJwtAuth, teardownJwtAuth, bearer } = require("./jwtAuth");
+setupJwtAuth();
 const signupCode = require("../services/signupCode");
 const guardianStore = require("../services/guardianStore");
 const { createGuardian, issueCode } = require("../services/guardian");
 
-const KEY = "signup-test-secret";
-const HEADERS = { "Content-Type": "application/json", "x-api-key": KEY };
+const KEY = "test-token";
+const HEADERS = { "Content-Type": "application/json", Authorization: bearer() };
 const PLAIN = { "Content-Type": "application/json" };
 const PHONE = "+919876543210";
+// Run-3 fix round 2: POST /auth/signup/verify-code now carries
+// phoneCodeLimiter (5/min per phone), so verify-heavy tests each
+// use their own phone — otherwise the shared PHONE's bucket is
+// spent by earlier tests in this file and later verifies 429.
+let freshPhoneN = 0;
+const freshPhone = () => `+919000000${String(100 + freshPhoneN++)}`;
 
 let server;
 let base;
@@ -161,8 +169,9 @@ test("POST /auth/signup/request-code: 4th code in an hour → indistinguishable 
 });
 
 test("POST /auth/signup/verify-code: issued code → 200 verified + proof token; response carries no code or hash", async () => {
-  const code = await issueSeam();
-  const res = await verifyCode(PHONE, code);
+  const phone = freshPhone();
+  const code = await issueSeam(phone);
+  const res = await verifyCode(phone, code);
   assert.equal(res.status, 200);
   assert.equal(res.body.success, true);
   assert.equal(res.body.verified, true);
@@ -170,41 +179,45 @@ test("POST /auth/signup/verify-code: issued code → 200 verified + proof token;
   assert.match(res.body.proof, /^\d+\.[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(res.body).includes(code), false);
   // A second verify finds no pending code — same generic 400 (R1i).
-  const again = await verifyCode(PHONE, code);
+  const again = await verifyCode(phone, code);
   assert.equal(again.status, 400);
   assert.equal(again.body.error, "Invalid or expired code");
 });
 
 test("POST /auth/signup/verify-code: every failure is one generic 400 (R1i)", async () => {
-  const code = await issueSeam();
+  const phone = freshPhone();
+  const code = await issueSeam(phone);
   const wrong = code === "000000" ? "000001" : "000000";
   // Wrong guesses, the 5th (killing) guess, and a late correct guess
   // after the kill all read exactly the same — no attempts-left count,
   // no killed/expired distinction.
   for (let i = 0; i < 5; i++) {
-    const res = await verifyCode(PHONE, wrong);
+    const res = await verifyCode(phone, wrong);
     assert.equal(res.status, 400);
     assert.equal(res.body.error, "Invalid or expired code");
   }
-  const late = await verifyCode(PHONE, code);
-  assert.equal(late.status, 400);
-  assert.equal(late.body.error, "Invalid or expired code");
+  // The 6th attempt inside the same minute hits the per-phone
+  // phoneCodeLimiter (5/min) — 429, not another 400. The code is
+  // already killed by then, so nothing is lost by refusing it.
+  const late = await verifyCode(phone, code);
+  assert.equal(late.status, 429);
 });
 
 test("POST /auth/signup/verify-code: no pending code → 400 generic; bad phone / code shape → 400", async () => {
-  const noCode = await verifyCode(PHONE, "123456");
+  const phone = freshPhone();
+  const noCode = await verifyCode(phone, "123456");
   assert.equal(noCode.status, 400);
   assert.equal(noCode.body.error, "Invalid or expired code");
   assert.equal((await verifyCode("junk", "123456")).status, 400);
-  assert.equal((await verifyCode(PHONE, "12345")).status, 400);
-  assert.equal((await verifyCode(PHONE, 123456)).status, 400);
+  assert.equal((await verifyCode(phone, "12345")).status, 400);
+  assert.equal((await verifyCode(phone, 123456)).status, 400);
 });
 
 test("Namespaces are separate: guardian code cannot verify a signup, signup code cannot verify a guardian", async () => {
   const guardianPhone = "+919876543211";
   const signupPhone = "+919876543212";
   // Guardian side: a real guardian record with its own issued code.
-  const guardian = createGuardian({ userId: "user-9", name: "N", phone: guardianPhone, role: "family" });
+  const guardian = createGuardian({ userId: "test-user", name: "N", phone: guardianPhone, role: "family" });
   const { code: guardianCode } = issueCode(guardian);
   guardianStore.save(guardian);
   // The guardian code is worthless to the signup endpoint.
@@ -216,7 +229,7 @@ test("Namespaces are separate: guardian code cannot verify a signup, signup code
   assert.equal(ownGuardian.status, 200);
   // Signup side: a signup code is worthless to the guardian endpoint.
   const signupCodeValue = await issueSeam(signupPhone);
-  const other = createGuardian({ userId: "user-10", name: "M", phone: signupPhone, role: "friend" });
+  const other = createGuardian({ userId: "test-user", name: "M", phone: signupPhone, role: "friend" });
   guardianStore.save(other);
   const crossGuardian = await post(`/guardians/${other.id}/verify`, { code: signupCodeValue }, HEADERS);
   assert.equal(crossGuardian.status, 400);
@@ -262,11 +275,12 @@ test("POST /auth/signup/verify-code: code survives a memory clear (cross-instanc
   const { transport } = fakeDb();
   _setDbTransport(transport);
   try {
-    const code = await issueSeam();
-    assert.equal(signupCode._hasPending(PHONE), true);
+    const phone = freshPhone();
+    const code = await issueSeam(phone);
+    assert.equal(signupCode._hasPending(phone), true);
     signupCode._clearMemory();
-    assert.equal(signupCode._hasPending(PHONE), false);
-    const res = await verifyCode(PHONE, code);
+    assert.equal(signupCode._hasPending(phone), false);
+    const res = await verifyCode(phone, code);
     assert.equal(res.status, 200);
     assert.equal(res.body.verified, true);
   } finally {

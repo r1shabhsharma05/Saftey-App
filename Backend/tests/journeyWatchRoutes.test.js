@@ -36,13 +36,15 @@ for (const v of [
 }
 
 const app = require("../server");
+const { setupJwtAuth, teardownJwtAuth, bearer } = require("./jwtAuth");
+setupJwtAuth();
 const journeyStore = require("../services/journeyStore");
 const { journeyToken } = require("../services/journeyView");
 const { journeyEscalationToken } = require("../services/journeyEscalation");
 
-const KEY = "d17-route-secret";
+const KEY = "test-token";
 const UNKNOWN = "00000000-0000-0000-0000-000000000000";
-const HEADERS = { "Content-Type": "application/json", "x-api-key": KEY };
+const HEADERS = { "Content-Type": "application/json", Authorization: bearer() };
 const NOKEY = { "Content-Type": "application/json" };
 
 let server;

@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const {
   LOW_BATTERY_THRESHOLD,
   FINAL_BATTERY_THRESHOLD,
+  REARM_LEVEL,
   decideBatteryAlert,
   isBatteryLevelInBand,
   buildBatteryMessage,
@@ -13,6 +14,20 @@ const {
 test("thresholds are the plan's 15% / 5% values", () => {
   assert.equal(LOW_BATTERY_THRESHOLD, 15);
   assert.equal(FINAL_BATTERY_THRESHOLD, 5);
+});
+
+// Run-3 fix round 2 (11.3): battery.js imports the single source
+// of truth (services/batteryThresholds.js) — the values must agree,
+// and the mirror file the mobile worker owns must carry the same
+// three numbers (LOW=15, FINAL=5, REARM=20).
+test("thresholds come from the single source of truth (batteryThresholds.js)", () => {
+  const { LOW, FINAL, REARM } = require("../services/batteryThresholds");
+  assert.equal(LOW, 15);
+  assert.equal(FINAL, 5);
+  assert.equal(REARM, 20);
+  assert.equal(LOW_BATTERY_THRESHOLD, LOW);
+  assert.equal(FINAL_BATTERY_THRESHOLD, FINAL);
+  assert.equal(REARM_LEVEL, REARM);
 });
 
 test("decide: discharging at 15% with no alert → low; at 16% → nothing", () => {

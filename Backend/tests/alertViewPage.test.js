@@ -28,8 +28,10 @@ const { test, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 
 const app = require("../server");
+const { setupJwtAuth, teardownJwtAuth, bearer } = require("./jwtAuth");
+setupJwtAuth();
 
-const KEY = "d9-page-secret";
+const KEY = "test-token";
 let server;
 let base;
 
@@ -46,7 +48,7 @@ after(async () => {
 test("SOS response carries a viewUrl that serves the live page", async () => {
   const res = await fetch(`${base}/alert`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": KEY },
+    headers: { "Content-Type": "application/json", Authorization: bearer() },
     body: JSON.stringify({ lat: 28.6139, lng: 77.209, contacts: [] }),
   });
   // All channels unconfigured → 502, but the alert + link still exist.
@@ -71,7 +73,7 @@ test("close: delivered alert closes, then view/location/ack are 410", async () =
   const { createAlert, transition } = require("../services/alertLifecycle");
   const alertStore = require("../services/alertStore");
   const { viewToken } = require("../services/alertView");
-  const alert = createAlert({ contactsCount: 0, lat: 28.6139, lng: 77.209 });
+  const alert = createAlert({ contactsCount: 0, lat: 28.6139, lng: 77.209, ownerId: "test-user" });
   transition(alert, "dispatching");
   transition(alert, "delivered");
   alertStore.save(alert);
@@ -79,13 +81,13 @@ test("close: delivered alert closes, then view/location/ack are 410", async () =
 
   const wrongKey = await fetch(`${base}/alert/${alert.id}/close`, {
     method: "POST",
-    headers: { "x-api-key": "wrong" },
+    headers: { Authorization: bearer("wrong") },
   });
   assert.equal(wrongKey.status, 401);
 
   const closed = await fetch(`${base}/alert/${alert.id}/close`, {
     method: "POST",
-    headers: { "x-api-key": KEY },
+    headers: { Authorization: bearer() },
   });
   assert.equal(closed.status, 200);
   assert.equal((await closed.json()).state, "closed");
@@ -104,7 +106,7 @@ test("close: delivered alert closes, then view/location/ack are 410", async () =
   // Already closed → 409, not a silent re-close.
   const again = await fetch(`${base}/alert/${alert.id}/close`, {
     method: "POST",
-    headers: { "x-api-key": KEY },
+    headers: { Authorization: bearer() },
   });
   assert.equal(again.status, 409);
 });
@@ -116,7 +118,7 @@ test("without a signing secret there is no viewUrl to leak", async () => {
   // never an error.
   const res = await fetch(`${base}/alert`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": KEY },
+    headers: { "Content-Type": "application/json", Authorization: bearer() },
     body: JSON.stringify({ lat: 28.6139, lng: 77.209, contacts: [] }),
   });
   const body = await res.json();

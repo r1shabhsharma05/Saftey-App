@@ -35,6 +35,8 @@ for (const v of [
 }
 
 const app = require("../server");
+const { setupJwtAuth, teardownJwtAuth, bearer } = require("./jwtAuth");
+setupJwtAuth();
 const guardianStore = require("../services/guardianStore");
 const alertStore = require("../services/alertStore");
 const { issueCode } = require("../services/guardian");
@@ -43,9 +45,9 @@ const { createAlert, transition } = require("../services/alertLifecycle");
 const { recordNotification, newGuardianAlertState } = require("../services/guardianAlert");
 const { viewToken } = require("../services/alertView");
 
-const KEY = "d21-alert-route-secret";
+const KEY = "test-token";
 const UNKNOWN = "00000000-0000-0000-0000-000000000000";
-const HEADERS = { "Content-Type": "application/json", "x-api-key": KEY };
+const HEADERS = { "Content-Type": "application/json", Authorization: bearer() };
 const SOS_AT = { lat: 28.6139, lng: 77.209 };
 const GUARDIAN_AT = { lat: 28.614, lng: 77.2095 };
 
@@ -123,7 +125,7 @@ const sosWithGuardian = async () => {
 // A delivered alert built via the service seam (no channels needed):
 // the closed/expired branches need a live alert the 502 path cannot make.
 const deliveredAlertWithGuardian = async (guardianId, notifiedAtMs = Date.now()) => {
-  const alert = createAlert({ contactsCount: 0, lat: SOS_AT.lat, lng: SOS_AT.lng });
+  const alert = createAlert({ contactsCount: 0, lat: SOS_AT.lat, lng: SOS_AT.lng, ownerId: "test-user" });
   alert.guardians = newGuardianAlertState();
   recordNotification(alert.guardians, {
     guardianId,

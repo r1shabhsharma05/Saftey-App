@@ -163,10 +163,12 @@ for (const v of [
 }
 
 const app = require("../server");
+const { setupJwtAuth, teardownJwtAuth, bearer } = require("./jwtAuth");
+setupJwtAuth();
 const journeyStore = require("../services/journeyStore");
 
-const KEY = "d18-route-secret";
-const HEADERS = { "Content-Type": "application/json", "x-api-key": KEY };
+const KEY = "test-token";
+const HEADERS = { "Content-Type": "application/json", Authorization: bearer() };
 
 let server;
 let base;

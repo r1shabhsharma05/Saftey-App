@@ -32,12 +32,14 @@ for (const v of [
 }
 
 const app = require("../server");
+const { setupJwtAuth, teardownJwtAuth, bearer } = require("./jwtAuth");
+setupJwtAuth();
 const alertStore = require("../services/alertStore");
 const { createAlert, transition } = require("../services/alertLifecycle");
 const { escalationToken } = require("../services/escalation");
 const { viewToken } = require("../services/alertView");
 
-const KEY = "d10-route-secret";
+const KEY = "test-token";
 const UNKNOWN = "00000000-0000-0000-0000-000000000000";
 
 let server;
@@ -52,7 +54,7 @@ after(async () => {
 });
 
 const seedDelivered = () => {
-  const alert = createAlert({ contactsCount: 2 });
+  const alert = createAlert({ contactsCount: 2, ownerId: "test-user" });
   transition(alert, "dispatching");
   transition(alert, "delivered");
   alert.delivery = [
@@ -71,7 +73,7 @@ const ack = (id, body, { key, token } = {}) => {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(key ? { "x-api-key": key } : {}),
+      ...(key ? { Authorization: bearer(key) } : {}),
     },
     body: JSON.stringify(body || {}),
   });
@@ -97,7 +99,7 @@ test("ack: view-token ack counts, dedupes, reaches threshold, closed → 410", a
   assert.equal((await dup.json()).ackCount, 1, "same number, different formatting = same ack");
   const second = await ack(alert.id, { phone: "+918888888888" }, { token });
   assert.equal((await second.json()).ackCount, 2);
-  const read = await fetch(`${base}/alert/${alert.id}`, { headers: { "x-api-key": KEY } });
+  const read = await fetch(`${base}/alert/${alert.id}`, { headers: { Authorization: bearer() } });
   const readBody = await read.json();
   assert.equal(readBody.alert.acks.length, 2);
   assert.ok(!JSON.stringify(readBody.alert.acks).includes("99999"), "no raw phone in stored acks");
@@ -124,7 +126,7 @@ test("ack: API-key path works, and the view-page form posts back to the page", a
   });
   assert.equal(form.status, 303);
   assert.ok(String(form.headers.get("location")).includes(`/alert/${alert.id}/view?token=`));
-  const read = await fetch(`${base}/alert/${alert.id}`, { headers: { "x-api-key": KEY } });
+  const read = await fetch(`${base}/alert/${alert.id}`, { headers: { Authorization: bearer() } });
   assert.equal((await read.json()).alert.acks.length, 2);
 });
 
@@ -132,7 +134,7 @@ test("ack binding (H3): SOS stores contactKeys; only those contacts count, stran
   const { ackKeyFor } = require("../services/alertLifecycle");
   const sos = await fetch(`${base}/alert`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": KEY },
+    headers: { "Content-Type": "application/json", Authorization: bearer() },
     body: JSON.stringify({
       lat: 28.6139,
       lng: 77.209,

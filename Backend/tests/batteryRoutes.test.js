@@ -34,10 +34,12 @@ for (const v of [
 }
 
 const app = require("../server");
+const { setupJwtAuth, teardownJwtAuth, bearer } = require("./jwtAuth");
+setupJwtAuth();
 const alertStore = require("../services/alertStore");
 const { createAlert, transition } = require("../services/alertLifecycle");
 
-const KEY = "d11-route-secret";
+const KEY = "test-token";
 
 let server;
 let base;
@@ -55,7 +57,7 @@ const postBattery = (body, key) =>
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(key ? { "x-api-key": key } : {}),
+      ...(key ? { Authorization: bearer(key) } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -99,7 +101,7 @@ test("battery-alert: all channels unconfigured → 502 with honest receipts, no 
 });
 
 test("battery-alert: final burst moves a live alert's stored position even when fan-out fails", async () => {
-  const alert = createAlert({ contactsCount: 1, lat: 28.6, lng: 77.2 });
+  const alert = createAlert({ contactsCount: 1, lat: 28.6, lng: 77.2, ownerId: "test-user" });
   transition(alert, "dispatching");
   transition(alert, "delivered");
   alertStore.save(alert);
@@ -125,7 +127,7 @@ test("battery-alert (M5): final needs a live alert — unknown id, missing id, f
     KEY
   );
   assert.equal(missing.status, 400);
-  const failed = createAlert({ contactsCount: 1, lat: 28.6, lng: 77.2 });
+  const failed = createAlert({ contactsCount: 1, lat: 28.6, lng: 77.2, ownerId: "test-user" });
   transition(failed, "dispatching");
   transition(failed, "failed");
   alertStore.save(failed);
@@ -137,7 +139,7 @@ test("battery-alert (M5): final needs a live alert — unknown id, missing id, f
 });
 
 test("battery-alert (M5): low must not name an alert", async () => {
-  const alert = createAlert({ contactsCount: 1, lat: 28.6, lng: 77.2 });
+  const alert = createAlert({ contactsCount: 1, lat: 28.6, lng: 77.2, ownerId: "test-user" });
   transition(alert, "dispatching");
   transition(alert, "delivered");
   alertStore.save(alert);

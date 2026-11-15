@@ -71,12 +71,14 @@ for (const v of [
 }
 
 const app = require("../server");
+const { setupJwtAuth, teardownJwtAuth, bearer } = require("./jwtAuth");
+setupJwtAuth();
 const alertStore = require("../services/alertStore");
 const { createAlert, transition } = require("../services/alertLifecycle");
 const { retryToken } = require("../services/delivery");
 const { viewToken } = require("../services/alertView");
 
-const KEY = "d6-sim-secret";
+const KEY = "test-token";
 const SOS_BODY = {
   lat: 28.6139,
   lng: 77.209,
@@ -105,7 +107,7 @@ after(async () => {
 const post = async (url, body, key = KEY) =>
   fetch(`${base}${url}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": key },
+    headers: { "Content-Type": "application/json", Authorization: bearer(key) },
     body: JSON.stringify(body),
   });
 
@@ -115,7 +117,7 @@ const postSos = async (body = SOS_BODY, key = KEY) => {
 };
 
 const getAlert = async (id, key = KEY) =>
-  fetch(`${base}/alert/${id}`, { headers: { "x-api-key": key } });
+  fetch(`${base}/alert/${id}`, { headers: { Authorization: bearer(key) } });
 
 test("offline: all channels down → 502, failed state, honest receipts", async () => {
   const res = await postSos();
@@ -197,7 +199,7 @@ test("retry: forged token 401, valid token re-fires, delivered alert ignored", a
 
   // Idempotency: a retry arriving for an already-delivered alert must
   // not re-fire the SOS (duplicate queue delivery → false alarm).
-  const delivered = createAlert({ contactsCount: 0 });
+  const delivered = createAlert({ contactsCount: 0, ownerId: "test-user" });
   transition(delivered, "dispatching");
   transition(delivered, "delivered");
   alertStore.save(delivered);
@@ -252,7 +254,7 @@ test("retry (L5): expired token 401, body message ignored, replay 409", async ()
 });
 
 test("alert view: token-gated page + live position, closed alerts 410", async () => {
-  const alert = createAlert({ contactsCount: 0, lat: 28.6139, lng: 77.209 });
+  const alert = createAlert({ contactsCount: 0, lat: 28.6139, lng: 77.209, ownerId: "test-user" });
   transition(alert, "dispatching");
   transition(alert, "delivered");
   alertStore.save(alert);
@@ -312,10 +314,20 @@ test("alert view: token-gated page + live position, closed alerts 410", async ()
 });
 
 // --- Server-kill test: a real child process, SIGKILLed and restarted. ---
-const childEnv = (port) => ({
+//
+// Run-3 fix round 2: the child is a separate process, so it cannot
+// use the in-process _setAuthTransport seam. It verifies JWTs against
+// a stub Supabase Auth server (this file, ephemeral port) that
+// answers GET /auth/v1/user for any Bearer token — the child gets
+// SUPABASE_URL + SUPABASE_ANON_KEY pointing at it. No real Supabase,
+// no network. The stub user owns the SOS, so the memory-loss
+// assertions below still hold exactly as before.
+const childEnv = (port, stubPort) => ({
   ...process.env,
   API_SECRET: KEY,
   PORT: String(port),
+  SUPABASE_URL: `http://127.0.0.1:${stubPort}`,
+  SUPABASE_ANON_KEY: "stub-anon-key",
   ...supabaseEnv,
 });
 
@@ -333,9 +345,9 @@ const waitReady = async (port, timeoutMs = 15000) => {
   throw new Error(`server on port ${port} did not become ready`);
 };
 
-const spawnServer = (port) =>
+const spawnServer = (port, stubPort) =>
   spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: childEnv(port),
+    env: childEnv(port, stubPort),
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -346,28 +358,40 @@ const killAndWait = (child) =>
   });
 
 test("server-kill: restart loses the memory-only alert until Supabase lands", async () => {
+  const http = require("node:http");
+  const stub = http.createServer((req, res) => {
+    if (req.url === "/auth/v1/user") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ id: "sim-user", email: "sim@example.com" }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => stub.listen(0, "127.0.0.1", resolve));
+  const stubPort = stub.address().port;
   const port = 45931;
-  let child = spawnServer(port);
+  let child = spawnServer(port, stubPort);
   child.stdout.on("data", () => {});
   child.stderr.on("data", () => {});
   try {
     await waitReady(port);
     const sos = await fetch(`http://127.0.0.1:${port}/alert`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": KEY },
+      headers: { "Content-Type": "application/json", Authorization: bearer() },
       body: JSON.stringify(SOS_BODY),
     });
     assert.equal(sos.status, 502);
     const { alertId } = await sos.json();
 
     await killAndWait(child);
-    child = spawnServer(port);
+    child = spawnServer(port, stubPort);
     child.stdout.on("data", () => {});
     child.stderr.on("data", () => {});
     await waitReady(port);
 
     const read = await fetch(`http://127.0.0.1:${port}/alert/${alertId}`, {
-      headers: { "x-api-key": KEY },
+      headers: { Authorization: bearer() },
     });
     if (SUPABASE_CONFIGURED) {
       // Shared store: the record survives the kill.
@@ -382,12 +406,13 @@ test("server-kill: restart loses the memory-only alert until Supabase lands", as
     // The restarted server still answers SOS honestly (recovered, not wedged).
     const again = await fetch(`http://127.0.0.1:${port}/alert`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": KEY },
+      headers: { "Content-Type": "application/json", Authorization: bearer() },
       body: JSON.stringify(SOS_BODY),
     });
     assert.equal(again.status, 502);
   } finally {
     if (child.exitCode === null) await killAndWait(child);
+    await new Promise((resolve) => stub.close(resolve));
   }
 });
 

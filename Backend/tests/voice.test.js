@@ -254,18 +254,69 @@ test("transcribeAudio: non-allowlisted languageCode → unsupported-language, no
   assert.equal(calls, 0);
 });
 
-test("Gnani daily quota: 50/day per account, date-keyed (8.1)", () => {
+test("Gnani daily quota: 50/day per account, date-keyed (8.1)", async () => {
   _clearGnaniQuota();
   const key = "user:test-user-1";
   for (let i = 0; i < GNANI_DAILY_CAP; i++) {
-    assert.equal(checkGnaniQuota(key).allowed, true);
-    recordGnaniCall(key);
+    assert.equal((await checkGnaniQuota(key)).allowed, true);
+    await recordGnaniCall(key);
   }
-  const full = checkGnaniQuota(key);
+  const full = await checkGnaniQuota(key);
   assert.equal(full.allowed, false);
   assert.equal(full.used, GNANI_DAILY_CAP);
   assert.equal(full.remaining, 0);
   // Another account is unaffected.
-  assert.equal(checkGnaniQuota("user:test-user-2").allowed, true);
+  assert.equal((await checkGnaniQuota("user:test-user-2")).allowed, true);
   _clearGnaniQuota();
+});
+
+// Run-3 fix round 2 (6.1): the counter lives in the shared Supabase
+// table gnani_daily_usage when the DB is configured — a count written
+// by one call is visible to the next, across instances (faked here
+// via the _setDbTransport seam). When the DB errors, the counter
+// fails OPEN to memory instead of breaking voice.
+test("Gnani daily quota: shared Supabase table path + fail-open on DB error (6.1)", async () => {
+  const { _setDbTransport } = require("../services/supabaseDb");
+  const OLD_URL = process.env.SUPABASE_URL;
+  const OLD_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.SUPABASE_URL = "https://example.supabase.co";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-key";
+  const rows = new Map(); // gnani_daily_usage id -> count
+  let failDb = false;
+  try {
+    _setDbTransport(async (call) => {
+      if (failDb) throw new Error("db down");
+      const id = decodeURIComponent(call.url.split("id=eq.")[1]?.split("&")[0] || "");
+      if (call.method === "GET") {
+        return { data: rows.has(id) ? [{ id, count: rows.get(id) }] : [] };
+      }
+      if (call.method === "POST") {
+        rows.set(call.body.id, call.body.count);
+        return { data: null };
+      }
+      return { data: null };
+    });
+    _clearGnaniQuota();
+    const key = "user:shared-user-1";
+    const first = await checkGnaniQuota(key);
+    assert.equal(first.shared, true);
+    assert.equal(first.used, 0);
+    await recordGnaniCall(key);
+    await recordGnaniCall(key);
+    const after = await checkGnaniQuota(key);
+    assert.equal(after.used, 2);
+    assert.equal(after.remaining, GNANI_DAILY_CAP - 2);
+    // DB down → fail open: voice still allowed, counted in memory.
+    failDb = true;
+    const open = await checkGnaniQuota(key);
+    assert.equal(open.allowed, true);
+    assert.equal(open.shared, false);
+  } finally {
+    _setDbTransport(null);
+    if (OLD_URL === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = OLD_URL;
+    if (OLD_KEY === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = OLD_KEY;
+    _clearGnaniQuota();
+  }
 });

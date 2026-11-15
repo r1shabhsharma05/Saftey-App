@@ -37,12 +37,14 @@ for (const v of [
 }
 
 const app = require("../server");
+const { setupJwtAuth, teardownJwtAuth, bearer } = require("./jwtAuth");
+setupJwtAuth();
 const guardianStore = require("../services/guardianStore");
 const { issueCode } = require("../services/guardian");
 
-const KEY = "d19-route-secret";
+const KEY = "test-token";
 const UNKNOWN = "00000000-0000-0000-0000-000000000000";
-const HEADERS = { "Content-Type": "application/json", "x-api-key": KEY };
+const HEADERS = { "Content-Type": "application/json", Authorization: bearer() };
 
 let server;
 let base;
@@ -81,7 +83,7 @@ const register = (overrides = {}) =>
 test("POST /guardians: no key → 401; wrong key → 401", async () => {
   const noKey = await post("/guardians", { userId: "u", name: "N", phone: "+919876543210", role: "family" }, { "Content-Type": "application/json" });
   assert.equal(noKey.status, 401);
-  const badKey = await post("/guardians", { userId: "u", name: "N", phone: "+919876543210", role: "family" }, { ...HEADERS, "x-api-key": "wrong" });
+  const badKey = await post("/guardians", { userId: "u", name: "N", phone: "+919876543210", role: "family" }, { ...HEADERS, Authorization: bearer("wrong") });
   assert.equal(badKey.status, 401);
 });
 
@@ -96,11 +98,17 @@ test("POST /guardians: valid → 200 pending guardian, public shape only (no cod
   assert.equal(JSON.stringify(body).includes("hash"), false);
 });
 
-test("POST /guardians: bad phone / role / name / userId → 400", async () => {
+test("POST /guardians: bad phone / role / name → 400", async () => {
   assert.equal((await register({ phone: "junk" })).status, 400);
   assert.equal((await register({ role: "police" })).status, 400);
   assert.equal((await register({ name: "   " })).status, 400);
-  assert.equal((await register({ userId: "" })).status, 400);
+});
+
+test("POST /guardians: a body userId is ignored — the owner is always the JWT user (run-3 3.1)", async () => {
+  const { status, body } = await register({ userId: "someone-else" });
+  assert.equal(status, 200);
+  assert.equal(body.success, true);
+  assert.equal((await guardianStore.get(body.guardian.id)).userId, "test-user");
 });
 
 test("POST /guardians: same phone twice → same record, no duplicate (name updates while pending)", async () => {
@@ -116,7 +124,17 @@ test("POST /guardians: same phone twice → same record, no duplicate (name upda
 test("POST /guardians: same phone, different userId → 409 (cannot claim another user's guardian record)", async () => {
   const first = await register();
   assert.equal(first.status, 200);
-  const hijack = await register({ userId: "user-2", name: "Someone Else" });
+  // A second JWT user (other-token) claiming the same phone is 409 —
+  // the record belongs to whoever registered it first.
+  setupJwtAuth({
+    "test-token": { id: "test-user", email: "test@example.com" },
+    "other-token": { id: "user-2", email: "other@example.com" },
+  });
+  const hijack = await post(
+    "/guardians",
+    { userId: "user-2", name: "Someone Else", phone: "+919876543210", role: "family" },
+    { ...HEADERS, Authorization: bearer("other-token") }
+  );
   assert.equal(hijack.status, 409);
   assert.match(hijack.body.error, /already registered/);
 });

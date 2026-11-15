@@ -1,18 +1,19 @@
-// 🔐 requireUser middleware tests (run-2 2.1 / 3.1).
+// 🔐 requireUser middleware tests (run-2 2.1 / 3.1, run-3 fix round 2).
 // A tiny Express app mounts the middleware directly so the JWT
-// verification and the shared-key compat fallback are tested in
-// isolation from the route table. The Supabase Auth REST call is
-// faked with the _setAuthTransport seam — no network, no real project.
+// verification is tested in isolation from the route table. The
+// Supabase Auth REST call is faked with the _setAuthTransport seam —
+// no network, no real project. The shared-key fallback
+// (requireUserOrKey / requireApiKey) is DELETED in run-3 fix round
+// 2: there is no compat route left to test, and a shared key alone
+// must 401 on every private route.
 const test = require("node:test");
 const { before, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const express = require("express");
 
 const { _setAuthTransport } = require("../services/supabaseAuth");
-const { requireUser, requireUserOrKey, owns } = require("../middleware/requireUser");
-const { _setWriteSink } = require("../services/audit");
+const { requireUser, owns } = require("../middleware/requireUser");
 
-process.env.API_SECRET = "require-user-test-secret";
 const OLD_URL = process.env.SUPABASE_URL;
 const OLD_ANON = process.env.SUPABASE_ANON_KEY;
 
@@ -22,25 +23,17 @@ app.get(
   requireUser,
   (req, res) => res.json({ success: true, user: req.user })
 );
-app.get(
-  "/compat",
-  requireUserOrKey,
-  (req, res) => res.json({ success: true, user: req.user || null })
-);
 
 let server;
 let base;
-let auditLines;
 let authMode; // "ok" | "bad"
 
 before(async () => {
-  _setWriteSink((line) => auditLines.push(line));
   server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   base = `http://127.0.0.1:${server.address().port}`;
 });
 after(async () => {
-  _setWriteSink((line) => process.stdout.write(line + "\n"));
   _setAuthTransport(null);
   if (OLD_URL === undefined) delete process.env.SUPABASE_URL;
   else process.env.SUPABASE_URL = OLD_URL;
@@ -49,7 +42,6 @@ after(async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 beforeEach(() => {
-  auditLines = [];
   authMode = "ok";
   // verifyUserToken fails closed without a URL + key, so the test
   // backend looks configured (the transport itself is still faked).
@@ -88,44 +80,26 @@ test("requireUser: shared key alone → 401 (JWT only, no fallback)", async () =
   assert.equal((await get("/jwt-only", KEY)).status, 401);
 });
 
-test("requireUserOrKey: no token, no key → 401", async () => {
-  assert.equal((await get("/compat")).status, 401);
-});
-
-test("requireUserOrKey: valid JWT wins, no fallback audit line", async () => {
-  const res = await get("/compat", { Authorization: "Bearer good-jwt" });
-  assert.equal(res.status, 200);
-  assert.equal(res.body.user.id, "user-7");
-  assert.equal(auditLines.some((l) => l.includes("auth.shared_key_fallback")), false);
-});
-
-test("requireUserOrKey: shared key alone → 200 with null user + audit line (compat fallback)", async () => {
-  const res = await get("/compat", KEY);
-  assert.equal(res.status, 200);
-  assert.equal(res.body.user, null);
-  assert.equal(auditLines.some((l) => l.includes("auth.shared_key_fallback")), true);
-});
-
-test("requireUserOrKey: stale JWT + valid key → falls through to the key, 200", async () => {
-  authMode = "bad";
-  const res = await get("/compat", { Authorization: "Bearer stale-jwt", ...KEY });
-  assert.equal(res.status, 200);
-  assert.equal(res.body.user, null);
-});
-
-test("requireUserOrKey: bad JWT + bad key → 401", async () => {
+test("requireUser: stale JWT + shared key → 401 (no fall-through to the key)", async () => {
   authMode = "bad";
   assert.equal(
-    (await get("/compat", { Authorization: "Bearer stale-jwt", "x-api-key": "wrong" })).status,
+    (await get("/jwt-only", { Authorization: "Bearer stale-jwt", ...KEY })).status,
     401
   );
 });
 
-test("owns: owner match passes, foreign fails, legacy null passes, key-only caller passes", () => {
+test("requireUserOrKey is gone: the fallback export no longer exists", () => {
+  assert.equal(require("../middleware/requireUser").requireUserOrKey, undefined);
+  assert.throws(() => require("../middleware/requireApiKey"), /Cannot find module/);
+});
+
+test("owns: owner match passes, foreign fails, legacy null DENIED, no-user DENIED (run-3 3.1)", () => {
   const jwt = { user: { id: "user-7" } };
   assert.equal(owns(jwt, "user-7"), true);
   assert.equal(owns(jwt, "user-9"), false);
-  assert.equal(owns(jwt, null), true);
-  assert.equal(owns(jwt, undefined), true);
-  assert.equal(owns({}, "user-9"), true); // compat caller: no req.user
+  assert.equal(owns(jwt, null), false);
+  assert.equal(owns(jwt, undefined), false);
+  assert.equal(owns(jwt, ""), false);
+  assert.equal(owns({}, "user-9"), false); // no req.user: deny, no compat path
+  assert.equal(owns(null, "user-7"), false);
 });
