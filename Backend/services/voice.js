@@ -74,28 +74,75 @@ const TTS_VOICES = new Set([TTS_VOICE]);
 const TTS_LANGUAGES = new Set([TTS_LANGUAGE]);
 const STT_LANGUAGES = new Set([STT_LANGUAGE]);
 
-// Run-2 8.1: per-account DAILY Gnani counter. Keyed by the caller's
-// user id when a JWT is present, else by IP (shared-key compat path).
-// In-memory, date-keyed — a serverless instance holds only its own
-// counts, so this bounds a single instance's spend, not global
-// spend; the hard cap lives in the Gnani console (his dashboard step).
+// Run-3 fix round 2 (6.1/8.1): per-account DAILY Gnani counter,
+// now in SHARED storage — Supabase table `gnani_daily_usage`
+// (migration 20261115220000_gnani_daily_usage.sql, NOT yet applied
+// to the live DB — do not rely on it until then). One row per
+// (caller, day): id = `${key}:${YYYY-MM-DD}`, count = calls used.
+// Keyed by the caller's user id when a JWT is present, else by IP
+// (voice routes are JWT-only now, so the IP branch is a fallback).
 // Cap: 50 Gnani calls per account per day.
+//
+// The in-memory Map below is now only the fallback: when the DB is
+// unconfigured (migration not applied) or errors, the counter
+// counts locally and FAILS OPEN — voice must never break because
+// the quota store is down. That means the cap is exact only when
+// the DB is up; without it, a flood spread across instances gets
+// 50/day per instance (the old behaviour, now documented here).
+// The read-then-write increment is not atomic — two concurrent
+// calls can both read N and write N+1, undercounting by one. The
+// cap is a cost guard, not a billing boundary, so that is accepted;
+// a strict atomic counter would need a Postgres RPC (not added).
+const { dbStatus, dbSelectOne, dbUpsert } = require("./supabaseDb");
 const GNANI_DAILY_CAP = 50;
-const gnaniDailyCounts = new Map(); // `${key}:${YYYY-MM-DD}` -> calls
+const gnaniDailyCounts = new Map(); // `${key}:${YYYY-MM-DD}` -> calls (fallback only)
 const gnaniQuotaKey = (req) =>
   req?.user?.id ? `user:${req.user.id}` : `ip:${req?.ip || "unknown"}`;
 const gnaniDayKey = (key) => `${key}:${new Date().toISOString().slice(0, 10)}`;
-const checkGnaniQuota = (key) => {
+const gnaniRowId = (key) => gnaniDayKey(key);
+const memoryQuota = (key) => {
   if (gnaniDailyCounts.size > 5000) {
     const today = new Date().toISOString().slice(0, 10);
     for (const k of [...gnaniDailyCounts.keys()]) {
       if (!k.endsWith(today)) gnaniDailyCounts.delete(k);
     }
   }
-  const used = gnaniDailyCounts.get(gnaniDayKey(key)) || 0;
-  return { allowed: used < GNANI_DAILY_CAP, used, remaining: Math.max(0, GNANI_DAILY_CAP - used) };
+  return gnaniDailyCounts.get(gnaniDayKey(key)) || 0;
 };
-const recordGnaniCall = (key) => {
+const checkGnaniQuota = async (key) => {
+  if (dbStatus().configured) {
+    try {
+      const res = await dbSelectOne("gnani_daily_usage", gnaniRowId(key));
+      const used = res.ok ? Number(res.row?.count) || 0 : 0;
+      if (res.ok || res.reason === "not_found") {
+        return { allowed: used < GNANI_DAILY_CAP, used, remaining: Math.max(0, GNANI_DAILY_CAP - used), shared: true };
+      }
+      console.log("❌ Gnani quota read failed, failing open to memory:", res.reason);
+    } catch (err) {
+      console.log("❌ Gnani quota read failed, failing open to memory:", err.message);
+    }
+  }
+  const used = memoryQuota(key);
+  return { allowed: used < GNANI_DAILY_CAP, used, remaining: Math.max(0, GNANI_DAILY_CAP - used), shared: false };
+};
+const recordGnaniCall = async (key) => {
+  if (dbStatus().configured) {
+    try {
+      const current = await checkGnaniQuota(key);
+      const row = {
+        id: gnaniRowId(key),
+        user_key: key,
+        day: new Date().toISOString().slice(0, 10),
+        count: (current.used || 0) + 1,
+        updated_at: new Date().toISOString(),
+      };
+      const saved = await dbUpsert("gnani_daily_usage", row);
+      if (saved.ok) return;
+      console.log("❌ Gnani quota write failed, counting in memory:", saved.reason);
+    } catch (err) {
+      console.log("❌ Gnani quota write failed, counting in memory:", err.message);
+    }
+  }
   const k = gnaniDayKey(key);
   gnaniDailyCounts.set(k, (gnaniDailyCounts.get(k) || 0) + 1);
 };

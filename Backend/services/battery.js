@@ -8,14 +8,15 @@
 // queues a D4 retry — a battery warning must never trigger voice
 // calls or re-fire as if the user were in danger.
 //
-// Thresholds live here for the server and in
-// mobile-app/utils/batteryAlerts.ts for the app (the two runtimes
-// cannot share a module). Change both, in the same commit.
-const LOW_BATTERY_THRESHOLD = 15;
-const FINAL_BATTERY_THRESHOLD = 5;
-// Above this level a discharge cycle is considered over: the app
-// clears its already-sent flag, so a later drain warns again.
-const REARM_LEVEL = 20;
+// Thresholds live in services/batteryThresholds.js (single source
+// of truth, run-3 fix round 2, 11.3) and are mirrored in
+// mobile-app/constants/batteryThresholds.ts — same values, same
+// commit. The old names below are re-exports, kept so existing
+// callers and tests do not change.
+const { LOW, FINAL, REARM } = require("./batteryThresholds");
+const LOW_BATTERY_THRESHOLD = LOW;
+const FINAL_BATTERY_THRESHOLD = FINAL;
+const REARM_LEVEL = REARM;
 
 // Pure firing decision. Inputs are the app's own readings:
 // `charging` is true when plugged in, false when discharging, null

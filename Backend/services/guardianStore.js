@@ -152,11 +152,30 @@ const consumeCode = async (guardianId, expectedHash, attempts = 0) => {
   return { ok: true, consumed: res.rows.length > 0 };
 };
 
+// Run-3 fix round 2 (12.3): account deletion wipes the in-memory
+// rows too — Postgres rows alone are not enough, since get() reads
+// memory first. Only rows owned by this user are dropped (phone
+// index entries for them go too); returns the count removed.
+// (DB rows are wiped separately by the route.)
+const deleteByOwner = (userId) => {
+  if (typeof userId !== "string" || !userId) return 0;
+  let removed = 0;
+  for (const g of [...memory.values()]) {
+    if (g.userId === userId) {
+      memory.delete(g.id);
+      if (phoneIndex.get(g.phone) === g.id) phoneIndex.delete(g.phone);
+      removed += 1;
+    }
+  }
+  return removed;
+};
+
 module.exports = {
   save,
   get,
   getByPhone,
   consumeCode,
+  deleteByOwner,
   MAX_GUARDIANS,
   // Test seams only.
   _clearMemory: () => {

@@ -46,6 +46,23 @@ const authHeaders = (key, bearer) => ({
 // Verifies a Supabase access token server-side and returns the user
 // it belongs to ({ id, email }). A 401 from Auth, a missing id, or
 // an unconfigured backend all answer the same invalid-token.
+// Also returns session-freshness signals for re-auth-gated actions
+// (DELETE /auth/account, 12.3): lastSignInAt from the Auth user
+// record, and the JWT's own iat as a fallback. The iat is decoded
+// from the token AFTER Auth has verified that token, so it is the
+// Auth-issued value, not a client claim. Either signal missing means
+// "unknown age" — callers that need freshness must fail closed.
+const decodeJwtIat = (token) => {
+  try {
+    const payload = String(token).split(".")[1];
+    if (!payload) return null;
+    const json = JSON.parse(Buffer.from(payload.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+    return typeof json.iat === "number" ? json.iat : null;
+  } catch {
+    return null;
+  }
+};
+
 const verifyUserToken = async (token) => {
   const { url, anonKey, serviceKey } = getConfig();
   const apiKey = anonKey || serviceKey;
@@ -61,7 +78,12 @@ const verifyUserToken = async (token) => {
     if (status !== 200 || !data || typeof data.id !== "string") {
       return { ok: false, reason: "invalid-token" };
     }
-    return { ok: true, user: { id: data.id, email: typeof data.email === "string" ? data.email : "" } };
+    return {
+      ok: true,
+      user: { id: data.id, email: typeof data.email === "string" ? data.email : "" },
+      lastSignInAt: typeof data.last_sign_in_at === "string" ? data.last_sign_in_at : null,
+      tokenIat: decodeJwtIat(token),
+    };
   } catch (err) {
     return { ok: false, reason: err.message || "transport-error" };
   }

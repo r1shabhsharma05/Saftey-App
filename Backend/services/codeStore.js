@@ -131,6 +131,12 @@ const createCodeStore = (table, { withProof = false } = {}) => {
     save,
     load,
     consume,
+    // Run-3 fix round 2 (12.3): account deletion drops a phone's
+    // in-memory code record. Same as the _drop test seam.
+    drop: (phone) => {
+      const clean = normalizePhone(phone);
+      if (clean) memory.delete(clean);
+    },
     MAX_PHONES,
     // Test seams only.
     _clearMemory: () => memory.clear(),

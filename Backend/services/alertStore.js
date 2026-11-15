@@ -172,11 +172,28 @@ const findAlertsForGuardian = (guardianId) => {
   return found;
 };
 
+// Run-3 fix round 2 (12.3): account deletion wipes the in-memory
+// rows too — Postgres rows alone are not enough, since get() reads
+// memory first. Only rows owned by this user are dropped; returns
+// the count removed. (DB rows are wiped separately by the route.)
+const deleteByOwner = (ownerId) => {
+  if (typeof ownerId !== "string" || !ownerId) return 0;
+  let removed = 0;
+  for (const a of [...memory.values()]) {
+    if (a.ownerId === ownerId) {
+      memory.delete(a.id);
+      removed += 1;
+    }
+  }
+  return removed;
+};
+
 module.exports = {
   save,
   get,
   toPublic,
   findAlertsForGuardian,
+  deleteByOwner,
   MAX_ALERTS,
   // Test seams only.
   _clearMemory: () => memory.clear(),
