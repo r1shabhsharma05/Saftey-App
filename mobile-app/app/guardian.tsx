@@ -40,6 +40,7 @@ import StatusPill from '../components/ui/StatusPill';
 import SectionHeader from '../components/ui/SectionHeader';
 import GlowButton from '../components/ui/GlowButton';
 import OtpCubes, { type OtpPhase } from '../components/OtpCubes';
+import TurnstileWidget from '../components/TurnstileWidget';
 import {
   GUARDIAN_PRESET_MESSAGES,
   GUARDIAN_ROLES,
@@ -88,6 +89,11 @@ export default function GuardianScreen() {
   const [otpNonce, setOtpNonce] = useState(0);
   const [codeSent, setCodeSent] = useState(false);
   const [smsUnavailable, setSmsUnavailable] = useState(false);
+  // Turnstile token for the guardian verification-code request (6.3):
+  // the server enforces it once TURNSTILE_SECRET_KEY is set. With no
+  // site key the widget reports no token and the call proceeds without
+  // one — the server fails open while the secret is unset.
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [toggleBusy, setToggleBusy] = useState(false);
   // Location sharing while on duty (D20): null = not attempted yet
@@ -180,7 +186,7 @@ export default function GuardianScreen() {
     if (!gid) return;
     setBusy(true);
     try {
-      const res = await requestVerificationCode(BACKEND_URL, gid);
+      const res = await requestVerificationCode(BACKEND_URL, gid, turnstileToken ?? undefined);
       if (!res.reached) {
         showAppDialog('No Connection', 'Could not reach the SafeLife servers. Check your internet and try again.');
         return;
@@ -494,6 +500,7 @@ export default function GuardianScreen() {
                   icon={<MaterialCommunityIcons name="message-text" size={18} color={Theme.colors.primary} />}
                   title="Verify your phone"
                 />
+                <TurnstileWidget onToken={setTurnstileToken} />
                 {smsUnavailable ? (
                   <>
                     <Text style={styles.copy}>

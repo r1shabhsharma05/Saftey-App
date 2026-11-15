@@ -17,7 +17,7 @@ import { supabase } from '../utils/supabase';
 import { showAppDialog } from '../utils/dialog';
 import { ensureProfile, friendlyAuthError, resendConfirmation } from '../utils/auth';
 import { getBackendUrl } from '../utils/backendUrl';
-import { requestForgotPassword, requestLoginCode, verifyLoginCode } from '../utils/phoneAuth';
+import { checkLoginPrecheck, requestForgotPassword, requestLoginCode, verifyLoginCode } from '../utils/phoneAuth';
 import { DEFAULT_COUNTRY, nationalDigitsValid, toE164, type CountryOption } from '../utils/phone';
 import { PRIVACY_URL, TERMS_URL } from '../constants/legal';
 import GlobeWireframe from '../components/GlobeWireframe';
@@ -27,6 +27,7 @@ import AuthButton from '../components/auth/Button';
 import CountryPicker from '../components/auth/CountryPicker';
 import SocialButton, { OrDivider } from '../components/auth/SocialButton';
 import { signInWithGoogle } from '../utils/googleAuth';
+import TurnstileWidget from '../components/TurnstileWidget';
 import { AuthTheme } from '../constants/auth-theme';
 
 const BACKEND_URL = getBackendUrl();
@@ -61,6 +62,12 @@ export default function LoginScreen() {
   const [otpNonce, setOtpNonce] = useState(0);
   const [otpBusy, setOtpBusy] = useState(false);
 
+  // Turnstile bot-check token (6.3): solved by the widget below on
+  // the form stage; passed to the OTP request-code calls. Null when
+  // the widget is unconfigured or the token expired — the calls then
+  // proceed token-less and the server decides.
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+
   // Step 1: SMS the code to the number. The password stays typed —
   // step 2 signs in with it once the code verifies.
   const handleLogin = async () => {
@@ -81,7 +88,7 @@ export default function LoginScreen() {
 
     setLoading(true);
     try {
-      const res = await requestLoginCode(BACKEND_URL, toE164(country.dial, cleanPhone));
+      const res = await requestLoginCode(BACKEND_URL, toE164(country.dial, cleanPhone), turnstileToken ?? undefined);
       if (!res.reached) {
         showAppDialog(
           'No Connection',
@@ -133,6 +140,23 @@ export default function LoginScreen() {
         return;
       }
       setOtpPhase('success');
+      // (2.4) Per-email login-attempt precheck BEFORE sign-in: the
+      // backend 429s when this email has had too many attempts. On
+      // 429 do NOT attempt sign-in. On network error to the precheck
+      // (reached:false) proceed — fail-open for availability, since
+      // Supabase still enforces its own server-side limits.
+      const precheck = await checkLoginPrecheck(BACKEND_URL, res.email);
+      if (!precheck.allowed) {
+        showAppDialog(
+          'Too Many Attempts',
+          precheck.retryAfterSeconds
+            ? `Too many login attempts for this account. Try again in ${precheck.retryAfterSeconds} seconds.`
+            : 'Too many login attempts for this account. Try again later.'
+        );
+        setStage('form');
+        setOtpPhase('idle');
+        return;
+      }
       const { data, error } = await supabase.auth.signInWithPassword({
         email: res.email,
         password,
@@ -185,7 +209,7 @@ export default function LoginScreen() {
   const handleResend = async () => {
     setOtpBusy(true);
     try {
-      const res = await requestLoginCode(BACKEND_URL, toE164(country.dial, phone.trim()));
+      const res = await requestLoginCode(BACKEND_URL, toE164(country.dial, phone.trim()), turnstileToken ?? undefined);
       if (!res.reached || !res.success) {
         showAppDialog(
           'Code Not Sent',
@@ -311,6 +335,8 @@ export default function LoginScreen() {
                 <Pressable onPress={handleForgotPassword} hitSlop={10}>
                   <Text style={styles.forgot}>Forgot Password?</Text>
                 </Pressable>
+
+                <TurnstileWidget onToken={setTurnstileToken} />
 
                 <AuthButton
                   title="Send Code"

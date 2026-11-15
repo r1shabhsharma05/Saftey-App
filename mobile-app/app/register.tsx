@@ -17,7 +17,7 @@ import { supabase } from '../utils/supabase';
 import { showAppDialog } from '../utils/dialog';
 import { ensureProfile, friendlyAuthError } from '../utils/auth';
 import { getBackendUrl } from '../utils/backendUrl';
-import { completeSignup, requestSignupCode, verifySignupCode } from '../utils/phoneAuth';
+import { checkLoginPrecheck, completeSignup, requestSignupCode, verifySignupCode } from '../utils/phoneAuth';
 import { DEFAULT_COUNTRY, nationalDigitsValid, toE164, type CountryOption } from '../utils/phone';
 import { PRIVACY_URL, TERMS_URL } from '../constants/legal';
 import GlobeWireframe from '../components/GlobeWireframe';
@@ -27,6 +27,7 @@ import AuthButton from '../components/auth/Button';
 import CountryPicker from '../components/auth/CountryPicker';
 import SocialButton, { OrDivider } from '../components/auth/SocialButton';
 import { signInWithGoogle } from '../utils/googleAuth';
+import TurnstileWidget from '../components/TurnstileWidget';
 import { AuthTheme } from '../constants/auth-theme';
 
 const BACKEND_URL = getBackendUrl();
@@ -66,6 +67,10 @@ export default function RegisterScreen() {
   const [otpError, setOtpError] = useState<string | null>(null);
   const [otpNonce, setOtpNonce] = useState(0);
   const [otpBusy, setOtpBusy] = useState(false);
+
+  // Turnstile bot-check token (6.3): see login.tsx — same widget,
+  // same plumbing; passed to the signup OTP request-code calls.
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
 
   const handleGoogle = async () => {
     // In-flight guard: rapid taps used to stack multiple auth browser
@@ -124,7 +129,7 @@ export default function RegisterScreen() {
     // created yet — that waits for the verified code + proof token.
     setLoading(true);
     try {
-      const res = await requestSignupCode(BACKEND_URL, toE164(country.dial, cleanPhone));
+      const res = await requestSignupCode(BACKEND_URL, toE164(country.dial, cleanPhone), turnstileToken ?? undefined);
       if (!res.reached) {
         showAppDialog(
           'No Connection',
@@ -179,6 +184,21 @@ export default function RegisterScreen() {
       }
       if (!completed.success) {
         showAppDialog('Sign Up Failed', 'Could not create the account. Please try again.');
+        setStage('form');
+        setOtpPhase('idle');
+        return;
+      }
+      // (2.4) Same per-email precheck as login.tsx: the account was
+      // just created, so a 429 here means the email is being hammered
+      // — do NOT attempt sign-in. Fail-open on precheck network error.
+      const precheck = await checkLoginPrecheck(BACKEND_URL, cleanEmail);
+      if (!precheck.allowed) {
+        showAppDialog(
+          'Too Many Attempts',
+          precheck.retryAfterSeconds
+            ? `Too many login attempts for this account. Try again in ${precheck.retryAfterSeconds} seconds.`
+            : 'Too many login attempts for this account. Try again later.'
+        );
         setStage('form');
         setOtpPhase('idle');
         return;
@@ -272,7 +292,7 @@ export default function RegisterScreen() {
   const handleResend = async () => {
     setOtpBusy(true);
     try {
-      const res = await requestSignupCode(BACKEND_URL, toE164(country.dial, phone.trim()));
+      const res = await requestSignupCode(BACKEND_URL, toE164(country.dial, phone.trim()), turnstileToken ?? undefined);
       if (!res.reached || !res.success) {
         showAppDialog(
           'Code Not Sent',
@@ -379,6 +399,8 @@ export default function RegisterScreen() {
                   secureToggle
                   containerStyle={styles.fieldGap}
                 />
+
+                <TurnstileWidget onToken={setTurnstileToken} />
 
                 <AuthButton
                   title="Sign Up"
