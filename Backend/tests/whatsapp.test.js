@@ -52,10 +52,9 @@ const mockFetch = (handler) => {
 
 test("whatsappRecipient: shared phone rules, leading + stripped for Meta", () => {
   assert.equal(whatsappRecipient("+91 98765 43210"), "919876543210");
-  // Bare 10-digit now normalizes to +91 first, so Meta gets the full
-  // international number (no +) — the old "9876543210" had no country
-  // code and Meta would not route it.
-  assert.equal(whatsappRecipient("(987) 654-3210"), "919876543210");
+  // Run-2 R1a: a bare 10-digit number has no explicit country code,
+  // so normalizePhone rejects it and Meta gets nothing for it.
+  assert.equal(whatsappRecipient("(987) 654-3210"), "");
   assert.equal(whatsappRecipient("not-a-phone"), "");
   assert.equal(whatsappRecipient(undefined), "");
   // Same allowlist as SMS: the two per-contact channels never disagree

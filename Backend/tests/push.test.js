@@ -159,7 +159,7 @@ test("sendPushAlert: exact FCM request shape, one mint reused for all tokens", a
       assert.deepEqual(JSON.parse(sends[i].opts.body), {
         message: {
           token,
-          notification: { title: "🚨 SafeLife SOS Alert", body: "SOS at the park" },
+          notification: { title: "🚨 SafeLife SOS Alert", body: "SafeLife SOS — open the app for details" }, // run-2 13.7: generic body only
         },
       });
     }

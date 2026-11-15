@@ -108,10 +108,11 @@ test("POST /auth/signup/request-code: SMS unconfigured → 503 channel-not-confi
   assert.equal(res.body.sent, false);
   assert.equal(res.body.reason, "channel-not-configured");
   assert.equal(signupCode._hasPending(PHONE), false);
-  // Nothing was issued: a verify now must say no code is pending.
+  // Nothing was issued: a verify now fails generic (R1i — one
+  // status, one message for every verify failure).
   const verify = await verifyCode(PHONE, "123456");
-  assert.equal(verify.status, 409);
-  assert.match(verify.body.error, /No verification code pending/);
+  assert.equal(verify.status, 400);
+  assert.equal(verify.body.error, "Invalid or expired code");
 });
 
 test("POST /auth/signup/request-code: SMS configured (stubbed fetch) → 200 sent, code pending", async () => {
@@ -138,7 +139,7 @@ test("POST /auth/signup/request-code: SMS configured (stubbed fetch) → 200 sen
   }
 });
 
-test("POST /auth/signup/request-code: 4th code in an hour → 429 (per-phone ledger)", async () => {
+test("POST /auth/signup/request-code: 4th code in an hour → indistinguishable success (R1b)", async () => {
   // The ledger is filled through the service seam so the HTTP
   // request-code budget (codeLimiter 10/hr) is spent only once.
   // SMS must look configured or the route 503s before issuing.
@@ -148,49 +149,52 @@ test("POST /auth/signup/request-code: 4th code in an hour → 429 (per-phone led
   process.env.HTTPSMS_API_KEY = "test-key";
   process.env.HTTPSMS_FROM = "+919999999999";
   try {
+    // A per-phone ledger refusal answers EXACTLY like a fresh send —
+    // no 429, no error text, no sent:false.
     const res = await requestCode();
-    assert.equal(res.status, 429);
-    assert.match(res.body.error, /Too many verification codes/);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { success: true, sent: true });
   } finally {
     delete process.env.HTTPSMS_API_KEY;
     delete process.env.HTTPSMS_FROM;
   }
 });
 
-test("POST /auth/signup/verify-code: issued code → 200 verified; response carries no code or hash", async () => {
+test("POST /auth/signup/verify-code: issued code → 200 verified + proof token; response carries no code or hash", async () => {
   const code = await issueSeam();
   const res = await verifyCode(PHONE, code);
   assert.equal(res.status, 200);
   assert.equal(res.body.success, true);
   assert.equal(res.body.verified, true);
+  // R1c: the proof binds (phone, expiry) in expiry.HMAC form.
+  assert.match(res.body.proof, /^\d+\.[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(res.body).includes(code), false);
-  // A second verify finds no pending code.
+  // A second verify finds no pending code — same generic 400 (R1i).
   const again = await verifyCode(PHONE, code);
-  assert.equal(again.status, 409);
+  assert.equal(again.status, 400);
+  assert.equal(again.body.error, "Invalid or expired code");
 });
 
-test("POST /auth/signup/verify-code: wrong code → 400 with attempts left; 5th wrong → 409 killed", async () => {
+test("POST /auth/signup/verify-code: every failure is one generic 400 (R1i)", async () => {
   const code = await issueSeam();
   const wrong = code === "000000" ? "000001" : "000000";
-  const first = await verifyCode(PHONE, wrong);
-  assert.equal(first.status, 400);
-  assert.match(first.body.error, /Invalid verification code \(4 attempts left\)/);
-  for (let i = 0; i < 3; i++) {
-    assert.equal((await verifyCode(PHONE, wrong)).status, 400);
+  // Wrong guesses, the 5th (killing) guess, and a late correct guess
+  // after the kill all read exactly the same — no attempts-left count,
+  // no killed/expired distinction.
+  for (let i = 0; i < 5; i++) {
+    const res = await verifyCode(PHONE, wrong);
+    assert.equal(res.status, 400);
+    assert.equal(res.body.error, "Invalid or expired code");
   }
-  const killed = await verifyCode(PHONE, wrong);
-  assert.equal(killed.status, 409);
-  assert.match(killed.body.error, /Too many attempts/);
-  // The killed code stays dead even for the right digits.
   const late = await verifyCode(PHONE, code);
-  assert.equal(late.status, 409);
-  assert.match(late.body.error, /No verification code pending/);
+  assert.equal(late.status, 400);
+  assert.equal(late.body.error, "Invalid or expired code");
 });
 
-test("POST /auth/signup/verify-code: no pending code → 409; bad phone / code shape → 400", async () => {
+test("POST /auth/signup/verify-code: no pending code → 400 generic; bad phone / code shape → 400", async () => {
   const noCode = await verifyCode(PHONE, "123456");
-  assert.equal(noCode.status, 409);
-  assert.match(noCode.body.error, /No verification code pending/);
+  assert.equal(noCode.status, 400);
+  assert.equal(noCode.body.error, "Invalid or expired code");
   assert.equal((await verifyCode("junk", "123456")).status, 400);
   assert.equal((await verifyCode(PHONE, "12345")).status, 400);
   assert.equal((await verifyCode(PHONE, 123456)).status, 400);
@@ -205,8 +209,8 @@ test("Namespaces are separate: guardian code cannot verify a signup, signup code
   guardianStore.save(guardian);
   // The guardian code is worthless to the signup endpoint.
   const crossSignup = await verifyCode(guardianPhone, guardianCode);
-  assert.equal(crossSignup.status, 409);
-  assert.match(crossSignup.body.error, /No verification code pending/);
+  assert.equal(crossSignup.status, 400);
+  assert.equal(crossSignup.body.error, "Invalid or expired code");
   // And the guardian endpoint still accepts its own code.
   const ownGuardian = await post(`/guardians/${guardian.id}/verify`, { code: guardianCode }, HEADERS);
   assert.equal(ownGuardian.status, 200);
@@ -215,17 +219,17 @@ test("Namespaces are separate: guardian code cannot verify a signup, signup code
   const other = createGuardian({ userId: "user-10", name: "M", phone: signupPhone, role: "friend" });
   guardianStore.save(other);
   const crossGuardian = await post(`/guardians/${other.id}/verify`, { code: signupCodeValue }, HEADERS);
-  assert.equal(crossGuardian.status, 409);
-  assert.match(crossGuardian.body.error, /No verification code pending/);
+  assert.equal(crossGuardian.status, 400);
+  assert.equal(crossGuardian.body.error, "Invalid or expired code");
   // And the signup endpoint still accepts its own code.
   const ownSignup = await verifyCode(signupPhone, signupCodeValue);
   assert.equal(ownSignup.status, 200);
   assert.equal(ownSignup.body.verified, true);
 });
 
-test("POST /auth/signup/request-code: bare 10-digit phone is sent E.164 (+91)", async () => {
-  // Regression: the gateway/carrier may not route a bare 10-digit
-  // recipient even though httpSMS accepts it (2xx, never delivered).
+test("POST /auth/signup/request-code: bare 10-digit phone is rejected (R1a)", async () => {
+  // Run-2 R1a: no silent +91 default — a bare number has no explicit
+  // country code, so it is a 400 and NO SMS is attempted.
   const realFetch = global.fetch;
   process.env.HTTPSMS_API_KEY = "test-key";
   process.env.HTTPSMS_FROM = "+919999999999";
@@ -239,9 +243,9 @@ test("POST /auth/signup/request-code: bare 10-digit phone is sent E.164 (+91)", 
   };
   try {
     const res = await requestCode("6396039797");
-    assert.equal(res.status, 200);
-    assert.equal(res.body.sent, true);
-    assert.equal(sentTo, "+916396039797");
+    assert.equal(res.status, 400);
+    assert.equal(sentTo, null);
+    assert.equal(signupCode._hasPending("6396039797"), false);
   } finally {
     global.fetch = realFetch;
     delete process.env.HTTPSMS_API_KEY;
@@ -266,6 +270,42 @@ test("POST /auth/signup/verify-code: code survives a memory clear (cross-instanc
     assert.equal(res.status, 200);
     assert.equal(res.body.verified, true);
   } finally {
+    _setDbTransport(null);
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  }
+});
+
+test("POST /auth/signup/request-code: mirror save failure → 502, NO SMS sent (R1j)", async () => {
+  // The DB looks configured but every mirror write throws: the code
+  // is never persisted, so the route must 502 before any SMS leaves.
+  const { _setDbTransport } = require("../services/supabaseDb");
+  process.env.SUPABASE_URL = "https://test.supabase.co";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-key";
+  _setDbTransport(async (call) => {
+    if (call.method === "POST") throw new Error("db down");
+    return { data: [] };
+  });
+  const realFetch = global.fetch;
+  process.env.HTTPSMS_API_KEY = "test-key";
+  process.env.HTTPSMS_FROM = "+919999999999";
+  let sentTo = null;
+  global.fetch = async (url, opts) => {
+    if (typeof url === "string" && url.includes("api.httpsms.com")) {
+      sentTo = JSON.parse(opts.body).to;
+      return { ok: true };
+    }
+    return realFetch(url, opts);
+  };
+  try {
+    const res = await requestCode("+919876543213");
+    assert.equal(res.status, 502);
+    assert.equal(sentTo, null);
+    assert.equal(signupCode._hasPending("+919876543213"), false);
+  } finally {
+    global.fetch = realFetch;
+    delete process.env.HTTPSMS_API_KEY;
+    delete process.env.HTTPSMS_FROM;
     _setDbTransport(null);
     delete process.env.SUPABASE_URL;
     delete process.env.SUPABASE_SERVICE_ROLE_KEY;

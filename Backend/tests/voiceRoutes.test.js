@@ -113,3 +113,13 @@ test("POST /voice/transcribe empty body → 400; bad extension → 400, no Gnani
   assert.equal(badExt.status, 400);
   assert.equal(gnaniCalls.length, 0);
 });
+
+test("POST /voice/synthesize with non-allowlisted voice → 400, no Gnani call (5.1)", async () => {
+  gnaniCalls.length = 0;
+  const res = await post("/voice/synthesize", JSON.stringify({ text: "SOS", voice: "SomeoneElse" }), KEY, "application/json");
+  assert.equal(res.status, 400);
+  // This file's post() returns the raw Response — parse the JSON body.
+  const body = await res.json();
+  assert.equal(body.error, "unsupported-voice");
+  assert.equal(gnaniCalls.length, 0); // no Gnani request was made
+});

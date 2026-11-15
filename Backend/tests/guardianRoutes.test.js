@@ -129,10 +129,11 @@ test("POST /guardians/:id/request-code: SMS unconfigured → 503 verification-un
   assert.equal(res.body.success, false);
   assert.equal(res.body.sent, false);
   assert.equal(res.body.reason, "channel-not-configured");
-  // Nothing was issued: a verify now must say no code is pending.
+  // Nothing was issued: a verify now fails generic (R1i — one
+  // status, one message for every verify failure).
   const verify = await post(`/guardians/${id}/verify`, { code: "123456" });
-  assert.equal(verify.status, 409);
-  assert.match(verify.body.error, /No verification code pending/);
+  assert.equal(verify.status, 400);
+  assert.equal(verify.body.error, "Invalid or expired code");
 });
 
 test("POST /guardians/:id/request-code + /verify: unknown id → 404", async () => {
@@ -162,9 +163,10 @@ test("POST /guardians/:id/verify: issued code → 200 verified; response carries
   assert.ok(res.body.guardian.verifiedAt);
   assert.equal(JSON.stringify(res.body).includes(code), false);
   assert.equal(JSON.stringify(res.body).includes(hash), false);
-  // A second verify finds no pending code.
+  // A second verify finds no pending code — same generic 400 (R1i).
   const again = await post(`/guardians/${id}/verify`, { code });
-  assert.equal(again.status, 409);
+  assert.equal(again.status, 400);
+  assert.equal(again.body.error, "Invalid or expired code");
 });
 
 test("POST /guardians/:id/verify: wrong code → 400; non-string code → 400", async () => {
@@ -172,7 +174,7 @@ test("POST /guardians/:id/verify: wrong code → 400; non-string code → 400", 
   const wrong = code === "000000" ? "000001" : "000000";
   const res = await post(`/guardians/${id}/verify`, { code: wrong });
   assert.equal(res.status, 400);
-  assert.match(res.body.error, /Invalid verification code/);
+  assert.equal(res.body.error, "Invalid or expired code"); // R1i: one generic message
   assert.equal((await post(`/guardians/${id}/verify`, { code: 123456 })).status, 400);
 });
 

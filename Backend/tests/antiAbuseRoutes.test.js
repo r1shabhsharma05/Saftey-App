@@ -42,6 +42,7 @@ const { issueCode } = require("../services/guardian");
 const strikes = require("../services/strikes");
 const { audit, _setWriteSink } = require("../services/audit");
 const { _setDbTransport } = require("../services/supabaseDb");
+const { _setAuthTransport } = require("../services/supabaseAuth");
 
 const KEY = "d23-route-secret";
 const HEADERS = { "Content-Type": "application/json", "x-api-key": KEY };
@@ -156,8 +157,10 @@ test("3 code brute-forces → strike each; SOS 403 after the 3rd, 200 after the 
     guardianStore.save(guardian);
     for (let attempt = 0; attempt < 5; attempt++) {
       const res = await post(`/guardians/${guardian.id}/verify`, { code: "000000" });
-      if (attempt < 4) assert.equal(res.status, 400);
-      else assert.equal(res.status, 409);
+      // Run-2 R1i: the killed 5th attempt is the same generic 400 as
+      // every other verify failure — the strike is still recorded.
+      assert.equal(res.status, 400);
+      assert.equal(res.body.error, "Invalid or expired code");
     }
     assert.equal(strikes.strikeCount(IP_ACTOR), g + 1);
     if (g === 0) {
@@ -172,15 +175,51 @@ test("3 code brute-forces → strike each; SOS 403 after the 3rd, 200 after the 
 
 // --- admin audit read-back ---
 
-test("GET /admin/audit: no key → 401", async () => {
+test("GET /admin/audit: no JWT and no key → 401", async () => {
   const res = await get("/admin/audit", { "Content-Type": "application/json" });
   assert.equal(res.status, 401);
 });
 
-test("GET /admin/audit: Supabase unconfigured → honest 503", async () => {
+test("GET /admin/audit: shared key alone → 401 (JWT only, run-2 3.3)", async () => {
   const res = await get("/admin/audit");
-  assert.equal(res.status, 503);
-  assert.match(res.body.error, /not configured/i);
+  assert.equal(res.status, 401);
+});
+
+test("GET /admin/audit: JWT user not on the allowlist → 403", async () => {
+  _setAuthTransport(async () => ({ status: 200, data: { id: "not-an-admin", email: "n@x.y" } }));
+  process.env.ADMIN_USER_IDS = "admin-1";
+  // JWT verification needs a URL + key (anon is enough); the DB
+  // stays unconfigured here — the allowlist rejects before any read.
+  process.env.SUPABASE_URL = "https://example.supabase.co";
+  process.env.SUPABASE_ANON_KEY = "anon-key";
+  try {
+    const res = await get("/admin/audit", { ...HEADERS, Authorization: "Bearer good-jwt" });
+    assert.equal(res.status, 403);
+  } finally {
+    _setAuthTransport(null);
+    delete process.env.ADMIN_USER_IDS;
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_ANON_KEY;
+  }
+});
+
+test("GET /admin/audit: Supabase unconfigured → honest 503", async () => {
+  _setAuthTransport(async () => ({ status: 200, data: { id: "admin-1", email: "a@b.c" } }));
+  process.env.ADMIN_USER_IDS = "admin-1";
+  // JWT verification needs a URL + key (anon is enough), but the DB
+  // read needs the service key — absent here, so the route 503s.
+  process.env.SUPABASE_URL = "https://example.supabase.co";
+  process.env.SUPABASE_ANON_KEY = "anon-key";
+  try {
+    const res = await get("/admin/audit", { ...HEADERS, Authorization: "Bearer good-jwt" });
+    assert.equal(res.status, 503);
+    assert.match(res.body.error, /not configured/i);
+  } finally {
+    _setAuthTransport(null);
+    delete process.env.ADMIN_USER_IDS;
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_ANON_KEY;
+  }
 });
 
 test("GET /admin/audit: configured → 200 newest-first, limit clamped", async () => {
@@ -189,6 +228,8 @@ test("GET /admin/audit: configured → 200 newest-first, limit clamped", async (
     { ts: "2026-11-14T09:00:00.000Z", action: "alert.closed", actor: "fp1", ip: "1.1.1.1", alert_id: "a1", meta: null },
   ];
   const seenUrls = [];
+  _setAuthTransport(async () => ({ status: 200, data: { id: "admin-1", email: "a@b.c" } }));
+  process.env.ADMIN_USER_IDS = "admin-1";
   process.env.SUPABASE_URL = "https://example.supabase.co";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "d23-test-key";
   _setDbTransport(async (call) => {
@@ -196,16 +237,23 @@ test("GET /admin/audit: configured → 200 newest-first, limit clamped", async (
     return { data: rows };
   });
   try {
-    const res = await get("/admin/audit?limit=500");
+    const authHeaders = { ...HEADERS, Authorization: "Bearer good-jwt" };
+    const res = await get("/admin/audit?limit=500", authHeaders);
     assert.equal(res.status, 200);
     assert.equal(res.body.source, "postgres");
     assert.equal(res.body.events.length, 2);
     assert.equal(res.body.events[0].action, "alert.created");
-    assert.ok(seenUrls[0].includes("limit=100"));
-    const res2 = await get("/admin/audit?limit=abc");
+    // The audit_read audit() call also hits the mocked transport, so
+    // filter to the list reads (order=ts.desc) before checking limits.
+    const listUrls = seenUrls.filter((u) => u.includes("order=ts.desc"));
+    assert.ok(listUrls[0].includes("limit=100"));
+    const res2 = await get("/admin/audit?limit=abc", authHeaders);
     assert.equal(res2.status, 200);
-    assert.ok(seenUrls[1].includes("limit=50"));
+    const listUrls2 = seenUrls.filter((u) => u.includes("order=ts.desc"));
+    assert.ok(listUrls2[1].includes("limit=50"));
   } finally {
+    _setAuthTransport(null);
+    delete process.env.ADMIN_USER_IDS;
     delete process.env.SUPABASE_URL;
     delete process.env.SUPABASE_SERVICE_ROLE_KEY;
     _setDbTransport(null);

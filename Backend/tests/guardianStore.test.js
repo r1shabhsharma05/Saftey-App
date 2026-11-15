@@ -60,7 +60,7 @@ test("getByPhone: finds by normalized phone; unknown phone is null", async () =>
   assert.equal(await guardianStore.getByPhone("+919999999999"), null);
 });
 
-test("save: mirrors to Postgres when configured — code hash IS mirrored, request ledger is NOT", async () => {
+test("save: mirrors to Postgres when configured — code hash AND request ledger are mirrored (R1d)", async () => {
   guardianStore._clearMemory();
   const calls = [];
   process.env.SUPABASE_URL = "https://example.supabase.co";
@@ -82,7 +82,7 @@ test("save: mirrors to Postgres when configured — code hash IS mirrored, reque
     assert.equal(calls[0].body.code_hash, g.verification.hash);
     assert.equal(calls[0].body.code_salt, g.verification.salt);
     assert.equal(calls[0].body.code_attempts, 0);
-    assert.equal("code_requests" in calls[0].body, false);
+    assert.deepEqual(calls[0].body.code_requests, g.codeRequests);
     assert.equal(JSON.stringify(calls[0].body).includes(code), false);
   } finally {
     delete process.env.SUPABASE_URL;

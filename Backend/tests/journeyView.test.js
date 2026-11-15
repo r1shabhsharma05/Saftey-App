@@ -11,7 +11,8 @@ const OLD_SECRET = process.env.API_SECRET;
 test("journeyToken: mints a hex token and verifies it back", () => {
   process.env.API_SECRET = "d16-test-secret";
   const token = journeyToken("journey-123");
-  assert.match(token, /^[0-9a-f]{64}$/);
+  // Run-2 2.5: expiry.HMAC format, 24 h TTL.
+  assert.match(token, /^\d+\.[0-9a-f]{64}$/);
   assert.equal(verifyJourneyToken("journey-123", token), true);
 });
 
@@ -19,10 +20,18 @@ test("verifyJourneyToken: wrong journey, wrong token, or tampered token fails", 
   process.env.API_SECRET = "d16-test-secret";
   const token = journeyToken("journey-123");
   assert.equal(verifyJourneyToken("journey-456", token), false);
-  assert.equal(verifyJourneyToken("journey-123", "0".repeat(64)), false);
+  assert.equal(verifyJourneyToken("journey-123", `${Date.now() + 3600000}.` + "0".repeat(64)), false);
   assert.equal(verifyJourneyToken("journey-123", token.slice(0, -1) + "0"), false);
   assert.equal(verifyJourneyToken("journey-123", ""), false);
   assert.equal(verifyJourneyToken("journey-123", undefined), false);
+});
+
+test("verifyJourneyToken: an expired token fails (2.5)", () => {
+  process.env.API_SECRET = "test-journey-secret";
+  const expired = journeyToken("journey-123", Date.now() - 1000);
+  assert.equal(verifyJourneyToken("journey-123", expired), false);
+  // An old-format token (bare hex, no expiry) fails too.
+  assert.equal(verifyJourneyToken("journey-123", "a".repeat(64)), false);
 });
 
 test("journeyToken: no secret means no token and no verification", () => {

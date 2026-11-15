@@ -240,7 +240,7 @@ test("escalate: step 1 refires failed channels and bumps attempts; duplicate ste
   assert.equal(stoppedBody.ackCount, 2);
 });
 
-test("escalate: step 3 voice step records an honest unconfigured receipt, never throws", async () => {
+test("escalate: step 3 voice step is recorded as skipped (11.3), never a fake call", async () => {
   const alert = seedDelivered();
   const res = await fetch(`${base}/escalate`, {
     method: "POST",
@@ -254,8 +254,10 @@ test("escalate: step 3 voice step records an honest unconfigured receipt, never 
   const body = await res.json();
   assert.equal(body.escalation.runs.length, 1);
   assert.equal(body.escalation.runs[0].action, "voice-call");
-  assert.equal(body.escalation.runs[0].voice.reason, "channel-not-configured");
-  assert.equal(body.escalation.runs[0].voice.sent, 0);
+  assert.equal(body.escalation.runs[0].sent, 0);
+  assert.equal(body.escalation.runs[0].failed, 0);
+  assert.match(body.escalation.runs[0].note, /voice-call skipped \(not supported/);
+  assert.equal(body.escalation.runs[0].voice, undefined);
 });
 
 test("escalate (M6): two concurrent callbacks for one step fire exactly once", async () => {

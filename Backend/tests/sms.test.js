@@ -37,9 +37,11 @@ const mockFetch = (handler) => {
 
 test("normalizePhone: strips formatting, rejects junk", () => {
   assert.equal(normalizePhone("+91 98765 43210"), "+919876543210");
-  assert.equal(normalizePhone("(987) 654-3210"), "+919876543210"); // bare 10-digit → +91 (E.164)
-  assert.equal(normalizePhone("6396039797"), "+916396039797");
-  assert.equal(normalizePhone("09876543210"), "+919876543210"); // 0-trunk → +91
+  // Run-2 R1a: no silent +91 default — a bare 10-digit or 0-trunk
+  // number has no explicit country code, so it is REJECTED.
+  assert.equal(normalizePhone("(987) 654-3210"), "");
+  assert.equal(normalizePhone("6396039797"), "");
+  assert.equal(normalizePhone("09876543210"), "");
   assert.equal(normalizePhone("919876543210"), "+919876543210"); // 91-prefixed → +91
   assert.equal(normalizePhone("+442071234567"), "+442071234567"); // non-Indian untouched
   assert.equal(normalizePhone("123"), "");

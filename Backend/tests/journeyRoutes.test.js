@@ -98,7 +98,7 @@ test("POST /journeys: PUBLIC_BASE_URL set → viewUrl carries a signed token", a
   try {
     const res = await post("/journeys", createBody());
     const data = await res.json();
-    assert.match(data.viewUrl, /^https:\/\/example\.invalid\/journey\/[0-9a-f-]+\/view\?token=[0-9a-f]{64}$/);
+    assert.match(data.viewUrl, /^https:\/\/example\.invalid\/journey\/[0-9a-f-]+\/view\?token=\d+\.[0-9a-f]{64}$/); // run-2 2.5: expiry.HMAC
   } finally {
     delete process.env.PUBLIC_BASE_URL;
   }

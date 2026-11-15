@@ -20,8 +20,11 @@ const {
   voiceStatus,
   synthesizeSpeech,
   transcribeAudio,
-  sendVoiceCall,
   sendVoiceAlert,
+  GNANI_DAILY_CAP,
+  checkGnaniQuota,
+  recordGnaniCall,
+  _clearGnaniQuota,
 } = require("../services/voice");
 
 const fakeWav = () => new Uint8Array([82, 73, 70, 70]).buffer; // "RIFF"
@@ -193,30 +196,6 @@ test("transcribeAudio: bad audio fails before any call; non-2xx, throw, bad JSON
   );
 });
 
-test("sendVoiceCall: Vachana has no call leg — honest not-supported, zero HTTP calls", async () => {
-  let calls = 0;
-  const counting = async () => { calls += 1; return okTts(); };
-  assert.deepEqual(
-    await sendVoiceCall({ to: "+919999999999", message: "SOS", fetchImpl: counting }),
-    { sent: 0, failed: 1, reason: "voice-call-not-supported" }
-  );
-  assert.equal(calls, 0);
-  assert.deepEqual(
-    await sendVoiceCall({ to: "not-a-phone", message: "SOS", fetchImpl: counting }),
-    { sent: 0, failed: 1, reason: "invalid-phone" }
-  );
-  assert.deepEqual(
-    await sendVoiceCall({ to: "+919999999999", message: "", fetchImpl: counting }),
-    { sent: 0, failed: 1, reason: "empty-content" }
-  );
-  delete process.env.GNANI_API_KEY;
-  assert.deepEqual(
-    await sendVoiceCall({ to: "+919999999999", message: "SOS", fetchImpl: counting }),
-    { sent: 0, failed: 1, reason: "channel-not-configured" }
-  );
-  process.env.GNANI_API_KEY = "test-gnani-key";
-});
-
 test("sendVoiceAlert: per-contact counts, dedupe, no recipients, partial failure", async () => {
   const contacts = [
     { phone: "+919999999999", name: "Asha" },
@@ -244,4 +223,49 @@ test("sendVoiceAlert: per-contact counts, dedupe, no recipients, partial failure
     { sent: 0, failed: 1, reason: "channel-not-configured" }
   );
   process.env.GNANI_API_KEY = "test-gnani-key";
+});
+
+test("synthesizeSpeech: non-allowlisted voice/language → 400-class, no Gnani call (5.1)", async () => {
+  let calls = 0;
+  const counting = async () => { calls += 1; return okTts(); };
+  assert.deepEqual(
+    await synthesizeSpeech({ text: "SOS", voice: "SomeoneElse", fetchImpl: counting }),
+    { ok: false, reason: "unsupported-voice" }
+  );
+  assert.deepEqual(
+    await synthesizeSpeech({ text: "SOS", language: "en-US", fetchImpl: counting }),
+    { ok: false, reason: "unsupported-language" }
+  );
+  // The allowlisted defaults still pass through untouched.
+  assert.deepEqual(
+    await synthesizeSpeech({ text: "SOS", voice: "Nalini", language: "hi-IN", fetchImpl: counting }),
+    { ok: true, audio: Buffer.from(await (await okTts()).arrayBuffer()), contentType: "audio/wav", bytes: 4 }
+  );
+  assert.equal(calls, 1);
+});
+
+test("transcribeAudio: non-allowlisted languageCode → unsupported-language, no Gnani call (5.1)", async () => {
+  let calls = 0;
+  const counting = async () => { calls += 1; return okStt(); };
+  assert.deepEqual(
+    await transcribeAudio({ audio: Buffer.from([1, 2, 3]), languageCode: "en-US", fetchImpl: counting }),
+    { ok: false, reason: "unsupported-language" }
+  );
+  assert.equal(calls, 0);
+});
+
+test("Gnani daily quota: 50/day per account, date-keyed (8.1)", () => {
+  _clearGnaniQuota();
+  const key = "user:test-user-1";
+  for (let i = 0; i < GNANI_DAILY_CAP; i++) {
+    assert.equal(checkGnaniQuota(key).allowed, true);
+    recordGnaniCall(key);
+  }
+  const full = checkGnaniQuota(key);
+  assert.equal(full.allowed, false);
+  assert.equal(full.used, GNANI_DAILY_CAP);
+  assert.equal(full.remaining, 0);
+  // Another account is unaffected.
+  assert.equal(checkGnaniQuota("user:test-user-2").allowed, true);
+  _clearGnaniQuota();
 });
