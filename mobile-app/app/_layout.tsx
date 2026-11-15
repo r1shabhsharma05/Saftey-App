@@ -30,6 +30,9 @@ import 'react-native-reanimated';
 import { Theme } from '../constants/theme';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { checkForceUpdate } from '../utils/forceUpdate';
+import ForceUpdateScreen from '../components/ForceUpdateScreen';
+import { getBackendUrl } from '../utils/backendUrl';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
@@ -59,6 +62,33 @@ export default function RootLayout() {
   const [introVisible, setIntroVisible] = useState(true);
   // Biometric app lock: true = the lock screen covers the tabs.
   const [locked, setLocked] = useState(false);
+  // H18 force-update gate: true = this build is below the backend's
+  // minSupportedVersion — the blocking notice covers the whole app.
+  const [updateRequired, setUpdateRequired] = useState(false);
+  const [minVersion, setMinVersion] = useState<string | undefined>(undefined);
+  const [latestVersion, setLatestVersion] = useState<string | undefined>(undefined);
+
+  // H18: check GET /version once on launch. Fail-open — a check
+  // that cannot reach the server (or a missing backend URL) never
+  // blocks the app; only a positive below-min answer sets the gate.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await checkForceUpdate(getBackendUrl());
+        if (!cancelled && result.updateRequired) {
+          setMinVersion(result.minSupportedVersion);
+          setLatestVersion(result.latestVersion);
+          setUpdateRequired(true);
+        }
+      } catch {
+        /* version check is best-effort — fail open */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [fontsLoaded, fontError] = useFonts({
     SpaceGrotesk_300Light,
@@ -211,6 +241,9 @@ export default function RootLayout() {
       )}
       <StatusBar style="auto" />
       <AppDialogHost />
+      {updateRequired ? (
+        <ForceUpdateScreen minSupportedVersion={minVersion} latestVersion={latestVersion} />
+      ) : null}
       {introVisible && (
         <Reanimated.View exiting={FadeOut.duration(320)} style={styles.intro}>
           <Pressable

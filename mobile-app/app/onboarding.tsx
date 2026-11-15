@@ -1,11 +1,13 @@
 import React from 'react';
 import { View, Text, StyleSheet, Pressable, Dimensions } from 'react-native';
+import * as Linking from 'expo-linking';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
 import AuthBackground from '../components/auth/Background';
 import { AuthTheme } from '../constants/auth-theme';
+import { PRIVACY_URL, TERMS_URL } from '../constants/legal';
 
 const { width } = Dimensions.get('window');
 
@@ -79,6 +81,18 @@ export default function OnboardingScreen() {
             <LinearGradient colors={AuthTheme.gradients.cta} style={styles.arrowBtn}>
               <Ionicons name="arrow-forward" size={26} color="#fff" />
             </LinearGradient>
+          </Pressable>
+        </Animated.View>
+
+        {/* O-12.1: Privacy Policy / Terms — same landing pages as
+            the login + register screens. */}
+        <Animated.View entering={FadeIn.delay(400).duration(500)} style={styles.legalRow}>
+          <Pressable onPress={() => Linking.openURL(TERMS_URL)} hitSlop={8}>
+            <Text style={styles.legalLink}>Terms of Service</Text>
+          </Pressable>
+          <Text style={styles.legalSep}> | </Text>
+          <Pressable onPress={() => Linking.openURL(PRIVACY_URL)} hitSlop={8}>
+            <Text style={styles.legalLink}>Privacy Policy</Text>
           </Pressable>
         </Animated.View>
       </View>
@@ -197,4 +211,20 @@ const styles = StyleSheet.create({
     elevation: 10,
   },
   pressed: { opacity: 0.8 },
+  legalRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    paddingBottom: 8,
+  },
+  legalLink: {
+    color: AuthTheme.colors.faint,
+    fontFamily: AuthTheme.fonts.body,
+    fontSize: 12,
+    textDecorationLine: 'underline',
+  },
+  legalSep: {
+    color: AuthTheme.colors.faint,
+    fontFamily: AuthTheme.fonts.body,
+    fontSize: 12,
+  },
 });

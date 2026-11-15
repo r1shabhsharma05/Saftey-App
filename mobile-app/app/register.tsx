@@ -17,7 +17,8 @@ import { supabase } from '../utils/supabase';
 import { showAppDialog } from '../utils/dialog';
 import { ensureProfile, friendlyAuthError } from '../utils/auth';
 import { getBackendUrl } from '../utils/backendUrl';
-import { checkLoginPrecheck, completeSignup, requestSignupCode, verifySignupCode } from '../utils/phoneAuth';
+import { checkLoginPrecheck, completeSignup, requestSignupCode, submitProfileDob, verifySignupCode } from '../utils/phoneAuth';
+import { validateDateOfBirth } from '../utils/dob';
 import { DEFAULT_COUNTRY, nationalDigitsValid, toE164, type CountryOption } from '../utils/phone';
 import { PRIVACY_URL, TERMS_URL } from '../constants/legal';
 import GlobeWireframe from '../components/GlobeWireframe';
@@ -57,6 +58,10 @@ export default function RegisterScreen() {
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  // H15 age gate: YYYY-MM-DD, validated client-side (age >= 13)
+  // before any signup attempt; sent as `dateOfBirth` at
+  // signup/complete (the server re-checks it).
+  const [dateOfBirth, setDateOfBirth] = useState('');
   const [loading, setLoading] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
 
@@ -81,7 +86,51 @@ export default function RegisterScreen() {
       const { error } = await signInWithGoogle();
       if (error) {
         showAppDialog('Google Sign-Up Unavailable', error);
+        return;
       }
+      // H15 age gate for Google sign-up: OAuth creates the Supabase
+      // account directly, so signup/complete's DOB check never runs.
+      // Check the DOB on record BEFORE completing profile creation.
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const user = session?.user;
+      if (!user) return; // user cancelled — no session, nothing to gate
+      const metaDob = (user.user_metadata as Record<string, unknown> | undefined)?.date_of_birth;
+      if (typeof metaDob === 'string' && validateDateOfBirth(metaDob).ok) {
+        // DOB already on record — skip the prompt and the POST.
+        await ensureProfile(user);
+        return;
+      }
+      // No DOB on record: the DOB field on this screen is the prompt
+      // (same input + validation as the phone form below). Nothing is
+      // completed until a valid DOB is posted to /auth/profile/dob.
+      const dob = validateDateOfBirth(dateOfBirth);
+      if (!dob.ok) {
+        // Fail closed: drop the fresh Google session so the root
+        // layout's auth listener cannot carry an under-gated account
+        // into the tabs, and tell the user to enter a DOB and tap
+        // Google again.
+        await supabase.auth.signOut();
+        showAppDialog(
+          'Date of Birth Required',
+          'Google sign-up needs your date of birth — you must be at least 13. Please enter it in the date of birth field below, then tap Continue with Google again.'
+        );
+        return;
+      }
+      const posted = await submitProfileDob(BACKEND_URL, dob.iso);
+      if (!posted.reached || !posted.success) {
+        // Fail closed: no DOB on record → no completed signup.
+        await supabase.auth.signOut();
+        showAppDialog(
+          'Sign Up Incomplete',
+          posted.reached
+            ? posted.error || 'Your date of birth could not be saved. Please try signing up again.'
+            : 'Could not reach the SafeLife servers. Please check your internet and try signing up again.'
+        );
+        return;
+      }
+      await ensureProfile(user);
       // On success the root layout's auth listener navigates to the tabs.
     } catch (e: any) {
       showAppDialog('Google Sign-Up Unavailable', friendlyAuthError(e));
@@ -95,10 +144,10 @@ export default function RegisterScreen() {
     const cleanFirst = firstName.trim();
     const cleanPhone = phone.trim();
 
-    if (!cleanFirst || !cleanEmail || !password || !cleanPhone) {
+    if (!cleanFirst || !cleanEmail || !password || !cleanPhone || !dateOfBirth.trim()) {
       showAppDialog(
         'Missing Details',
-        'Please fill in your name, phone, email and password.'
+        'Please fill in your name, phone, email, password and date of birth.'
       );
       return;
     }
@@ -121,6 +170,13 @@ export default function RegisterScreen() {
     }
     if (password.length < 6) {
       showAppDialog('Weak Password', 'Password must be at least 6 characters long.');
+      return;
+    }
+    // H15: age gate runs BEFORE any signup attempt — no code is
+    // requested and no account is created for an under-13 user.
+    const dob = validateDateOfBirth(dateOfBirth);
+    if (!dob.ok) {
+      showAppDialog('Age Requirement', dob.error);
       return;
     }
 
@@ -165,6 +221,15 @@ export default function RegisterScreen() {
     const startedAt = Date.now();
     const cleanEmail = email.trim().toLowerCase();
     const e164Phone = toE164(country.dial, phone.trim());
+    // H15: re-validate the DOB at completion so a stale form state
+    // can never send an unchecked value to signup/complete.
+    const dobCheck = validateDateOfBirth(dateOfBirth);
+    if (!dobCheck.ok) {
+      showAppDialog('Age Requirement', dobCheck.error);
+      setStage('form');
+      setOtpPhase('idle');
+      return;
+    }
     try {
       const completed = await completeSignup(BACKEND_URL, {
         proof,
@@ -172,6 +237,7 @@ export default function RegisterScreen() {
         password,
         name: `${firstName.trim()} ${lastName.trim()}`.trim(),
         phone: e164Phone,
+        dateOfBirth: dobCheck.iso,
       });
       if (!completed.reached) {
         showAppDialog(
@@ -399,6 +465,17 @@ export default function RegisterScreen() {
                   secureToggle
                   containerStyle={styles.fieldGap}
                 />
+                <AuthInput
+                  icon="calendar-outline"
+                  placeholder="Date of birth (YYYY-MM-DD)"
+                  value={dateOfBirth}
+                  onChangeText={setDateOfBirth}
+                  keyboardType="numbers-and-punctuation"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  containerStyle={styles.fieldGap}
+                />
+                <Text style={styles.dobHint}>You must be at least 13 years old to create an account.</Text>
 
                 <TurnstileWidget onToken={setTurnstileToken} />
 
@@ -527,6 +604,12 @@ const styles = StyleSheet.create({
   phoneRow: { flexDirection: 'row', gap: 10, marginTop: 14, alignItems: 'flex-start' },
   phoneInput: { flex: 1 },
   fieldGap: { marginTop: 14 },
+  dobHint: {
+    color: AuthTheme.colors.subtext,
+    fontFamily: AuthTheme.fonts.body,
+    fontSize: 12,
+    marginTop: 6,
+  },
   cta: { marginTop: 24, marginBottom: 20 },
   switchRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
   switchText: { color: AuthTheme.colors.subtext, fontFamily: AuthTheme.fonts.body, fontSize: 14 },

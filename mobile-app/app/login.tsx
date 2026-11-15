@@ -17,7 +17,8 @@ import { supabase } from '../utils/supabase';
 import { showAppDialog } from '../utils/dialog';
 import { ensureProfile, friendlyAuthError, resendConfirmation } from '../utils/auth';
 import { getBackendUrl } from '../utils/backendUrl';
-import { checkLoginPrecheck, requestForgotPassword, requestLoginCode, verifyLoginCode } from '../utils/phoneAuth';
+import { checkLoginPrecheck, requestForgotPassword, requestLoginCode, submitProfileDob, verifyLoginCode } from '../utils/phoneAuth';
+import { validateDateOfBirth } from '../utils/dob';
 import { DEFAULT_COUNTRY, nationalDigitsValid, toE164, type CountryOption } from '../utils/phone';
 import { PRIVACY_URL, TERMS_URL } from '../constants/legal';
 import GlobeWireframe from '../components/GlobeWireframe';
@@ -53,6 +54,14 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
+
+  // H15 age gate for Google sign-in (mirror of register.tsx):
+  // pre-gate Google accounts never passed signup/complete's DOB
+  // check. The DOB field below only appears when a Google sign-in
+  // lands without a DOB on record — the user enters it, then taps
+  // Google again. Phone-OTP sign-in is untouched.
+  const [dateOfBirth, setDateOfBirth] = useState('');
+  const [googleDobNeeded, setGoogleDobNeeded] = useState(false);
 
   // OTP stage: the digits live inside OtpCubes; the parent only
   // holds the phase, the same way register.tsx wires it.
@@ -232,7 +241,54 @@ export default function LoginScreen() {
       const { error } = await signInWithGoogle();
       if (error) {
         showAppDialog('Google Sign-In Unavailable', error);
+        return;
       }
+      // H15 age gate for Google sign-in, mirroring register.tsx's
+      // handleGoogle: OAuth creates the Supabase session directly,
+      // so signup/complete's DOB check never ran for pre-gate
+      // Google accounts. Check the DOB on record BEFORE the session
+      // is allowed to proceed into the tabs.
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const user = session?.user;
+      if (!user) return; // user cancelled — no session, nothing to gate
+      const metaDob = (user.user_metadata as Record<string, unknown> | undefined)?.date_of_birth;
+      if (typeof metaDob === 'string' && validateDateOfBirth(metaDob).ok) {
+        // DOB already on record — skip the prompt and the POST.
+        await ensureProfile(user);
+        return;
+      }
+      // No DOB on record: the DOB field revealed below is the prompt
+      // (same input + validation as register.tsx). Nothing is
+      // completed until a valid DOB is posted to /auth/profile/dob.
+      const dob = validateDateOfBirth(dateOfBirth);
+      if (!dob.ok) {
+        // Fail closed: drop the fresh Google session so the root
+        // layout's auth listener cannot carry an under-gated account
+        // into the tabs, reveal the DOB field, and tell the user to
+        // enter a DOB and tap Google again.
+        await supabase.auth.signOut();
+        setGoogleDobNeeded(true);
+        showAppDialog(
+          'Date of Birth Required',
+          'Google sign-in needs your date of birth — you must be at least 13. Please enter it in the date of birth field below, then tap Continue with Google again.'
+        );
+        return;
+      }
+      const posted = await submitProfileDob(BACKEND_URL, dob.iso);
+      if (!posted.reached || !posted.success) {
+        // Fail closed: no DOB on record → no entry into the app.
+        await supabase.auth.signOut();
+        showAppDialog(
+          'Sign-In Incomplete',
+          posted.reached
+            ? posted.error || 'Your date of birth could not be saved. Please try signing in again.'
+            : 'Could not reach the SafeLife servers. Please check your internet and try signing in again.'
+        );
+        return;
+      }
+      await ensureProfile(user);
       // On success the root layout's auth listener navigates to the tabs.
     } catch (e: any) {
       showAppDialog('Google Sign-In Unavailable', friendlyAuthError(e));
@@ -310,6 +366,22 @@ export default function LoginScreen() {
             </View>
 
             <SocialButton provider="google" onPress={handleGoogle} variant="light" />
+
+            {googleDobNeeded && (
+              <>
+                <AuthInput
+                  icon="calendar-outline"
+                  placeholder="Date of birth (YYYY-MM-DD)"
+                  value={dateOfBirth}
+                  onChangeText={setDateOfBirth}
+                  keyboardType="numbers-and-punctuation"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  containerStyle={styles.fieldGap}
+                />
+                <Text style={styles.dobHint}>You must be at least 13 years old to use SafeLife.</Text>
+              </>
+            )}
 
             <OrDivider label="or continue with mobile" />
 
@@ -463,6 +535,12 @@ const styles = StyleSheet.create({
   toggleText: { color: '#a1a1aa', fontFamily: AuthTheme.fonts.label, fontSize: 14 },
   toggleActiveText: { color: '#000', fontFamily: AuthTheme.fonts.label, fontSize: 14 },
   fieldGap: { marginTop: 14 },
+  dobHint: {
+    color: AuthTheme.colors.subtext,
+    fontFamily: AuthTheme.fonts.body,
+    fontSize: 12,
+    marginTop: 6,
+  },
   phoneRow: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
   phoneInput: { flex: 1 },
   otpTitle: {
