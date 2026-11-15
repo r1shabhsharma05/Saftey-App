@@ -289,12 +289,16 @@ router.post("/auth/login/verify-code", phoneCodeLimiter, trackingLimiter, async 
 // The response is ALWAYS the same generic success, hit or miss —
 // existence must never leak. A DB outage or a failed reset send is
 // logged server-side only, never reflected in the response.
+// Run-3 fix round 3 (6.3): Turnstile runs BEFORE any phone lookup
+// or reset send — same checkTurnstile helper as signup/login (hard
+// 400 when configured, fail-open while TURNSTILE_SECRET_KEY unset).
 router.post("/auth/forgot-password", phoneCodeLimiter, trackingLimiter, async (req, res) => {
   const generic = { success: true, message: "If an account exists for this number, a password reset link has been sent." };
   const phone = normalizePhone(req.body.phone);
   if (!phone) {
     return res.status(400).json({ success: false, error: "Invalid phone number" });
   }
+  if (!(await checkTurnstile(req, res))) return;
   if (!dbStatus().configured) {
     console.log("❌ forgot-password: DB unconfigured, cannot look up email");
     return res.json(generic);

@@ -619,15 +619,16 @@ router.post("/alert/:id/message", trackingLimiter, requireUser, async (req, res)
   if (typeof key !== "string" || !key) {
     return res.status(400).json({ success: false, error: "Invalid message" });
   }
-  // Run-2 3.1: a victim sender must own the alert; a guardian
-  // sender must be the guardian record's owner.
-  if (req.user && sender === "victim" && alert.ownerId && alert.ownerId !== req.user.id) {
+  // Run-3 fix round 3 (F-3.1R): owns() denies null-owner rows — a
+  // legacy ownerless alert / guardian record is inaccessible to
+  // everyone, not open to any caller (same rule as loadGuardian).
+  if (sender === "victim" && !owns(req, alert.ownerId)) {
     return res.status(403).json({ success: false, error: "Forbidden" });
   }
   if (sender === "guardian") {
     const guardian = await guardianStore.get(guardianId);
     if (!guardian) return res.status(404).json({ success: false, error: "Guardian not found" });
-    if (req.user && guardian.userId && guardian.userId !== req.user.id) {
+    if (!owns(req, guardian.userId)) {
       return res.status(403).json({ success: false, error: "Forbidden" });
     }
   }

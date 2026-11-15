@@ -135,7 +135,12 @@ router.post("/guardians", trackingLimiter, requireUser, async (req, res) => {
 // exist. A verified guardian needs no code (409). The per-hour cap
 // is a 429. The code itself never leaves the server except inside
 // the SMS body.
-router.post("/guardians/:id/request-code", codeLimiter, requireUser, async (req, res) => {
+// Run-3 fix round 3 (6.1): phoneCodeLimiter joins codeLimiter —
+// codeLimiter is per-IP per-hour (one IP burning codes across many
+// guardians); phoneCodeLimiter keys guardian:<id> here (no phone in
+// the body, and one guardian IS one phone), 5/min per guardian, the
+// same bucket the verify route already uses. Neither is redundant.
+router.post("/guardians/:id/request-code", phoneCodeLimiter, codeLimiter, requireUser, async (req, res) => {
   const guardian = await loadGuardian(req, res);
   if (!guardian) return;
   if (guardian.state === "verified") {
