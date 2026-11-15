@@ -20,7 +20,7 @@
     "express": "^5.2.1"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "concurrently": "^10.0.7"
   },
   "overrides": {
     "shell-quote": "1.12.0"
