@@ -1,0 +1,177 @@
+name: Dependency audit
+
+# Check 9.1 evidence route: GitHub Actions runs `npm audit` (the npm
+# registry 403s from the dev VM, so the audit cannot run locally).
+# Produces per-workspace audit JSON artifacts + one rolling Issue.
+# This workflow never pushes commits, so it cannot trigger itself.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Backend/**'
+      - 'mobile-app/**'
+      - 'landing/**'
+      - 'package*.json'
+      - '**/package-lock.json'
+      - '.github/workflows/npm-audit.yml'
+  schedule:
+    # Weekly: Mondays 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # npm audit exits non-zero when vulnerabilities are found, so each
+      # call is guarded with `|| true`; continue-on-error is the second
+      # guard so the report + Issue are always produced.
+      - name: Run npm audit per workspace
+        id: audit
+        continue-on-error: true
+        run: |
+          for spec in "root:." "backend:Backend" "mobile-app:mobile-app" "landing:landing"; do
+            name="${spec%%:*}"
+            dir="${spec#*:}"
+            if [ -f "$dir/package-lock.json" ]; then
+              (cd "$dir" && npm audit --json > "$GITHUB_WORKSPACE/audit-$name.json" || true)
+            fi
+          done
+          ls -la audit-*.json
+
+      - name: Upload root audit report
+        if: always() && hashFiles('audit-root.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-root
+          path: audit-root.json
+          retention-days: 90
+
+      - name: Upload backend audit report
+        if: always() && hashFiles('audit-backend.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-backend
+          path: audit-backend.json
+          retention-days: 90
+
+      - name: Upload mobile-app audit report
+        if: always() && hashFiles('audit-mobile-app.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-mobile-app
+          path: audit-mobile-app.json
+          retention-days: 90
+
+      - name: Upload landing audit report
+        if: always() && hashFiles('audit-landing.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-landing
+          path: audit-landing.json
+          retention-days: 90
+
+      - name: Create or update audit Issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const workspaces = ['root', 'backend', 'mobile-app', 'landing'];
+            const sevRank = { critical: 0, high: 1, moderate: 2, low: 3 };
+            const rows = [];
+            const advisories = [];
+            for (const ws of workspaces) {
+              const file = `audit-${ws}.json`;
+              let counts = null;
+              try {
+                const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+                counts = data.metadata && data.metadata.vulnerabilities
+                  ? data.metadata.vulnerabilities
+                  : null;
+                const vulns = data.vulnerabilities || {};
+                for (const v of Object.values(vulns)) {
+                  const vias = Array.isArray(v.via) ? v.via : [];
+                  for (const via of vias) {
+                    if (via && typeof via === 'object' && via.title) {
+                      advisories.push({
+                        ws,
+                        title: via.title,
+                        severity: via.severity || v.severity || 'unknown',
+                        url: via.url || '',
+                      });
+                    }
+                  }
+                }
+              } catch (e) {
+                // Missing/unparseable report: row shows "no report".
+              }
+              rows.push(counts
+                ? `| ${ws} | ${counts.total ?? 0} | ${counts.critical ?? 0} | ${counts.high ?? 0} | ${counts.moderate ?? 0} | ${counts.low ?? 0} |`
+                : `| ${ws} | no report | - | - | - | - |`);
+            }
+            const seen = new Set();
+            const top = advisories
+              .filter(a => { const k = a.title; if (seen.has(k)) return false; seen.add(k); return true; })
+              .sort((a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9))
+              .slice(0, 10);
+            const topLines = top.length
+              ? top.map(a => `- **${a.severity}** (${a.ws}): ${a.url ? `[${a.title}](${a.url})` : a.title}`).join('\n')
+              : 'No advisories with titles reported.';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              '## Dependency audit report',
+              '',
+              `Run date (UTC): ${new Date().toISOString()}`,
+              `Commit: ${context.sha}`,
+              `Workflow run: ${runUrl}`,
+              '',
+              '| Workspace | Total | Critical | High | Moderate | Low |',
+              '| --- | ---: | ---: | ---: | ---: | ---: |',
+              ...rows,
+              '',
+              '### Top advisories',
+              '',
+              topLines,
+              '',
+              'Full per-workspace JSON reports are attached to the workflow run as artifacts (`npm-audit-root`, `npm-audit-backend`, `npm-audit-mobile-app`, `npm-audit-landing`).',
+              '',
+              '_Auto-generated by `.github/workflows/npm-audit.yml` — this Issue is updated on every run, not recreated._',
+            ].join('\n');
+            const title = 'Dependency audit report';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = issues.find(i => i.title === title);
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+              core.info(`Updated existing issue #${existing.number}`);
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              });
+              core.info(`Created issue #${created.number}`);
+            }
