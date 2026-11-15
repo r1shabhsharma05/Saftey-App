@@ -44,7 +44,8 @@ const authHeaders = (key, bearer) => ({
 });
 
 // Verifies a Supabase access token server-side and returns the user
-// it belongs to ({ id, email }). A 401 from Auth, a missing id, or
+// it belongs to ({ id, email }) plus the signup phone from
+// user_metadata, when present. A 401 from Auth, a missing id, or
 // an unconfigured backend all answer the same invalid-token.
 // Also returns session-freshness signals for re-auth-gated actions
 // (DELETE /auth/account, 12.3): lastSignInAt from the Auth user
@@ -81,6 +82,23 @@ const verifyUserToken = async (token) => {
     return {
       ok: true,
       user: { id: data.id, email: typeof data.email === "string" ? data.email : "" },
+      // F-12.3R: the phone the user signed up with rides in
+      // user_metadata (adminCreateUser sets it). DELETE /auth/account
+      // falls back to this when no profiles row exists, so the
+      // phone-keyed code rows (signup_codes/login_codes carry no
+      // user_id) can still be wiped instead of orphaned.
+      phone:
+        data.user_metadata && typeof data.user_metadata.phone === "string"
+          ? data.user_metadata.phone
+          : null,
+      // H15: the date of birth rides in user_metadata too
+      // (adminCreateUser sets it at phone signup; adminUpdateUser
+      // sets it for Google sign-ups). POST /auth/profile/dob reads
+      // it to enforce immutability once set.
+      dateOfBirth:
+        data.user_metadata && typeof data.user_metadata.date_of_birth === "string"
+          ? data.user_metadata.date_of_birth
+          : null,
       lastSignInAt: typeof data.last_sign_in_at === "string" ? data.last_sign_in_at : null,
       tokenIat: decodeJwtIat(token),
     };
@@ -91,10 +109,13 @@ const verifyUserToken = async (token) => {
 
 // Creates the account server-side (signup-complete, R1c): email is
 // confirmed at creation (the phone was already proven by OTP), and
-// the phone rides in user_metadata. A duplicate email answers the
-// same generic failure as any other create error — the route never
-// leaks "already registered".
-const adminCreateUser = async ({ email, password, name, phone } = {}) => {
+// the phone rides in user_metadata. H15: the date of birth (ISO
+// YYYY-MM-DD, age already checked ≥ 13 by the route) rides there
+// too — user_metadata is the backend-owned profile surface (no
+// server-side profiles-row write exists; the app owns that row).
+// A duplicate email answers the same generic failure as any other
+// create error — the route never leaks "already registered".
+const adminCreateUser = async ({ email, password, name, phone, dateOfBirth } = {}) => {
   const { url, serviceKey } = getConfig();
   if (!url || !serviceKey) return { ok: false, reason: "not_configured" };
   try {
@@ -106,13 +127,38 @@ const adminCreateUser = async ({ email, password, name, phone } = {}) => {
         email,
         password,
         email_confirm: true,
-        user_metadata: { full_name: name, phone },
+        user_metadata: { full_name: name, phone, date_of_birth: dateOfBirth },
       },
     });
     if (status !== 200 && status !== 201) {
       return { ok: false, reason: `admin-create-${status}` };
     }
     return { ok: true, user: { id: data?.id, email: data?.email } };
+  } catch (err) {
+    return { ok: false, reason: err.message || "transport-error" };
+  }
+};
+
+// Updates an existing auth user's metadata (Admin API, service_role
+// only) — POST /auth/profile/dob uses it to set date_of_birth on a
+// Google-created account that bypassed signup/complete (H15). The
+// Admin API merges user_metadata, so only the DOB key is sent and
+// phone / full_name are preserved.
+const adminUpdateUser = async (userId, userMetadata) => {
+  const { url, serviceKey } = getConfig();
+  if (!url || !serviceKey) return { ok: false, reason: "not_configured" };
+  if (typeof userId !== "string" || !userId) return { ok: false, reason: "invalid-user" };
+  try {
+    const { status } = await transport({
+      method: "PUT",
+      url: `${url}/auth/v1/admin/users/${encodeURIComponent(userId)}`,
+      headers: authHeaders(serviceKey, serviceKey),
+      body: { user_metadata: userMetadata },
+    });
+    if (status !== 200) {
+      return { ok: false, reason: `admin-update-${status}` };
+    }
+    return { ok: true };
   } catch (err) {
     return { ok: false, reason: err.message || "transport-error" };
   }
@@ -182,9 +228,17 @@ const deleteAvatarObject = async (userId) => {
 module.exports = {
   verifyUserToken,
   adminCreateUser,
+  adminUpdateUser,
   adminDeleteUser,
   recoverPassword,
   deleteAvatarObject,
+  // F-12.3R: lets DELETE /auth/account answer 503 "not configured"
+  // BEFORE wiping anything, now that the wipes run before the
+  // Admin delete instead of after it.
+  authConfigured: () => {
+    const { url, serviceKey } = getConfig();
+    return Boolean(url && serviceKey);
+  },
   // Test seam only — pass null to restore the production transport.
   _setAuthTransport: (fn) => {
     transport =

@@ -9,9 +9,10 @@
 // Identity: the guardian is keyed by the Supabase user id the
 // server verified plus a phone it proves it owns. Run-2: the JWT
 // is verified server-side (middleware/requireUser.js) and the
-// route takes userId from req.user.id — the body claim is only a
-// compat fallback for shared-key-only callers (APK ≤ #12), and
-// ownership is enforced on every read/write. The real binding is
+// route takes userId from req.user.id — a body userId is never
+// trusted (and is ignored), and ownership is enforced on every
+// read/write. The shared-key fallback that used to allow body
+// claims is gone (removed run-3 fix round 2). The real binding is
 // still the PHONE: the SMS code proves the registrant controls the
 // number.
 //
