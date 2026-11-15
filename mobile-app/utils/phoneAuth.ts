@@ -251,12 +251,21 @@ export const verifyLoginCode = async (
   };
 };
 
-/** Forgot password: one generic outcome regardless of whether the number has an account. */
+/** Forgot password: one generic outcome regardless of whether the number has an account.
+ * turnstileToken comes from the Turnstile widget, same as the login
+ * request-code call (6.3) — omitted when the widget is unconfigured
+ * or the token expired, in which case the server decides (fail-open
+ * until TURNSTILE_SECRET_KEY is set in Vercel; see the widget). */
 export const requestForgotPassword = async (
   backendUrl: string,
-  phone: string
+  phone: string,
+  turnstileToken?: string
 ): Promise<SimpleResult> => {
-  const { reached, data, failure } = await postJson(`${backendUrl}/auth/forgot-password`, { phone }, true);
+  const { reached, data, failure } = await postJson(
+    `${backendUrl}/auth/forgot-password`,
+    { phone, ...(turnstileToken ? { turnstileToken } : {}) },
+    true
+  );
   if (!reached || !data || typeof data !== 'object') {
     return { reached: false, success: false, failure };
   }

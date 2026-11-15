@@ -41,3 +41,53 @@ export function decideBatteryAlert(input: {
   }
   return level <= BATTERY_LOW_THRESHOLD && !lowSent ? 'low' : null;
 }
+
+// Queued battery-alert payload (F-M1) — the minimal copy of a live
+// battery-alert POST that the retry path (flushPendingBatteryAlert)
+// actually needs, shrunk so it always fits SecureStore's 2048-byte
+// Android cap. The live send goes out untruncated; only the queued
+// copy is shrunk, because the server applies these exact caps on
+// receipt anyway (Backend/routes/alerts.js POST /battery-alert):
+// contact name sanitizeText(…, 60), user name sanitizeText(…, 100),
+// user phone sanitizeText(…, 30), contacts sliced to 10. Contact
+// phones are cut to 20 chars: a valid E.164 number is at most 16
+// chars, so anything longer is unparseable and the server drops it
+// via normalizePhone — truncating it loses nothing deliverable.
+// Fields kept are exactly what the retry path reads or re-sends:
+// kind + alertId (freshness checks), lat/lng/battery (re-sent, and
+// refreshed from live refs when a fix exists), name/phone/contacts
+// (the alert itself). NO pushToken: the stored emergency-contacts
+// cache carries name + phone only (contacts.tsx saves {name, phone}),
+// so a pushToken here would always be absent — the server maps a
+// missing pushToken to '' and drops the contact only if name + phone
+// are empty too. Adding the field (up to 1024 chars per contact
+// server-side) would buy nothing and could blow the cap on its own.
+// Worst case after shrinking: 10 contacts × ~96 B + ~190 B of
+// scalars/wrapper ≈ 1.2 kB < 2048 B (see scripts/
+// check-battery-queue-size.mjs). Never fall back to plaintext
+// AsyncStorage: if this ever did exceed the cap, secureSetItem
+// still drops it rather than storing it in the clear.
+export function buildQueuedBatteryAlertPayload(input: {
+  kind: BatteryAlertKind;
+  lat: string;
+  lng: string;
+  name: string;
+  phone: string;
+  battery: number;
+  contacts: { name: string; phone: string }[];
+  alertId?: string;
+}): Record<string, unknown> {
+  return {
+    kind: input.kind,
+    lat: input.lat,
+    lng: input.lng,
+    name: input.name.slice(0, 100),
+    phone: input.phone.slice(0, 30),
+    battery: input.battery,
+    contacts: input.contacts.slice(0, 10).map((c) => ({
+      name: c.name.slice(0, 60),
+      phone: c.phone.slice(0, 20),
+    })),
+    ...(input.alertId ? { alertId: input.alertId } : {}),
+  };
+}
