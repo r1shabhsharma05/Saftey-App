@@ -35,7 +35,9 @@ export function friendlyAuthError(error: any): string {
     return 'Please verify your email address first — check your inbox for the confirmation link.';
   }
   if (/already registered|already been registered|user already/i.test(msg)) {
-    return 'This email is already registered. Try logging in instead.';
+    // Generic on purpose: naming the registered state would let
+    // anyone probe whether an email has an account (2.3).
+    return 'Could not create the account. Please try again.';
   }
   if (/password/i.test(msg) && /weak|short|least/i.test(msg)) {
     return 'Password must be at least 6 characters long.';
@@ -84,12 +86,20 @@ export async function ensureProfile(user: User): Promise<void> {
       phone: meta.phone || '',
       address: meta.address || '',
     };
-    // 8 random chars (36^8) instead of 4 — and a 23505 is only benign
-    // when it's our OWN row (a duplicate ensureProfile call). If the
-    // unique_id collided with another user, no row was created; the old
-    // code swallowed that too, leaving the profile blank forever.
-    const newUniqueId = () =>
-      `SL-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+    // CSPRNG id (4.2): crypto.getRandomValues, never Math.random —
+    // the 8 base-36 chars keep the SL-XXXXXXXX display shape, and a
+    // 23505 is only benign when it's our OWN row (a duplicate
+    // ensureProfile call). If the unique_id collided with another
+    // user, no row was created; the old code swallowed that too,
+    // leaving the profile blank forever.
+    const newUniqueId = () => {
+      const bytes = new Uint8Array(6);
+      crypto.getRandomValues(bytes);
+      return `SL-${Array.from(bytes, (b) => b.toString(36).padStart(2, '0'))
+        .join('')
+        .slice(0, 8)
+        .toUpperCase()}`;
+    };
     let { error } = await supabase
       .from('profiles')
       .insert([{ ...row, unique_id: newUniqueId() }]);

@@ -1,24 +1,25 @@
-// Phone auth client — SafeLife phone-OTP signup + phone-number login.
+// Phone auth client — SafeLife phone-OTP signup + phone-OTP login.
 //
-// Thin API client for POST /auth/signup/* and /auth/login/resolve,
-// mirroring the guardian client (utils/guardian.ts): 30 s timeout,
-// the x-api-key header only when EXPO_PUBLIC_API_SECRET exists, and
-// a `reached` flag so the caller can tell "the server answered but
-// refused" apart from "the request never left the phone". The
-// verification code is never stored on the device and never logged —
-// it is typed by the user and sent once, then forgotten.
+// Thin API client for POST /auth/signup/*, /auth/login/*,
+// /auth/forgot-password and DELETE /auth/account, mirroring the
+// guardian client (utils/guardian.ts): 30 s timeout and a `reached`
+// flag so the caller can tell "the server answered but refused"
+// apart from "the request never left the phone". Authenticated calls
+// send `Authorization: Bearer <Supabase access token>` (see
+// utils/apiAuth.ts); the old shared EXPO_PUBLIC_API_SECRET /
+// x-api-key header is gone — it shipped inside the APK. The code
+// request/verify calls run before sign-in, so they send no
+// Authorization header. The verification code is never stored on
+// the device and never logged — it is typed by the user and sent
+// once, then forgotten.
 //
-// Failure diagnosis (the "No Connection" dialog used to hide all of
-// these behind one generic line): a fetch that aborts is a `timeout`
-// (the server was slow — Vercel cold start); anything else thrown by
-// fetch is `network` (DNS / refused / offline). The caller shows the
-// matching message instead of guessing.
-//
-// Retry rule: request-code and login-resolve retry ONCE on timeout
-// only — the server may simply have been slow. Verify NEVER retries:
-// a first attempt that timed out may already have consumed the code
-// server-side, and a retry would report "no code pending" for a
-// verification that actually succeeded.
+// Retry rule: request-code retries ONCE on timeout only — the server
+// may simply have been slow. Verify NEVER retries: a first attempt
+// that timed out may already have consumed the code server-side,
+// and a retry would report "no code pending" for a verification
+// that actually succeeded.
+
+import { getAuthHeaders } from './apiAuth';
 
 export type PostFailure = 'timeout' | 'network';
 
@@ -34,23 +35,31 @@ export interface CodeRequestResult {
 export interface VerifyResult {
   reached: boolean;
   success: boolean;
+  /** Short-lived, single-use proof binding (phone, expiry) — spent at signup-complete. */
+  proof?: string;
+  /** Login verify only: the account email to sign in with. */
+  email?: string;
   error?: string;
   failure?: PostFailure;
 }
 
-export interface ResolveResult {
+export interface CompleteSignupResult {
   reached: boolean;
   success: boolean;
-  email: string | null;
   error?: string;
   failure?: PostFailure;
 }
 
-const phoneAuthHeaders = (): Record<string, string> => ({
+export interface SimpleResult {
+  reached: boolean;
+  success: boolean;
+  error?: string;
+  failure?: PostFailure;
+}
+
+const phoneAuthHeaders = async (): Promise<Record<string, string>> => ({
   'Content-Type': 'application/json',
-  ...(process.env.EXPO_PUBLIC_API_SECRET
-    ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
-    : {}),
+  ...(await getAuthHeaders()),
 });
 
 const postJson = async (
@@ -66,7 +75,7 @@ const postJson = async (
     try {
       const response = await fetch(url, {
         method: 'POST',
-        headers: phoneAuthHeaders(),
+        headers: await phoneAuthHeaders(),
         body: JSON.stringify(body),
         signal: controller.signal,
       });
@@ -104,21 +113,48 @@ const toCodeRequestResult = (data: unknown, reached: boolean, failure?: PostFail
 };
 
 /** Step 1 of phone-OTP signup: SMS the 6-digit code to the phone. */
+// shortcut: turnstileToken is plumbed but no widget exists yet — the
+// app has no WebView, so the token is sent only when one is supplied;
+// a Turnstile widget + keys decision is still pending with Rishabh.
 export const requestSignupCode = async (
   backendUrl: string,
-  phone: string
+  phone: string,
+  turnstileToken?: string
 ): Promise<CodeRequestResult> => {
-  const { reached, data, failure } = await postJson(`${backendUrl}/auth/signup/request-code`, { phone }, true);
+  const { reached, data, failure } = await postJson(
+    `${backendUrl}/auth/signup/request-code`,
+    { phone, ...(turnstileToken ? { turnstileToken } : {}) },
+    true
+  );
   return toCodeRequestResult(data, reached, failure);
 };
 
-/** Step 2 of phone-OTP signup: server-side verdict on the code. */
+/** Step 2 of phone-OTP signup: server-side verdict on the code + proof token. */
 export const verifySignupCode = async (
   backendUrl: string,
   phone: string,
   code: string
 ): Promise<VerifyResult> => {
   const { reached, data, failure } = await postJson(`${backendUrl}/auth/signup/verify-code`, { phone, code }, false);
+  if (!reached || !data || typeof data !== 'object') {
+    return { reached: false, success: false, failure };
+  }
+  const d = data as { success?: boolean; proof?: unknown; proofToken?: unknown; token?: unknown; error?: unknown };
+  const proof = [d.proof, d.proofToken, d.token].find((v) => typeof v === 'string') as string | undefined;
+  return {
+    reached: true,
+    success: !!d.success,
+    proof,
+    error: typeof d.error === 'string' ? d.error : undefined,
+  };
+};
+
+/** Step 3 of phone-OTP signup: spend the proof to create the account server-side. */
+export const completeSignup = async (
+  backendUrl: string,
+  input: { proof: string; email: string; password: string; name: string; phone: string }
+): Promise<CompleteSignupResult> => {
+  const { reached, data, failure } = await postJson(`${backendUrl}/auth/signup/complete`, { ...input }, false);
   if (!reached || !data || typeof data !== 'object') {
     return { reached: false, success: false, failure };
   }
@@ -130,20 +166,73 @@ export const verifySignupCode = async (
   };
 };
 
-/** Phone-number login: resolve the account email for a phone. */
-export const resolveLoginEmail = async (
+/** Step 1 of phone-OTP login: SMS the 6-digit code to the phone. */
+export const requestLoginCode = async (
   backendUrl: string,
   phone: string
-): Promise<ResolveResult> => {
-  const { reached, data, failure } = await postJson(`${backendUrl}/auth/login/resolve`, { phone }, true);
+): Promise<CodeRequestResult> => {
+  const { reached, data, failure } = await postJson(`${backendUrl}/auth/login/request-code`, { phone }, true);
+  return toCodeRequestResult(data, reached, failure);
+};
+
+/** Step 2 of phone-OTP login: server-side verdict; success carries the account email. */
+export const verifyLoginCode = async (
+  backendUrl: string,
+  phone: string,
+  code: string
+): Promise<VerifyResult> => {
+  const { reached, data, failure } = await postJson(`${backendUrl}/auth/login/verify-code`, { phone, code }, false);
   if (!reached || !data || typeof data !== 'object') {
-    return { reached: false, success: false, email: null, failure };
+    return { reached: false, success: false, failure };
   }
   const d = data as { success?: boolean; email?: unknown; error?: unknown };
   return {
     reached: true,
     success: !!d.success,
-    email: typeof d.email === 'string' ? d.email : null,
+    email: typeof d.email === 'string' ? d.email : undefined,
     error: typeof d.error === 'string' ? d.error : undefined,
   };
+};
+
+/** Forgot password: one generic outcome regardless of whether the number has an account. */
+export const requestForgotPassword = async (
+  backendUrl: string,
+  phone: string
+): Promise<SimpleResult> => {
+  const { reached, data, failure } = await postJson(`${backendUrl}/auth/forgot-password`, { phone }, true);
+  if (!reached || !data || typeof data !== 'object') {
+    return { reached: false, success: false, failure };
+  }
+  const d = data as { success?: boolean; error?: unknown };
+  return {
+    reached: true,
+    success: !!d.success,
+    error: typeof d.error === 'string' ? d.error : undefined,
+  };
+};
+
+/** Delete the signed-in account server-side (JWT auth); caller signs out after. */
+export const deleteAccount = async (backendUrl: string): Promise<SimpleResult> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    const response = await fetch(`${backendUrl}/auth/account`, {
+      method: 'DELETE',
+      headers: await phoneAuthHeaders(),
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => null);
+    return {
+      reached: true,
+      success: response.ok && !!data && typeof data === 'object' && (data as { success?: boolean }).success === true,
+      error:
+        data && typeof data === 'object' && typeof (data as { error?: unknown }).error === 'string'
+          ? ((data as { error: string }).error as string)
+          : undefined,
+    };
+  } catch (err) {
+    return { reached: false, success: false, failure: err instanceof Error && err.name === 'AbortError' ? 'timeout' : 'network' };
+  } finally {
+    clearTimeout(timeout);
+  }
 };

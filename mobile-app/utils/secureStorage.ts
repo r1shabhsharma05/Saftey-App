@@ -1,16 +1,18 @@
 // (M2) Secrets live in the OS keychain/keystore, not plaintext
 // AsyncStorage. The Supabase session (access + refresh tokens), the
-// queued SOS payload (name, phone, live location) and the journey
-// share link are sensitive: a rooted device, a backup, or another
-// app reading the AsyncStorage file must not find them in the clear.
+// queued SOS payload (name, phone, live location), the journey
+// share link and the emergency contacts are sensitive: a rooted
+// device, a backup, or another app reading the AsyncStorage file
+// must not find them in the clear.
 //
-// expo-secure-store is native-only in spirit — on web it has no
-// keychain, so web keeps AsyncStorage (same exposure as before, but
-// the web build is not the shipped app). On native, values are read
-// from SecureStore; a value still sitting in AsyncStorage from before
-// this change is migrated once (copied to SecureStore, deleted from
-// AsyncStorage) so no user is logged out and no queued SOS is lost
-// by the move.
+// Web has no keychain, so tokens live only in memory — nothing is
+// written to localStorage, and a refresh forces re-login. On native,
+// values are read from SecureStore; a value still sitting in
+// AsyncStorage from before this change is migrated once (copied to
+// SecureStore, deleted from AsyncStorage). If SecureStore refuses
+// the migration copy (e.g. the 2048-byte Android cap), the plaintext
+// AsyncStorage copy is DELETED and null is returned — the user signs
+// in again instead of the app silently serving a plaintext token.
 //
 // Android limit: SecureStore values cap at 2048 bytes — the Supabase
 // session JSON sits well under that for this app; if it ever grew
@@ -27,9 +29,13 @@ import { Platform } from 'react-native';
 // `window` exists, so behaviour there is unchanged.
 const isNodeRender = Platform.OS === 'web' && typeof window === 'undefined';
 
+// Web token store: memory only, never localStorage — a refresh
+// forces re-login by design (13.1/2.6).
+const webMemory = new Map<string, string>();
+
 export const secureGetItem = async (key: string): Promise<string | null> => {
   if (isNodeRender) return null;
-  if (Platform.OS === 'web') return AsyncStorage.getItem(key);
+  if (Platform.OS === 'web') return webMemory.get(key) ?? null;
   let stored: string | null = null;
   try {
     stored = await SecureStore.getItemAsync(key);
@@ -47,9 +53,10 @@ export const secureGetItem = async (key: string): Promise<string | null> => {
     await AsyncStorage.removeItem(key).catch(() => {});
   } catch {
     // SecureStore refused it (e.g. over the 2048-byte Android cap):
-    // keep the AsyncStorage copy so the value is not lost, and return
-    // it — the caller still works, and the plaintext copy is a known
-    // fallback, not a silent deletion.
+    // delete the plaintext copy and return null — never serve the
+    // legacy plaintext value; the user signs in again.
+    await AsyncStorage.removeItem(key).catch(() => {});
+    return null;
   }
   return legacy;
 };
@@ -57,16 +64,25 @@ export const secureGetItem = async (key: string): Promise<string | null> => {
 export const secureSetItem = async (key: string, value: string): Promise<void> => {
   if (isNodeRender) return;
   if (Platform.OS === 'web') {
-    await AsyncStorage.setItem(key, value);
+    webMemory.set(key, value);
     return;
   }
-  await SecureStore.setItemAsync(key, value);
+  try {
+    await SecureStore.setItemAsync(key, value);
+  } catch {
+    // Write refused (e.g. over the 2048-byte Android cap): delete any
+    // plaintext legacy copy and do NOT persist the value — the
+    // session/queue is lost and the user signs in again, rather than
+    // the value landing in the clear. Swallowed (not thrown) so a
+    // refused persist can never break sign-in itself.
+    await AsyncStorage.removeItem(key).catch(() => {});
+  }
 };
 
 export const secureRemoveItem = async (key: string): Promise<void> => {
   if (isNodeRender) return;
   if (Platform.OS === 'web') {
-    await AsyncStorage.removeItem(key);
+    webMemory.delete(key);
     return;
   }
   // Delete from both stores: a pre-M2 plaintext copy must not survive

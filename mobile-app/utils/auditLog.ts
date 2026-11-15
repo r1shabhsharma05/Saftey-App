@@ -1,9 +1,11 @@
 // Audit log read-back — SafeLife 2.0 Day 23: GET /admin/audit.
-// Same auth shape as utils/guardian.ts (x-api-key only when the
-// secret is set). Every failure mode is an honest reason, never a
-// thrown error — the PROFILE screen must not crash when the audit
-// store is unconfigured or the backend is unreachable.
+// Same auth shape as utils/guardian.ts (`Authorization: Bearer
+// <Supabase access token>`, see utils/apiAuth.ts). Every failure
+// mode is an honest reason, never a thrown error — the PROFILE
+// screen must not crash when the audit store is unconfigured or the
+// backend is unreachable.
 import { getBackendUrl } from './backendUrl';
+import { getAuthHeaders } from './apiAuth';
 
 export interface AuditEvent {
   ts: string;
@@ -35,11 +37,7 @@ export const fetchAuditEvents = async (): Promise<AuditLogResult> => {
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
     const response = await fetch(`${base}/admin/audit?limit=20`, {
-      headers: {
-        ...(process.env.EXPO_PUBLIC_API_SECRET
-          ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
-          : {}),
-      },
+      headers: await getAuthHeaders(),
       signal: controller.signal,
     });
     if (response.status === 503) return { ok: false, reason: 'not-configured' };

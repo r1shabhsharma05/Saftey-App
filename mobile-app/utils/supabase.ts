@@ -6,9 +6,9 @@ import { secureGetItem, secureSetItem, secureRemoveItem } from './secureStorage'
 // (M2) The session lives in the OS keychain/keystore via
 // expo-secure-store, not plaintext AsyncStorage: the stored tokens
 // are what an attacker needs to impersonate the user. Web has no
-// keychain, so it keeps AsyncStorage (same exposure as before). A
-// pre-M2 session still in AsyncStorage is migrated once on first
-// read (see secureStorage.ts) — no user is logged out by the move.
+// keychain, so tokens live only in memory (see secureStorage.ts) —
+// a refresh forces re-login. A pre-M2 session still in AsyncStorage
+// is migrated once on first read — no user is logged out by the move.
 
 // 🚀 SUPABASE CONFIGURATION
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://xkfrsjtfbylhhrvibmxk.supabase.co';

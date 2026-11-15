@@ -1,9 +1,9 @@
 // Journey Guardian client — SafeLife 2.0 Day 16 (plan §6 D16, plan §3 F4).
 //
 // Thin API client for the /journeys endpoints, mirroring the SOS
-// postAlertOnce pattern in app/(tabs)/index.tsx: 30 s timeout, the
-// x-api-key header only when EXPO_PUBLIC_API_SECRET exists, and a
-// `reached` flag so the caller can tell "the server answered but
+// postAlertOnce pattern in app/(tabs)/index.tsx: 30 s timeout,
+// `Authorization: Bearer <Supabase access token>` on every call (see
+// utils/apiAuth.ts), and a `reached` flag so the caller can tell "the server answered but
 // refused" apart from "the request never left the phone". No channel
 // fan-out happens here — creation only returns a share link, and the
 // traveller sends it with the native share sheet.
@@ -87,11 +87,11 @@ export interface StoredJourney {
   viewUrl: string | null;
 }
 
-const journeyHeaders = (): Record<string, string> => ({
+import { getAuthHeaders } from './apiAuth';
+
+const journeyHeaders = async (): Promise<Record<string, string>> => ({
   'Content-Type': 'application/json',
-  ...(process.env.EXPO_PUBLIC_API_SECRET
-    ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
-    : {}),
+  ...(await getAuthHeaders()),
 });
 
 const postJson = async (
@@ -103,7 +103,7 @@ const postJson = async (
   try {
     const response = await fetch(url, {
       method: 'POST',
-      headers: journeyHeaders(),
+      headers: await journeyHeaders(),
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -192,7 +192,7 @@ export const fetchJourney = async (backendUrl: string, id: string): Promise<Jour
     const timeout = setTimeout(() => controller.abort(), 30000);
     try {
       const response = await fetch(`${backendUrl}/journey/${encodeURIComponent(id)}`, {
-        headers: journeyHeaders(),
+        headers: await journeyHeaders(),
         signal: controller.signal,
       });
       const data = await response.json().catch(() => null);

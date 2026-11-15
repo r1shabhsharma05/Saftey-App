@@ -2,11 +2,12 @@
 //
 // Thin API client for the /guardians endpoints, mirroring the SOS /
 // journey client pattern in app/(tabs)/index.tsx and utils/journey.ts:
-// 30 s timeout, the x-api-key header only when EXPO_PUBLIC_API_SECRET
-// exists, and a `reached` flag so the caller can tell "the server
-// answered but refused" apart from "the request never left the phone".
-// The verification code is never stored on the device and never
-// logged — it is typed by the user and sent once, then forgotten.
+// 30 s timeout, `Authorization: Bearer <Supabase access token>` on
+// every call (see utils/apiAuth.ts), and a `reached` flag so the
+// caller can tell "the server answered but refused" apart from "the
+// request never left the phone". The verification code is never
+// stored on the device and never logged — it is typed by the user
+// and sent once, then forgotten.
 export type GuardianRole = 'family' | 'friend' | 'volunteer' | 'security';
 
 export type GuardianState = 'pending' | 'verified';
@@ -62,11 +63,11 @@ export interface StoredGuardian {
   id: string;
 }
 
-const guardianHeaders = (): Record<string, string> => ({
+import { getAuthHeaders } from './apiAuth';
+
+const guardianHeaders = async (): Promise<Record<string, string>> => ({
   'Content-Type': 'application/json',
-  ...(process.env.EXPO_PUBLIC_API_SECRET
-    ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
-    : {}),
+  ...(await getAuthHeaders()),
 });
 
 const postJson = async (
@@ -78,7 +79,7 @@ const postJson = async (
   try {
     const response = await fetch(url, {
       method: 'POST',
-      headers: guardianHeaders(),
+      headers: await guardianHeaders(),
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -133,11 +134,14 @@ export const registerGuardian = async (
 
 export const requestVerificationCode = async (
   backendUrl: string,
-  id: string
+  id: string,
+  // shortcut: plumbed but no widget exists yet — the app has no
+  // WebView; sent only when a token is supplied (see phoneAuth.ts).
+  turnstileToken?: string
 ): Promise<CodeRequestResult> => {
   const { reached, data } = await postJson(
     `${backendUrl}/guardians/${encodeURIComponent(id)}/request-code`,
-    {}
+    { ...(turnstileToken ? { turnstileToken } : {}) }
   );
   if (!reached || !data || typeof data !== 'object') {
     return { reached: false, success: false, sent: false };
@@ -182,7 +186,7 @@ export const fetchGuardian = async (backendUrl: string, id: string): Promise<Gua
     const timeout = setTimeout(() => controller.abort(), 30000);
     try {
       const response = await fetch(`${backendUrl}/guardian/${encodeURIComponent(id)}`, {
-        headers: guardianHeaders(),
+        headers: await guardianHeaders(),
         signal: controller.signal,
       });
       const data = await response.json().catch(() => null);
@@ -246,7 +250,7 @@ export const fetchNearbyGuardians = async (
     try {
       const response = await fetch(
         `${backendUrl}/guardians/nearby?lat=${lat}&lng=${lng}&radiusKm=${radiusKm}`,
-        { headers: guardianHeaders(), signal: controller.signal }
+        { headers: await guardianHeaders(), signal: controller.signal }
       );
       const data = await response.json().catch(() => null);
       if (!data || typeof data !== 'object') return null;
@@ -371,7 +375,7 @@ export const fetchGuardianAlerts = async (
     const timeout = setTimeout(() => controller.abort(), 30000);
     try {
       const response = await fetch(`${backendUrl}/guardians/${encodeURIComponent(id)}/alerts`, {
-        headers: guardianHeaders(),
+        headers: await guardianHeaders(),
         signal: controller.signal,
       });
       const data = await response.json().catch(() => null);
