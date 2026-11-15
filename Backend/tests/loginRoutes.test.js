@@ -229,6 +229,7 @@ test("POST /auth/signup/complete: proof required, single-use, creates the accoun
     if (call.url.includes("/auth/v1/admin/users") && call.method === "POST") {
       assert.equal(call.body.email_confirm, true);
       assert.equal(call.body.user_metadata.phone, phone);
+      assert.equal(call.body.user_metadata.date_of_birth, "2000-01-15");
       return { status: 201, data: { id: "new-user", email: "new@example.com" } };
     }
     return { status: 200, data: {} };
@@ -239,6 +240,7 @@ test("POST /auth/signup/complete: proof required, single-use, creates the accoun
     password: "secret123",
     name: "New User",
     phone,
+    dateOfBirth: "2000-01-15",
   });
   assert.equal(res.status, 200);
   assert.equal(res.body.success, true);
@@ -249,6 +251,7 @@ test("POST /auth/signup/complete: proof required, single-use, creates the accoun
     password: "secret123",
     name: "New User",
     phone,
+    dateOfBirth: "2000-01-15",
   });
   assert.equal(replay.status, 400);
 });
@@ -261,6 +264,7 @@ test("POST /auth/signup/complete: bad proof → 400; already-registered reads ge
     password: "secret123",
     name: "X",
     phone,
+    dateOfBirth: "2000-01-15",
   });
   assert.equal(res.status, 400);
   // A verified proof whose email already exists must read exactly
@@ -274,6 +278,7 @@ test("POST /auth/signup/complete: bad proof → 400; already-registered reads ge
     password: "secret123",
     name: "Taken",
     phone,
+    dateOfBirth: "2000-01-15",
   });
   assert.equal(dup.status, 400);
   assert.equal(dup.body.error, "Could not create account — please try again");
@@ -389,4 +394,182 @@ test("DELETE /auth/account: in-memory rows for the user are gone afterwards", as
   alertStore._clearMemory();
   journeyStore._clearMemory();
   guardianStore._clearMemory();
+});
+
+// ── H15 age gate + F-12.3R delete-account reorder (run-6 prep) ──
+
+// DOB exactly N years ago today (Feb-29 clamped to Feb-28 so the
+// test never breaks on leap-day runs).
+const dobYearsAgo = (years) => {
+  const n = new Date();
+  let d = n.getUTCDate();
+  const m = n.getUTCMonth() + 1;
+  if (m === 2 && d === 29) d = 28;
+  return `${n.getUTCFullYear() - years}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+};
+
+const freshProof = async (phone) => {
+  const { code } = await signupCode.issueSignupCode(phone);
+  const { proof } = await signupCode.verifySignupCode(phone, code);
+  return proof;
+};
+
+const completeWithDob = (phone, proof, dateOfBirth) =>
+  post("/auth/signup/complete", {
+    proof,
+    email: "dob@example.com",
+    password: "secret123",
+    name: "Dob User",
+    phone,
+    ...(dateOfBirth === undefined ? {} : { dateOfBirth }),
+  });
+
+test("H15: signup/complete without dateOfBirth → 400; invalid dates → 400", async () => {
+  const phone = "+919876543221";
+  const proof = await freshProof(phone);
+  // Missing DOB.
+  assert.equal((await completeWithDob(phone, proof)).status, 400);
+  // Not a real calendar date / wrong shape / future date.
+  for (const bad of ["2000-02-30", "15/01/2000", "not-a-date", "2999-01-01", "2000-13-01"]) {
+    const res = await completeWithDob(phone, proof, bad);
+    assert.equal(res.status, 400, bad);
+  }
+});
+
+test("H15: under-13 → 400 and the proof is NOT consumed; exactly 13 → 200, DOB stored", async () => {
+  const phone = "+919876543222";
+  const proof = await freshProof(phone);
+  _setAuthTransport(async (call) => {
+    authCalls.push(call);
+    if (call.url.includes("/auth/v1/admin/users") && call.method === "POST") {
+      assert.equal(call.body.user_metadata.date_of_birth, dobYearsAgo(13));
+      return { status: 201, data: { id: "new-user", email: "dob@example.com" } };
+    }
+    return { status: 200, data: {} };
+  });
+  const young = await completeWithDob(phone, proof, dobYearsAgo(12));
+  assert.equal(young.status, 400);
+  assert.match(young.body.error, /13/);
+  // Same proof still works with a valid DOB — the 400 above did not burn it.
+  const ok = await completeWithDob(phone, proof, dobYearsAgo(13));
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.success, true);
+});
+
+test("DELETE /auth/account (F-12.3R): all wipes run BEFORE the auth user is deleted", async () => {
+  profileRows = [{ ...ROW, phone: "+919876543210" }];
+  const seq = [];
+  _setDbTransport(async (call) => {
+    seq.push(`db:${call.method} ${call.url}`);
+    if (call.method === "PATCH") return { data: [{ id: "consumed" }] };
+    if (call.method === "GET" && call.url.includes("/profiles?")) return { data: profileRows };
+    if (call.method === "GET") return { data: [] };
+    return { data: null };
+  });
+  _setAuthTransport(async (call) => {
+    seq.push(`auth:${call.method} ${call.url}`);
+    if (call.url.includes("/auth/v1/user")) {
+      return { status: 200, data: { id: "user-1", email: "ramesh@example.com", last_sign_in_at: new Date().toISOString() } };
+    }
+    if (call.url.includes("/auth/v1/admin/users/user-1")) {
+      return { status: 204, data: null };
+    }
+    if (call.url.includes("/storage/v1/object/avatars/user-1/avatar.jpg")) {
+      return { status: 404, data: null };
+    }
+    return { status: 200, data: {} };
+  });
+  const res = await del("/auth/account", { ...PLAIN, Authorization: "Bearer good-jwt" });
+  assert.equal(res.status, 200);
+  const adminIdx = seq.findIndex((s) => s.includes("/auth/v1/admin/users/user-1"));
+  assert.ok(adminIdx > 0, "admin delete must be called");
+  const wipeIdxs = seq
+    .map((s, i) => (s.startsWith("db:DELETE") || s.includes("/storage/v1/object/avatars/") ? i : -1))
+    .filter((i) => i >= 0);
+  assert.ok(wipeIdxs.length >= 9, `expected >= 9 wipes incl. avatar, got ${wipeIdxs.length}`);
+  assert.ok(
+    wipeIdxs.every((i) => i < adminIdx),
+    "every wipe (DB + avatar) must precede the admin delete"
+  );
+  // userId-keyed wipes: gnani_daily_usage by user_key, contacts by user_id.
+  assert.ok(seq.some((s) => s.includes("/rest/v1/gnani_daily_usage?user_key=eq.user%3Auser-1")));
+  assert.ok(seq.some((s) => s.includes("/rest/v1/emergency_contacts?user_id=eq.user-1")));
+  // Phone-keyed code rows (no user_id column on either table).
+  assert.ok(seq.some((s) => s.includes("/rest/v1/signup_codes?phone=eq.%2B919876543210")));
+  assert.ok(seq.some((s) => s.includes("/rest/v1/login_codes?phone=eq.%2B919876543210")));
+});
+
+test("DELETE /auth/account (F-12.3R): no profiles row → code rows still wiped via the auth user_metadata phone", async () => {
+  profileRows = [];
+  _setAuthTransport(async (call) => {
+    authCalls.push(call);
+    if (call.url.includes("/auth/v1/user")) {
+      return {
+        status: 200,
+        data: {
+          id: "user-1",
+          email: "ramesh@example.com",
+          last_sign_in_at: new Date().toISOString(),
+          user_metadata: { phone: "+919876543210" },
+        },
+      };
+    }
+    if (call.url.includes("/auth/v1/admin/users/user-1")) {
+      return { status: 204, data: null };
+    }
+    if (call.url.includes("/storage/v1/object/avatars/user-1/avatar.jpg")) {
+      return { status: 404, data: null };
+    }
+    return { status: 200, data: {} };
+  });
+  const res = await del("/auth/account", { ...PLAIN, Authorization: "Bearer good-jwt" });
+  assert.equal(res.status, 200);
+  const urls = dbCalls.map((c) => `${c.method} ${c.url}`);
+  assert.ok(urls.some((u) => u.startsWith("DELETE") && u.includes("/rest/v1/signup_codes?phone=eq.%2B919876543210")));
+  assert.ok(urls.some((u) => u.startsWith("DELETE") && u.includes("/rest/v1/login_codes?phone=eq.%2B919876543210")));
+});
+
+test("DELETE /auth/account (F-12.3R): a failed wipe → 502 delete-partial and the auth user is NOT deleted", async () => {
+  profileRows = [{ ...ROW, phone: "+919876543210" }];
+  _setDbTransport(async (call) => {
+    dbCalls.push(call);
+    if (call.method === "DELETE" && call.url.includes("/rest/v1/guardians?")) {
+      throw new Error("guardians table down");
+    }
+    if (call.method === "PATCH") return { data: [{ id: "consumed" }] };
+    if (call.method === "GET" && call.url.includes("/profiles?")) return { data: profileRows };
+    if (call.method === "GET") return { data: [] };
+    return { data: null };
+  });
+  const res = await del("/auth/account", { ...PLAIN, Authorization: "Bearer test-token" });
+  assert.equal(res.status, 502);
+  assert.equal(res.body.success, false);
+  assert.equal(res.body.error, "delete-partial");
+  assert.deepEqual(res.body.failed, ["guardians"]);
+  assert.equal(
+    authCalls.filter((c) => c.url.includes("/auth/v1/admin/users/user-1")).length,
+    0,
+    "admin delete must not run when a wipe failed"
+  );
+});
+
+test("DELETE /auth/account (F-12.3R): auth unconfigured → 503 before any wipe runs", async () => {
+  profileRows = [{ ...ROW, phone: "+919876543210" }];
+  // Verify can still pass (anon key present) while the Admin API
+  // cannot (no service-role key) — the 503 must fire pre-wipe.
+  process.env.SUPABASE_ANON_KEY = "anon-key";
+  setDbEnv("https://example.supabase.co", undefined);
+  try {
+    const res = await del("/auth/account", { ...PLAIN, Authorization: "Bearer test-token" });
+    assert.equal(res.status, 503);
+    assert.equal(res.body.error, "Account deletion is not configured yet");
+    assert.equal(
+      dbCalls.filter((c) => c.method === "DELETE").length,
+      0,
+      "no wipe may run when deletion is unconfigured"
+    );
+  } finally {
+    delete process.env.SUPABASE_ANON_KEY;
+    setDbEnv("https://example.supabase.co", "service-role-key");
+  }
 });
