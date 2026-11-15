@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   Switch,
+  TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
@@ -15,6 +16,8 @@ import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../utils/supabase';
 import { showAppDialog } from '../../utils/dialog';
 import { ensureProfile } from '../../utils/auth';
+import { getBackendUrl } from '../../utils/backendUrl';
+import { deleteAccount } from '../../utils/phoneAuth';
 import {
   authenticateForUnlock,
   getBiometricCapability,
@@ -64,6 +67,9 @@ export default function PremiumProfileScreen() {
   const [bioEnabled, setBioEnabled] = useState(false);
   const [bioAvailable, setBioAvailable] = useState(false);
   const [bioLoading, setBioLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   useEffect(() => {
     fetchProfile();
@@ -206,6 +212,50 @@ export default function PremiumProfileScreen() {
       if (error) throw error;
     } catch (err: any) {
       showAppDialog('System Error', 'Failed to close session: ' + err.message);
+    }
+  };
+
+  // Delete account (12.3/13.6): password re-auth first (proves the
+  // person holding the unlocked phone owns the account), then
+  // DELETE /auth/account wipes the server-side data, then sign out.
+  // The local session is never trusted as the re-auth on its own.
+  const handleDeleteAccount = async () => {
+    if (deleteBusy) return;
+    if (!deletePassword) {
+      showAppDialog('Password Required', 'Enter your password to confirm deletion.');
+      return;
+    }
+    if (!profile?.email) {
+      showAppDialog('Delete Failed', 'Could not confirm your account. Please try again.');
+      return;
+    }
+    setDeleteBusy(true);
+    try {
+      const { error: authError } = await supabase.auth.signInWithPassword({
+        email: profile.email,
+        password: deletePassword,
+      });
+      if (authError) {
+        showAppDialog('Delete Failed', 'Incorrect password. Your account was not deleted.');
+        return;
+      }
+      const res = await deleteAccount(getBackendUrl());
+      if (!res.reached || !res.success) {
+        showAppDialog(
+          'Delete Failed',
+          res.reached
+            ? 'The account could not be deleted. Please try again.'
+            : 'Could not reach the SafeLife servers. Check your internet and try again.'
+        );
+        return;
+      }
+      setDeletePassword('');
+      setDeleting(false);
+      await supabase.auth.signOut();
+    } catch (err: any) {
+      showAppDialog('Delete Failed', err?.message || 'The account could not be deleted.');
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -373,7 +423,7 @@ export default function PremiumProfileScreen() {
               {auditLog.reason === 'not-configured'
                 ? 'Audit log unavailable — Supabase not configured.'
                 : auditLog.reason === 'unauthorized'
-                  ? 'Audit log unavailable — API key not configured.'
+                  ? 'Audit log unavailable — sign-in required.'
                   : 'Audit log unavailable — backend unreachable.'}
             </Text>
           ) : auditLog.events.length === 0 ? (
@@ -385,6 +435,66 @@ export default function PremiumProfileScreen() {
                 <Text style={styles.auditTime}>{new Date(event.ts).toLocaleString()}</Text>
               </Card>
             ))
+          )}
+        </View>
+
+        {/* Delete account (12.3/13.6) — next to sign-out, with
+            confirmation + password re-auth before anything is sent. */}
+        <View>
+          <View style={styles.sectionWrap}>
+            <SectionHeader
+              icon={<Ionicons name="trash-outline" size={18} color={Theme.colors.error} />}
+              title="Danger zone"
+            />
+          </View>
+          {!deleting ? (
+            <TouchableOpacity
+              style={styles.deleteBtn}
+              onPress={() => setDeleting(true)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.deleteBtnText}>Delete account</Text>
+            </TouchableOpacity>
+          ) : (
+            <Card style={styles.deleteCard}>
+              <Text style={styles.deleteWarn}>
+                This permanently deletes your account, profile, contacts, guardians, journeys and
+                alerts. This cannot be undone.
+              </Text>
+              <TextInput
+                style={styles.deleteInput}
+                placeholder="Enter your password to confirm"
+                placeholderTextColor={Theme.colors.onSurfaceVariant}
+                value={deletePassword}
+                onChangeText={setDeletePassword}
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <View style={styles.deleteRow}>
+                <TouchableOpacity
+                  style={styles.deleteCancel}
+                  onPress={() => {
+                    setDeleting(false);
+                    setDeletePassword('');
+                  }}
+                  disabled={deleteBusy}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.deleteCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.deleteConfirm}
+                  onPress={handleDeleteAccount}
+                  disabled={deleteBusy}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.deleteConfirmText}>
+                    {deleteBusy ? 'Deleting…' : 'Delete permanently'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </Card>
           )}
         </View>
 
@@ -463,6 +573,44 @@ const styles = StyleSheet.create({
   menuNote: { ...Theme.type.body, fontSize: 12, color: Theme.colors.onSurfaceVariant },
   auditRow: { padding: 14, marginBottom: 10, gap: 4 },
   auditAction: { ...Theme.type.subhead, fontWeight: '600', fontSize: 13.5, color: Theme.colors.onSurface },
+  deleteBtn: {
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: Theme.colors.error,
+    borderRadius: 12,
+  },
+  deleteBtnText: { ...Theme.type.subhead, fontWeight: '600', fontSize: 14, color: Theme.colors.error },
+  deleteCard: { padding: 14, gap: 12 },
+  deleteWarn: { ...Theme.type.body, fontSize: 13, color: Theme.colors.onSurfaceVariant, lineHeight: 19 },
+  deleteInput: {
+    ...Theme.type.body,
+    fontSize: 14,
+    color: Theme.colors.onSurface,
+    borderWidth: 1,
+    borderColor: Theme.colors.outlineVariant,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  deleteRow: { flexDirection: 'row', gap: 10 },
+  deleteCancel: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderColor: Theme.colors.outlineVariant,
+    borderRadius: 10,
+  },
+  deleteCancelText: { ...Theme.type.subhead, fontWeight: '600', fontSize: 14, color: Theme.colors.onSurface },
+  deleteConfirm: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 11,
+    backgroundColor: Theme.colors.error,
+    borderRadius: 10,
+  },
+  deleteConfirmText: { ...Theme.type.subhead, fontWeight: '600', fontSize: 14, color: '#fff' },
   auditTime: { ...Theme.type.caption2, color: Theme.colors.onSurfaceVariant },
   auditNote: { ...Theme.type.body, fontSize: 13, color: Theme.colors.onSurfaceVariant, paddingVertical: 6 },
 });

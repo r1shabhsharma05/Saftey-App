@@ -12,9 +12,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Contacts from 'expo-contacts';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { supabase } from '../../utils/supabase';
+import { secureSetItem } from '../../utils/secureStorage';
 import { showAppDialog } from '../../utils/dialog';
 import { Theme } from '../../constants/theme';
 import ScreenBackground from '../../components/ui/ScreenBackground';
@@ -213,7 +213,8 @@ export default function EmergencyContactsScreen() {
       const savedSet = [...chosen.map((c) => ({ name: c.name, phone: c.phone })), ...foreignRows];
 
       // Local cache — the SOS screen reads this at send time.
-      await AsyncStorage.setItem('emergencyContacts', JSON.stringify(savedSet));
+      // Secure storage, not plaintext AsyncStorage: names + phones.
+      await secureSetItem('emergencyContacts', JSON.stringify(savedSet));
 
       showAppDialog(
         'Contacts saved',

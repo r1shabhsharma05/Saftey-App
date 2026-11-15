@@ -24,6 +24,7 @@ import { cacheFix, getFastFix } from '../../utils/location';
 import { Theme } from '../../constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
+import { getAuthHeaders } from '../../utils/apiAuth';
 import { secureGetItem, secureSetItem, secureRemoveItem } from '../../utils/secureStorage';
 import AlertActiveView from '../../components/AlertActiveView';
 import { rankSafePlaces, calculateBearing, calculateDistance, getCardinalDirection, withSafety, isValidSafety, scoreRouteLocal, combineRouteSafety, sanitizePhone } from '../../utils/escapeLogic';
@@ -410,6 +411,10 @@ export default function TacticalDashboard() {
   };
 
   const updateLocationData = (location: Location.LocationObject) => {
+    // (11.1) Backgrounded GPS fixes are dropped, not cached or
+    // posted: the watch keeps running, but nothing leaves the phone
+    // while the app is not active.
+    if (AppState.currentState !== 'active') return;
     applyCoords(location.coords);
   };
 
@@ -491,6 +496,9 @@ export default function TacticalDashboard() {
           const controller = new AbortController();
           const t = setTimeout(() => controller.abort(), 25000);
           const response = await fetch(url, {
+            // The backend proxy gets the JWT; the public Overpass
+            // fallbacks get no header (they are not our backend).
+            headers: url.startsWith(BACKEND_URL) ? await getAuthHeaders() : {},
             signal: controller.signal,
           });
           clearTimeout(t);
@@ -588,13 +596,8 @@ export default function TacticalDashboard() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          // Backend API-key auth: required on /alert when the backend's
-          // API_SECRET is set. Send the header only when a key exists —
-          // an empty-string header is a device-stack-only variable
-          // (RN fetch → OkHttp) that curl tests cannot replicate.
-          ...(process.env.EXPO_PUBLIC_API_SECRET
-            ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
-            : {}),
+          // JWT auth: the signed-in user's Supabase access token.
+          ...(await getAuthHeaders()),
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
@@ -639,7 +642,10 @@ export default function TacticalDashboard() {
   // tab — the same list rides every SOS and every battery alert.
   const readEmergencyContacts = async (): Promise<{ name: string; phone: string }[]> => {
     try {
-      const rawContacts = await AsyncStorage.getItem('emergencyContacts');
+      // Secure storage now (2.6/13.1): the Contacts tab writes the
+      // same key via secureSetItem; a pre-move plaintext copy is
+      // migrated once by secureGetItem.
+      const rawContacts = await secureGetItem('emergencyContacts');
       if (!rawContacts) return [];
       const parsed = JSON.parse(rawContacts);
       if (!Array.isArray(parsed)) return [];
@@ -668,9 +674,7 @@ export default function TacticalDashboard() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(process.env.EXPO_PUBLIC_API_SECRET
-            ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
-            : {}),
+          ...(await getAuthHeaders()),
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
@@ -820,11 +824,7 @@ export default function TacticalDashboard() {
   const fetchAlertStatus = async (alertId: string): Promise<void> => {
     try {
       const response = await fetch(`${BACKEND_URL}/alert/${encodeURIComponent(alertId)}`, {
-        headers: {
-          ...(process.env.EXPO_PUBLIC_API_SECRET
-            ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
-            : {}),
-        },
+        headers: await getAuthHeaders(),
       });
       const data = await response.json().catch(() => null);
       if (data && data.success && data.alert && Array.isArray(data.alert.delivery)) {
@@ -860,9 +860,7 @@ export default function TacticalDashboard() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(process.env.EXPO_PUBLIC_API_SECRET
-            ? { 'x-api-key': process.env.EXPO_PUBLIC_API_SECRET }
-            : {}),
+          ...(await getAuthHeaders()),
         },
         body: JSON.stringify({ lat: uLat, lng: uLng, ...(uAlertId ? { alertId: uAlertId } : {}) }),
       });
@@ -1057,10 +1055,13 @@ export default function TacticalDashboard() {
   // D5 delivery-status polling: while an alert is active, refresh its
   // receipts every 30s (the live-tracking cadence) so a server-side
   // retry shows up in the AlertActiveView without a manual refresh.
-  // Stops the moment the alert stops — no background polling.
+  // Ticks are skipped while backgrounded (AppState gate, 11.1), and
+  // polling stops the moment the alert stops.
   useEffect(() => {
     if (status !== 'ALERT ACTIVE' || !activeAlertId) return;
-    const id = setInterval(() => fetchAlertStatus(activeAlertId), 30000);
+    const id = setInterval(() => {
+      if (AppState.currentState === 'active') fetchAlertStatus(activeAlertId);
+    }, 30000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, activeAlertId]);
@@ -1093,11 +1094,14 @@ export default function TacticalDashboard() {
 
   // D16: journey status polling — refresh the trip every 30s while
   // it is active, so an ETA/overdue change (or a finish from another
-  // device) reaches the card. Stops the moment the trip ends.
+  // device) reaches the card. Ticks are skipped while backgrounded
+  // (AppState gate, 11.1); polling stops the moment the trip ends.
   const activeJourneyId = journey && journey.state === 'active' ? journey.id : null;
   useEffect(() => {
     if (!activeJourneyId) return;
-    const id = setInterval(() => fetchJourneyStatus(activeJourneyId), 30000);
+    const id = setInterval(() => {
+      if (AppState.currentState === 'active') fetchJourneyStatus(activeJourneyId);
+    }, 30000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeJourneyId]);
@@ -1368,7 +1372,7 @@ export default function TacticalDashboard() {
         const timer = setTimeout(() => controller.abort(), 15000);
         const response = await fetch(
           `${BACKEND_URL}/route?fromLat=${lat}&fromLng=${lng}&toLat=${routePlace.lat}&toLng=${routePlace.lng}`,
-          { signal: controller.signal }
+          { headers: await getAuthHeaders(), signal: controller.signal }
         );
         clearTimeout(timer);
         const data = await response.json().catch(() => null);
