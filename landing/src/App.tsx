@@ -616,6 +616,12 @@ export default function App() {
             <a href={RELEASES_URL} target="_blank" rel="noreferrer" className="hover:text-white">
               Releases
             </a>
+            <a href="https://landing-rosy-delta-55.vercel.app/privacy.html" target="_blank" rel="noreferrer" className="hover:text-white">
+              Privacy Policy
+            </a>
+            <a href="https://landing-rosy-delta-55.vercel.app/terms.html" target="_blank" rel="noreferrer" className="hover:text-white">
+              Terms
+            </a>
           </div>
           <p className="text-xs text-zinc-600">
             Built by Rishabh Sharma · SafeLife 2.0 — Day 30 release 22 Nov 2026
