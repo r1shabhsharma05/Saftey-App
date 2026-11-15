@@ -442,16 +442,6 @@ export default function PremiumProfileScreen() {
           </Card>
         </View>
 
-        <View>
-          <Card style={[styles.infoCard, { marginTop: 14 }]}>
-            <View style={styles.cardHeader}>
-              <Ionicons name="map-outline" size={15} color={Theme.colors.primary} />
-              <Text style={styles.cardLabel}>Address</Text>
-            </View>
-            <Text style={[styles.cardValue, styles.addressValue]}>{profile?.address ?? '—'}</Text>
-          </Card>
-        </View>
-
         {/* Security protocol */}
         <View>
           <View style={styles.sectionWrap}>
@@ -644,7 +634,6 @@ const styles = StyleSheet.create({
   cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 9 },
   cardLabel: { ...Theme.type.caption2, fontWeight: '600', color: Theme.colors.onSurfaceVariant },
   cardValue: { ...Theme.type.subhead, fontWeight: '600', fontSize: 13.5, color: Theme.colors.onSurface },
-  addressValue: { fontSize: 13, lineHeight: 20 },
   sectionWrap: { marginTop: 28 },
   menuItem: {
     flexDirection: 'row',

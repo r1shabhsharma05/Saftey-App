@@ -332,6 +332,15 @@ export default function TacticalDashboard() {
       if (state === 'active') {
         flushPendingSOS();
         flushPendingBatteryAlert();
+        // O-11.1: the GPS watch was torn down on background — restart
+        // it now (no-op when it is already running).
+        if (!locSubRef.current) void startLocationWatch();
+      } else if (state === 'background' || state === 'inactive') {
+        // O-11.1: tear the GPS watch DOWN on background — the old
+        // code only gated its output while the watch kept running
+        // (and the OS kept the GPS radio hot).
+        locSubRef.current?.remove();
+        locSubRef.current = null;
       }
     });
     // D5 net-state awareness: flush the moment connectivity returns,
@@ -411,9 +420,10 @@ export default function TacticalDashboard() {
   };
 
   const updateLocationData = (location: Location.LocationObject) => {
-    // (11.1) Backgrounded GPS fixes are dropped, not cached or
-    // posted: the watch keeps running, but nothing leaves the phone
-    // while the app is not active.
+    // (11.1) Defence-in-depth: the watch is torn down on background
+    // (AppState listener above), so a fix arriving here while
+    // backgrounded should be impossible — drop it rather than
+    // caching or posting it if one ever slips through.
     if (AppState.currentState !== 'active') return;
     applyCoords(location.coords);
   };
