@@ -8,7 +8,8 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "node scripts/check-battery-queue-size.mjs"
+    "test": "node scripts/check-battery-queue-size.mjs",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@expo-google-fonts/manrope": "^0.4.2",
@@ -63,7 +64,14 @@
     "babel-preset-expo": "~54.0.10",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
+    "patch-package": "^8.0.1",
     "typescript": "~5.9.2"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "image-size": "^2.0.3",
+    "postcss": "^8.5.23",
+    "minimatch@^9.0.0": "^11.0.1",
+    "minimatch@^10.0.0": "^11.0.1"
+  }
 }
