@@ -18,6 +18,7 @@ import { showAppDialog } from '../../utils/dialog';
 import { ensureProfile } from '../../utils/auth';
 import { getBackendUrl } from '../../utils/backendUrl';
 import { deleteAccount } from '../../utils/phoneAuth';
+import { signInWithGoogle } from '../../utils/googleAuth';
 import {
   authenticateForUnlock,
   getBiometricCapability,
@@ -70,6 +71,9 @@ export default function PremiumProfileScreen() {
   const [deleting, setDeleting] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
   const [deleteBusy, setDeleteBusy] = useState(false);
+  // null = provider not checked yet (password field shown by default);
+  // true = Google-only account — no password exists to ask for.
+  const [deleteGoogleOnly, setDeleteGoogleOnly] = useState<boolean | null>(null);
 
   useEffect(() => {
     fetchProfile();
@@ -215,36 +219,109 @@ export default function PremiumProfileScreen() {
     }
   };
 
-  // Delete account (12.3/13.6): password re-auth first (proves the
-  // person holding the unlocked phone owns the account), then
+  // Delete account (12.3/13.6): re-auth first (proves the person
+  // holding the unlocked phone owns the account), then
   // DELETE /auth/account wipes the server-side data, then sign out.
-  // The local session is never trusted as the re-auth on its own.
-  const handleDeleteAccount = async () => {
-    if (deleteBusy) return;
+  // The local session is never trusted as the re-auth on its own —
+  // and the backend now requires a FRESH session (last sign-in
+  // within 15 min, else 401 REAUTH_REQUIRED).
+  //
+  // Google-only accounts have no password: signInWithPassword can
+  // never succeed for them, so they re-auth with a fresh Google
+  // OAuth sign-in instead. Provider detection: the identities list
+  // (fallback: app_metadata.provider) — Google-only means every
+  // identity is 'google' and none is 'email'.
+  const FRESH_SESSION_MS = 15 * 60 * 1000;
+  const isGoogleOnlyAccount = (user: { identities?: { provider?: string }[] | null; app_metadata?: { provider?: string } }): boolean => {
+    if (user.identities && user.identities.length > 0) {
+      return user.identities.every((i) => i.provider === 'google');
+    }
+    return user.app_metadata?.provider === 'google';
+  };
+  const isSessionFresh = (user: { last_sign_in_at?: string }): boolean => {
+    if (!user.last_sign_in_at) return false;
+    const last = Date.parse(user.last_sign_in_at);
+    return Number.isFinite(last) && Date.now() - last < FRESH_SESSION_MS;
+  };
+  // Re-authenticate for deletion by the account's provider. Returns
+  // true only when the session is fresh afterwards.
+  const reauthForDelete = async (
+    user: { email?: string; last_sign_in_at?: string; identities?: { provider?: string }[] | null; app_metadata?: { provider?: string } },
+    googleOnly: boolean
+  ): Promise<boolean> => {
+    if (googleOnly) {
+      const { error } = await signInWithGoogle();
+      if (error) {
+        showAppDialog('Google Sign-In Failed', error);
+        return false;
+      }
+      const { data: { user: freshUser } } = await supabase.auth.getUser();
+      if (!freshUser || !isSessionFresh(freshUser)) {
+        showAppDialog(
+          'Delete Failed',
+          'Google sign-in did not complete. Your account was not deleted.'
+        );
+        return false;
+      }
+      return true;
+    }
     if (!deletePassword) {
       showAppDialog('Password Required', 'Enter your password to confirm deletion.');
-      return;
+      return false;
     }
-    if (!profile?.email) {
+    if (!user.email) return false;
+    const { error: authError } = await supabase.auth.signInWithPassword({
+      email: user.email,
+      password: deletePassword,
+    });
+    if (authError) {
+      showAppDialog('Delete Failed', 'Incorrect password. Your account was not deleted.');
+      return false;
+    }
+    return true;
+  };
+
+  const openDeleteConfirm = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    setDeleteGoogleOnly(user ? isGoogleOnlyAccount(user) : null);
+    setDeleting(true);
+  };
+
+  const handleDeleteAccount = async () => {
+    if (deleteBusy) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user || !profile?.email) {
       showAppDialog('Delete Failed', 'Could not confirm your account. Please try again.');
       return;
     }
+    const googleOnly = isGoogleOnlyAccount(user);
+    setDeleteGoogleOnly(googleOnly);
     setDeleteBusy(true);
     try {
-      const { error: authError } = await supabase.auth.signInWithPassword({
-        email: profile.email,
-        password: deletePassword,
-      });
-      if (authError) {
-        showAppDialog('Delete Failed', 'Incorrect password. Your account was not deleted.');
-        return;
+      // Fresh session required: re-auth first when the last sign-in
+      // is older than 15 min (Google-only: fresh OAuth; password
+      // accounts: password re-auth). When the session IS fresh, a
+      // password account still proves possession with the password;
+      // a fresh Google session needs no extra step.
+      if (!isSessionFresh(user)) {
+        if (!(await reauthForDelete(user, googleOnly))) return;
+      } else if (!googleOnly) {
+        if (!(await reauthForDelete(user, false))) return;
       }
-      const res = await deleteAccount(getBackendUrl());
+      let res = await deleteAccount(getBackendUrl());
+      if (!res.success && res.reauthRequired) {
+        // Session aged out between the check and the call: re-auth
+        // once and retry once — then report honestly either way.
+        if (!(await reauthForDelete(user, googleOnly))) return;
+        res = await deleteAccount(getBackendUrl());
+      }
       if (!res.reached || !res.success) {
         showAppDialog(
           'Delete Failed',
           res.reached
-            ? 'The account could not be deleted. Please try again.'
+            ? res.reauthRequired
+              ? 'Your session is too old to delete the account. Please sign in again and retry.'
+              : 'The account could not be deleted. Please try again.'
             : 'Could not reach the SafeLife servers. Check your internet and try again.'
         );
         return;
@@ -450,7 +527,7 @@ export default function PremiumProfileScreen() {
           {!deleting ? (
             <TouchableOpacity
               style={styles.deleteBtn}
-              onPress={() => setDeleting(true)}
+              onPress={() => void openDeleteConfirm()}
               activeOpacity={0.8}
             >
               <Text style={styles.deleteBtnText}>Delete account</Text>
@@ -461,16 +538,23 @@ export default function PremiumProfileScreen() {
                 This permanently deletes your account, profile, contacts, guardians, journeys and
                 alerts. This cannot be undone.
               </Text>
-              <TextInput
-                style={styles.deleteInput}
-                placeholder="Enter your password to confirm"
-                placeholderTextColor={Theme.colors.onSurfaceVariant}
-                value={deletePassword}
-                onChangeText={setDeletePassword}
-                secureTextEntry
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
+              {deleteGoogleOnly === true ? (
+                <Text style={styles.deleteWarn}>
+                  Your account uses Google sign-in, so there is no password to enter — tapping
+                  delete will ask you to confirm with Google instead.
+                </Text>
+              ) : (
+                <TextInput
+                  style={styles.deleteInput}
+                  placeholder="Enter your password to confirm"
+                  placeholderTextColor={Theme.colors.onSurfaceVariant}
+                  value={deletePassword}
+                  onChangeText={setDeletePassword}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              )}
               <View style={styles.deleteRow}>
                 <TouchableOpacity
                   style={styles.deleteCancel}

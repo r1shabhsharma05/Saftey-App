@@ -20,7 +20,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { supabase } from '../../utils/supabase';
 import { ensureProfile } from '../../utils/auth';
 import { getBackendUrl } from '../../utils/backendUrl';
-import { cacheFix, getFastFix } from '../../utils/location';
+import { cacheFix, getFastFix, readCachedFix } from '../../utils/location';
 import { Theme } from '../../constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
@@ -255,17 +255,17 @@ export default function TacticalDashboard() {
         // (a) Seed coordinates from the last cached fix so the Live
         // Location card never sits on 'Loading...' when GPS is slow —
         // and SOS can still send with the last known position.
+        // The fix comes from SecureStore via readCachedFix (13.1):
+        // precise coordinates are PII and never sit in plaintext
+        // AsyncStorage. A pre-fix plaintext copy migrates on read.
         try {
-          const cachedCoords = await AsyncStorage.getItem('lastCoords');
+          const cachedCoords = await readCachedFix();
           if (cachedCoords) {
-            const parsed = JSON.parse(cachedCoords);
-            if (typeof parsed?.latitude === 'number' && typeof parsed?.longitude === 'number') {
-              applyCoords({
-                latitude: parsed.latitude,
-                longitude: parsed.longitude,
-                speed: typeof parsed.speed === 'number' ? parsed.speed : null,
-              });
-            }
+            applyCoords({
+              latitude: cachedCoords.latitude,
+              longitude: cachedCoords.longitude,
+              speed: null,
+            });
           }
         } catch {
           /* cache is best-effort */
@@ -712,7 +712,7 @@ export default function TacticalDashboard() {
       };
       const result = await postBatteryAlertOnce(payload);
       if (result.success) {
-        await AsyncStorage.removeItem('pendingBatteryAlert').catch(() => {});
+        await secureRemoveItem('pendingBatteryAlert').catch(() => {});
         if (kind === 'low') {
           lowBatterySentRef.current = true;
           await AsyncStorage.setItem('batteryLowAlertSent', '1').catch(() => {});
@@ -722,7 +722,13 @@ export default function TacticalDashboard() {
           setBatteryFinalStatus('sent');
         }
       } else {
-        await AsyncStorage.setItem(
+        // Queued in SecureStore, never plaintext AsyncStorage (13.1):
+        // the payload carries name + phone + live location + the full
+        // contacts list. Caveat: SecureStore caps values at 2048 bytes
+        // on Android — secureSetItem drops (never stores in the clear)
+        // a payload over the cap, so a very large contacts list can
+        // lose the queue; the send failure is still surfaced below.
+        await secureSetItem(
           'pendingBatteryAlert',
           JSON.stringify({ payload, queuedAt: Date.now(), nextRetryAt: Date.now() })
         ).catch(() => {});
@@ -745,11 +751,11 @@ export default function TacticalDashboard() {
   // dropped (a battery warning that old describes a dead phone).
   const flushPendingBatteryAlert = async (force = false): Promise<void> => {
     try {
-      const raw = await AsyncStorage.getItem('pendingBatteryAlert');
+      const raw = await secureGetItem('pendingBatteryAlert');
       if (!raw) return;
       const parsed = JSON.parse(raw);
       const drop = async () => {
-        await AsyncStorage.removeItem('pendingBatteryAlert').catch(() => {});
+        await secureRemoveItem('pendingBatteryAlert').catch(() => {});
       };
       if (!parsed || !parsed.payload || Date.now() - (parsed.queuedAt || 0) > 6 * 60 * 60 * 1000) {
         await drop();
@@ -806,7 +812,7 @@ export default function TacticalDashboard() {
           setBatteryFinalStatus('sent');
         }
       } else {
-        await AsyncStorage.setItem(
+        await secureSetItem(
           'pendingBatteryAlert',
           JSON.stringify({ ...parsed, payload: fresh, nextRetryAt: Date.now() + 300000 })
         ).catch(() => {});
