@@ -1,9 +1,10 @@
 // H18 force-update screen: a blocking full-screen notice with no
 // bypass — no dismiss button, no back path, it renders above the
 // whole navigator (see app/_layout.tsx). The Update button opens
-// the Play Store listing; if the store cannot be opened the user
-// stays on this screen (still no bypass — an outdated build must
-// not reach SOS flows).
+// the GitHub Releases page (PLAY_STORE_URL) — SafeLife is not on
+// the Play Store, it ships as an APK; if the page cannot be opened
+// the user stays on this screen (still no bypass — an outdated
+// build must not reach SOS flows).
 import React, { useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -46,7 +47,7 @@ export default function ForceUpdateScreen({ minSupportedVersion, latestVersion }
       </Pressable>
       {storeError ? (
         <Text style={styles.error}>
-          Could not open the store. Please update SafeLife from the Play Store to continue.
+          Could not open the download page. Please update SafeLife from GitHub Releases to continue.
         </Text>
       ) : null}
     </View>
