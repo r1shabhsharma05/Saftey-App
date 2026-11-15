@@ -200,10 +200,14 @@ export const verifySignupCode = async (
   };
 };
 
-/** Step 3 of phone-OTP signup: spend the proof to create the account server-side. */
+/** Step 3 of phone-OTP signup: spend the proof to create the account server-side.
+ * dateOfBirth (YYYY-MM-DD) is the H15 age gate: the client validates
+ * age >= 13 before the code is even requested (register.tsx), and
+ * the server re-checks it here — a client-only gate would be trivial
+ * to bypass. */
 export const completeSignup = async (
   backendUrl: string,
-  input: { proof: string; email: string; password: string; name: string; phone: string }
+  input: { proof: string; email: string; password: string; name: string; phone: string; dateOfBirth: string }
 ): Promise<CompleteSignupResult> => {
   const { reached, data, failure } = await postJson(`${backendUrl}/auth/signup/complete`, { ...input }, false);
   if (!reached || !data || typeof data !== 'object') {
@@ -213,6 +217,30 @@ export const completeSignup = async (
   return {
     reached: true,
     success: !!d.success,
+    error: typeof d.error === 'string' ? d.error : undefined,
+  };
+};
+
+/** Google-signup DOB backfill (H15): POST /auth/profile/dob
+ * { dateOfBirth } with the user's JWT. Google OAuth creates the
+ * account directly, so signup/complete's age gate never runs for
+ * those users — register.tsx posts the DOB here right after Google
+ * sign-up, before creating the profile row. The server answers
+ * { ok: true } on success (and on an idempotent re-post of the same
+ * value); a DOB already set to a different value is a 400. No retry:
+ * a first attempt that timed out may already have written the DOB. */
+export const submitProfileDob = async (
+  backendUrl: string,
+  dateOfBirth: string
+): Promise<CompleteSignupResult> => {
+  const { reached, data, failure } = await postJson(`${backendUrl}/auth/profile/dob`, { dateOfBirth }, false);
+  if (!reached || !data || typeof data !== 'object') {
+    return { reached: false, success: false, failure };
+  }
+  const d = data as { ok?: boolean; success?: boolean; error?: unknown };
+  return {
+    reached: true,
+    success: d.ok === true || d.success === true,
     error: typeof d.error === 'string' ? d.error : undefined,
   };
 };
