@@ -41,9 +41,11 @@ const { verifyTurnstile } = require("../services/turnstile");
 const { dbStatus, dbSelectBy, dbSelectOne, dbDelete } = require("../services/supabaseDb");
 const {
   adminCreateUser,
+  adminUpdateUser,
   adminDeleteUser,
   recoverPassword,
   deleteAvatarObject,
+  authConfigured,
 } = require("../services/supabaseAuth");
 const { recordStrike } = require("../services/strikes");
 const { audit } = require("../services/audit");
@@ -62,6 +64,30 @@ const VERIFY_FAILED = "Invalid or expired code";
 
 const isValidEmail = (email) =>
   typeof email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim());
+
+// H15 age gate: signup requires a date of birth, strict ISO
+// YYYY-MM-DD, a real calendar date, and age >= 13. Age is computed
+// in UTC against today — the birthday must already have occurred
+// this year to count. Returns the age in years, or null when the
+// value is not a valid past date.
+const ageYearsFromDob = (dob, nowMs = Date.now()) => {
+  if (typeof dob !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(dob)) return null;
+  const [y, m, d] = dob.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  if (
+    date.getUTCFullYear() !== y ||
+    date.getUTCMonth() !== m - 1 ||
+    date.getUTCDate() !== d
+  ) {
+    return null;
+  }
+  const now = new Date(nowMs);
+  let age = now.getUTCFullYear() - y;
+  const hadBirthday =
+    now.getUTCMonth() + 1 > m || (now.getUTCMonth() + 1 === m && now.getUTCDate() >= d);
+  if (!hadBirthday) age -= 1;
+  return age < 0 ? null : age;
+};
 
 // Turnstile (6.3): when TURNSTILE_SECRET_KEY is set, a missing or
 // invalid token is a hard 400 before any code is issued. When unset
@@ -176,14 +202,26 @@ router.post("/auth/signup/verify-code", phoneCodeLimiter, trackingLimiter, async
 // a verified phone cannot be used to squat an arbitrary email
 // without the proof. The account is created via the Supabase Admin
 // API with email_confirm true (the phone was already proven).
+// H15: dateOfBirth (ISO YYYY-MM-DD) is required and age must be
+// >= 13 — checked BEFORE the proof is consumed, so a rejected
+// signup does not burn a valid proof. The DOB is stored in
+// user_metadata (see adminCreateUser).
 router.post("/auth/signup/complete", trackingLimiter, async (req, res) => {
   const phone = normalizePhone(req.body.phone);
   const proof = typeof req.body.proof === "string" ? req.body.proof : "";
   const email = typeof req.body.email === "string" ? req.body.email.trim() : "";
   const password = typeof req.body.password === "string" ? req.body.password : "";
   const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+  const dateOfBirth = typeof req.body.dateOfBirth === "string" ? req.body.dateOfBirth : "";
   if (!phone || !proof || !isValidEmail(email) || password.length < 6 || !name || name.length > 100) {
     return res.status(400).json({ success: false, error: "Invalid signup details" });
+  }
+  const age = ageYearsFromDob(dateOfBirth);
+  if (age === null) {
+    return res.status(400).json({ success: false, error: "A valid date of birth (YYYY-MM-DD) is required" });
+  }
+  if (age < 13) {
+    return res.status(400).json({ success: false, error: "You must be at least 13 years old to use SafeLife" });
   }
   const rec = await signupCodeStore.load(phone);
   if (!rec || !verifySignupProof(phone, proof, rec)) {
@@ -195,7 +233,7 @@ router.post("/auth/signup/complete", trackingLimiter, async (req, res) => {
   rec.proof = null;
   rec.updatedAt = new Date().toISOString();
   await signupCodeStore.save(rec);
-  const created = await adminCreateUser({ email, password, name, phone });
+  const created = await adminCreateUser({ email, password, name, phone, dateOfBirth });
   if (!created.ok) {
     if (created.reason === "not_configured") {
       return res.status(503).json({ success: false, error: "Account creation is not configured yet" });
@@ -207,6 +245,44 @@ router.post("/auth/signup/complete", trackingLimiter, async (req, res) => {
   }
   audit("signup.completed", { ip: req.ip });
   res.json({ success: true });
+});
+
+// 📅 PROFILE DOB — POST /auth/profile/dob { dateOfBirth } (JWT only).
+// Closes the Google-signup age-gate bypass (H15): Google OAuth
+// creates the Supabase account directly, so signup/complete's DOB
+// check never runs for those users. The app prompts for the DOB
+// right after Google sign-up and posts it here BEFORE creating the
+// profile row. A DOB already on record is immutable: an identical
+// re-post is a 200 (idempotent), a different value is a 400 — the
+// DOB is never changed post-signup. Same strict ISO / real-date /
+// UTC age >= 13 validation as signup/complete (ageYearsFromDob).
+router.post("/auth/profile/dob", trackingLimiter, requireUser, async (req, res) => {
+  const dateOfBirth = typeof req.body?.dateOfBirth === "string" ? req.body.dateOfBirth : "";
+  const age = ageYearsFromDob(dateOfBirth);
+  if (age === null) {
+    return res.status(400).json({ success: false, error: "A valid date of birth (YYYY-MM-DD) is required" });
+  }
+  if (age < 13) {
+    return res.status(400).json({ success: false, error: "You must be at least 13 years old to use SafeLife" });
+  }
+  const existing =
+    req.authSession && typeof req.authSession.dateOfBirth === "string"
+      ? req.authSession.dateOfBirth
+      : null;
+  if (existing) {
+    if (existing === dateOfBirth) return res.json({ ok: true });
+    return res.status(400).json({ success: false, error: "Date of birth is already set and cannot be changed" });
+  }
+  const updated = await adminUpdateUser(req.user.id, { date_of_birth: dateOfBirth });
+  if (!updated.ok) {
+    if (updated.reason === "not_configured") {
+      return res.status(503).json({ success: false, error: "Date of birth cannot be saved yet — please try again" });
+    }
+    console.log("❌ profile dob update failed:", updated.reason);
+    return res.status(502).json({ success: false, error: "Could not save your date of birth — please try again" });
+  }
+  audit("profile.dob_set", { ip: req.ip });
+  res.json({ ok: true });
 });
 
 // 🔑 LOGIN PRECHECK (2.4) — per-email attempt limiter in front of
@@ -323,33 +399,38 @@ router.post("/auth/forgot-password", phoneCodeLimiter, trackingLimiter, async (r
 });
 
 // 🗑️ DELETE ACCOUNT (12.3) — JWT ONLY, no shared-key fallback.
-// Deletes the auth user via the Admin API, then wipes every row the
-// user owns (profiles, emergency_contacts, guardians, journeys,
-// sos_alerts, signup_codes, login_codes, gnani_daily_usage) plus
-// the avatar object AND the in-memory alert/journey/guardian rows
-// (12.3/13.6 — memory-first reads made the DB-only wipe a leak).
-// Third-party copies (Telegram/httpSMS messages already sent, Gnani
-// audio) cannot be recalled — that residue is documented in the
-// privacy policy.
+// Wipes FIRST, deletes the auth user LAST (F-12.3R): every row the
+// user owns is wiped (profiles, emergency_contacts, guardians,
+// journeys, sos_alerts, signup_codes, login_codes, gnani_daily_usage)
+// plus the avatar object AND the in-memory alert/journey/guardian
+// rows (12.3/13.6 — memory-first reads made the DB-only wipe a
+// leak), and only then is the auth user deleted via the Admin API.
+// Deleting the auth user first left a window where a failed wipe
+// orphaned rows for an account that no longer existed; now a failed
+// wipe answers 502 delete-partial with the auth user INTACT, so the
+// deletion can be retried. Third-party copies (Telegram/httpSMS
+// messages already sent, Gnani audio) cannot be recalled — that
+// residue is documented in the privacy policy.
 //
-// Re-auth (12.3): the caller's session must be FRESH — signed in
-// within the last 15 min (Supabase last_sign_in_at, else the JWT
-// iat). Otherwise 401 REAUTH_REQUIRED. No password is invented:
-// Google-only accounts re-auth by a fresh OAuth sign-in and retry.
-// Audit rows are not wiped (they carry no user column) and —
-// deliberately — NO post-delete audit row is written: the old
-// audit("account.deleted", { meta: { userId } }) created a fresh
-// row keyed to the deleted user at the moment of deletion.
+// Schema note (checked, not assumed): login_codes and signup_codes
+// are keyed by phone only (id = normalized E.164 phone, no user_id
+// column), so they are wiped by phone; gnani_daily_usage carries
+// user_key (`user:<id>`), so it is wiped by user id. The phone comes
+// from the profiles row, falling back to the auth user's
+// user_metadata phone (requireUser exposes it as
+// req.authSession.phone) — so the code rows are wiped even when no
+// profiles row exists, instead of orphaning. Audit rows are not
+// wiped (they carry no user column) and — deliberately — NO
+// post-delete audit row is written: the old audit("account.deleted",
+// { meta: { userId } }) created a fresh row keyed to the deleted
+// user at the moment of deletion.
 //
 // Honest failure: if ANY wipe fails, the answer is 502
 // { success:false, error:"delete-partial", failed:[tables] }, NOT
-// { success:true }. Note the auth user is already deleted by then,
-// so a partial wipe is a real inconsistent state the user must be
-// told about (and support must be able to finish by hand).
-// Residual gap: login_codes/signup_codes are wiped by the profile
-// phone — if no profile row exists, no phone is known and those
-// code rows cannot be addressed (orphaned codes expire in 10 min
-// and are single-phone-scoped, but they are not wiped).
+// { success:true }, and the auth user is NOT deleted. If the wipes
+// pass but the Admin delete itself fails, the answer is 502
+// "Could not delete account" — the data is already gone, so that
+// state is logged for support to finish by hand.
 const SESSION_FRESH_MS = 15 * 60 * 1000;
 const isSessionFresh = (req) => {
   const now = Date.now();
@@ -368,15 +449,21 @@ router.delete("/auth/account", trackingLimiter, requireUser, async (req, res) =>
     return res.status(401).json({ success: false, error: "REAUTH_REQUIRED" });
   }
   const profile = await dbSelectOne("profiles", userId);
-  const phone = profile.ok && typeof profile.row?.phone === "string" ? profile.row.phone : null;
-  const deleted = await adminDeleteUser(userId);
-  if (!deleted.ok) {
-    if (deleted.reason === "not_configured") {
-      return res.status(503).json({ success: false, error: "Account deletion is not configured yet" });
-    }
-    console.log("❌ account delete failed:", deleted.reason);
-    return res.status(502).json({ success: false, error: "Could not delete account — please try again" });
+  // Phone-keyed code rows need a phone: profiles row first, auth
+  // user_metadata fallback (F-12.3R) — never a client claim.
+  const sessionPhone =
+    req.authSession && typeof req.authSession.phone === "string" ? req.authSession.phone : null;
+  const phone =
+    (profile.ok && typeof profile.row?.phone === "string" ? profile.row.phone : null) ||
+    sessionPhone;
+  // Unconfigured auth cannot delete the user — say so BEFORE
+  // wiping anything (the wipes now run first, F-12.3R).
+  if (!authConfigured()) {
+    return res.status(503).json({ success: false, error: "Account deletion is not configured yet" });
   }
+  // WIPES FIRST (F-12.3R) — the auth user is deleted only after
+  // every wipe succeeded, so a failed wipe leaves a retryable
+  // account instead of orphaned rows for a deleted user.
   const wipes = [
     ["profiles", dbDelete("profiles", "id", userId)],
     ["emergency_contacts", dbDelete("emergency_contacts", "user_id", userId)],
@@ -406,6 +493,14 @@ router.delete("/auth/account", trackingLimiter, requireUser, async (req, res) =>
   if (failed.length > 0) {
     console.log("❌ account wipe partial — failed tables:", failed.join(", "));
     return res.status(502).json({ success: false, error: "delete-partial", failed });
+  }
+  const deleted = await adminDeleteUser(userId);
+  if (!deleted.ok) {
+    if (deleted.reason === "not_configured") {
+      return res.status(503).json({ success: false, error: "Account deletion is not configured yet" });
+    }
+    console.log("❌ account delete failed after wipe:", deleted.reason);
+    return res.status(502).json({ success: false, error: "Could not delete account — please try again" });
   }
   res.json({ success: true });
 });

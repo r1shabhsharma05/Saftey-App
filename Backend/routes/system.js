@@ -30,4 +30,20 @@ router.get("/health", systemLimiter, (req, res) => {
   });
 });
 
+// 📱 APP VERSION (H18, force-update contract) — public, NO auth:
+// the app checks this on launch to decide whether to force an
+// update. Exact shape, nothing else:
+//   { "minSupportedVersion": "<MIN_SUPPORTED_APP_VERSION or 1.0.0>",
+//     "latestVersion": "<LATEST_APP_VERSION or = min>" }
+// Env is read per request so a redeploy picks new values up with
+// no code change. No auth, no user data, no config oracle —
+// version numbers are public by design.
+router.get("/version", systemLimiter, (req, res) => {
+  const min = process.env.MIN_SUPPORTED_APP_VERSION || "1.0.0";
+  res.json({
+    minSupportedVersion: min,
+    latestVersion: process.env.LATEST_APP_VERSION || min,
+  });
+});
+
 module.exports = router;
