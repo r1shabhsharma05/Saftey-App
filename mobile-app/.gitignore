@@ -32,6 +32,8 @@ yarn-error.*
 
 # local env files — never commit real keys
 .env
+.env*
+!.env.example
 .env*.local
 
 # typescript
