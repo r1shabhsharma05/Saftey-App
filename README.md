@@ -168,7 +168,7 @@ Verified from the repo's own `package.json` files — nothing listed here isn't 
 
 ```mermaid
 flowchart TB
-    App["📱 SafeLife App<br/>Expo · React Native · TypeScript"] -->|SOS · location · x-api-key| API["⚙️ Backend API<br/>Express · Vercel · Node 24"]
+    App["📱 SafeLife App<br/>Expo · React Native · TypeScript"] -->|SOS · location · Bearer JWT| API["⚙️ Backend API<br/>Express · Vercel · Node 24"]
     App -->|Auth · profiles · contacts · RLS| DB[("Supabase Postgres<br/>ap-south-1 · Auth · Storage")]
     API -->|Bot API| TG["✈️ Telegram<br/>@safe_alret_bot → guardians"]
     API -->|SOS bucket · safe-places cache| UP[("Upstash Redis<br/>shared limits + cache")]
@@ -211,8 +211,8 @@ sequenceDiagram
     U->>App: Tap SOS
     App->>App: GPS lock — last-known fix first,<br/>fresh fix streams in after
     App->>App: Offline? Queue in outbox,<br/>flush on reconnect
-    App->>API: POST /alert (x-api-key, coords, profile, contacts)
-    API->>API: API-key check → 30/15min limit →<br/>coordinate validation → sanitise
+    App->>API: POST /alert (Bearer JWT, coords, profile, contacts)
+    API->>API: JWT check → 30/15min limit →<br/>coordinate validation → sanitise
     API->>TG: Formatted alert — name, live location,<br/>maps link, emergency contacts
     TG-->>U: ✅ Contacts notified in seconds
     loop While alert is active
@@ -230,8 +230,8 @@ sequenceDiagram
    and sent automatically when the network returns, with backoff and a delivery-status UI.
 3. **Package** — The app builds the payload: user name, latitude/longitude, accuracy,
    timestamp, and saved emergency contacts (up to 10 listed in the message).
-4. **Authenticate & protect** — Every alert call carries an `x-api-key` header. The
-   backend checks it (when `API_SECRET` is configured), enforces the SOS rate limit
+4. **Authenticate & protect** — Every alert call carries an `Authorization: Bearer <Supabase JWT>` header. The
+   backend verifies the JWT server-side (when Supabase is configured), enforces the SOS rate limit
    (30 alerts / 15 min / IP), validates coordinates strictly (range + type), and strips
    control characters from all strings.
 5. **Deliver** — The backend formats and sends the alert to the configured Telegram chats
@@ -260,15 +260,15 @@ Base URL (production): `https://safelife-backend-rish0000-dots-projects.vercel.a
 |---|---|---|---|---|
 | `GET` | `/` | — | — | Service status page |
 | `GET` | `/health` | — | — | Health check — status, uptime, per-channel config |
-| `POST` | `/alert` | `x-api-key` | 30 / 15 min / IP | Send an SOS alert with live location + contacts |
-| `POST` | `/battery-alert` | `x-api-key` | 30 / 15 min / IP | Low-battery warning / final burst |
-| `POST` | `/location-update` | `x-api-key` | 60 / min / IP | Stream fresh coordinates during an active alert |
-| `GET` | `/alert/:id` | `x-api-key` | 60 / min / IP | Alert status for the live page |
+| `POST` | `/alert` | `JWT (Bearer)` | 30 / 15 min / IP | Send an SOS alert with live location + contacts |
+| `POST` | `/battery-alert` | `JWT (Bearer)` | 30 / 15 min / IP | Low-battery warning / final burst |
+| `POST` | `/location-update` | `JWT (Bearer)` | 60 / min / IP | Stream fresh coordinates during an active alert |
+| `GET` | `/alert/:id` | `JWT (Bearer)` | 60 / min / IP | Alert status for the live page |
 | `POST` | `/alert/:id/ack` | signed token | 60 / min / IP | Guardian acknowledges — stops escalation |
 | `POST` | `/escalate` | — | 60 / min / IP | Escalation-ladder step (QStash-driven) |
 | `GET` | `/alert/:id/view` · `/alert/:id/location` | — | 60 / min / IP | Contacts-side live alert page + pin |
 | `POST` | `/delivery-retry` | — | 60 / min / IP | QStash retry callback |
-| `POST` | `/test-alert` | `x-api-key` | 10 / hour / IP | Send a test alert (default-deny unless `ENABLE_TEST_ALERT=1`) |
+| `POST` | `/test-alert` | `JWT (Bearer)` | 10 / hour / IP | Send a test alert (default-deny unless `ENABLE_TEST_ALERT=1`) |
 | `GET` | `/safe-places?lat&lng` | — | 30 / min / IP | Nearby safe places, ranked, with `distanceKm` + `openNow` |
 | `GET` | `/route?fromLat&fromLng&toLat&toLng` | — | 30 / min / IP | Walking route — distance, duration, polyline (25 km cap) |
 
@@ -277,7 +277,7 @@ Base URL (production): `https://safelife-backend-rish0000-dots-projects.vercel.a
 ```bash
 curl -X POST https://safelife-backend-rish0000-dots-projects.vercel.app/alert \
   -H "Content-Type: application/json" \
-  -H "x-api-key: YOUR_API_SECRET" \
+  -H "Authorization: Bearer <SUPABASE_ACCESS_TOKEN>" \
   -d '{
     "name": "Rishabh",
     "latitude": 28.5355,
@@ -378,7 +378,7 @@ npx expo start              # scan the QR with Expo Go
 | Variable | What it is |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_CHAT_IDS` | Bot token + comma-separated recipient chat IDs |
-| `API_SECRET` | Shared secret — the app sends it as the `x-api-key` header |
+| `API_SECRET` | Retired in the Day-30 re-ship — the shared-key fallback is removed; auth is JWT-only. Rotate it at Day-30 activation to retire the value embedded in already-shipped APKs (≤ #12) |
 | `UPSTASH_REDIS_REST_URL` · `UPSTASH_REDIS_REST_TOKEN` | Shared rate-limit bucket + safe-places cache |
 | `QSTASH_TOKEN` · `PUBLIC_BASE_URL` | Delayed retries + escalation timers |
 | `SUPABASE_URL` · `SUPABASE_SERVICE_ROLE_KEY` | Postgres mirror + audit (server-side only) |
@@ -395,7 +395,7 @@ npx expo start              # scan the QR with Expo Go
 | `EXPO_PUBLIC_SUPABASE_URL` | Your Supabase project URL |
 | `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon (public) key |
 | `EXPO_PUBLIC_BACKEND_URL` | Backend base URL — **https only** in production builds |
-| `EXPO_PUBLIC_API_SECRET` | Must match the backend's `API_SECRET` |
+| `EXPO_PUBLIC_API_SECRET` | Retired — removed from the build; no longer used by any code path. Do not set it. |
 
 Generate a strong secret with:
 ```bash
