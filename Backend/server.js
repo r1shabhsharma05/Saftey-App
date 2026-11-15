@@ -21,8 +21,20 @@ const voiceRoutes = require("./routes/voice");
 
 const app = express();
 
-// 🔒 Security headers. CSP off: this is a JSON API, no HTML is served.
+// 🔒 Security headers. CSP off — DELIBERATE (10.1, recorded here,
+// not silently enabled): this is a JSON API, no HTML is served, so
+// there is no content for a Content-Security-Policy to protect; the
+// run-3 audit confirms CSP-off-by-design. helmet still sets
+// X-Content-Type-Options, X-Frame-Options and Referrer-Policy, and
+// Permissions-Policy is set explicitly below (helmet has no default
+// for it). Backend/vercel.json mirrors the same four headers with
+// the SAME values as a second layer — helmet is the authoritative
+// layer; the values are identical, so there is no conflict.
 app.use(helmet({ contentSecurityPolicy: false }));
+app.use((req, res, next) => {
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  next();
+});
 // 🛡️ Cap body size — SOS payloads are tiny; oversized bodies are abuse.
 app.use(express.json({ limit: "32kb" }));
 // D10: the contacts-side alert page is a no-JavaScript HTML form, so
