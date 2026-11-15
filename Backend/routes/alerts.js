@@ -8,7 +8,7 @@
 // QStash cannot carry our x-api-key header. requireApiKey audits
 // rejected keys, so a brute-force walk leaves a trail.
 const express = require("express");
-const requireApiKey = require("../middleware/requireApiKey");
+const { requireUserOrKey, owns } = require("../middleware/requireUser");
 const { sosLimiter, trackingLimiter, testLimiter } = require("../middleware/rateLimit");
 const {
   isValidLatitude,
@@ -18,6 +18,7 @@ const {
   sanitizeText,
 } = require("../lib/validate");
 const { buildSosMessage } = require("../services/sos");
+const { normalizePhone } = require("../services/sms");
 const { buildBatteryMessage, isBatteryLevelInBand } = require("../services/battery");
 const { isBlocked, recordStrike } = require("../services/strikes");
 const {
@@ -30,7 +31,6 @@ const {
   MAX_RETRIES,
 } = require("../services/delivery");
 const { sendTelegramMessage } = require("../services/telegram");
-const { sendVoiceAlert } = require("../services/voice");
 const {
   ACK_THRESHOLD,
   ESCALATION_STEPS,
@@ -77,7 +77,7 @@ const safeNotifyGuardians = async (alert, lat, lng) => {
 // the ceiling is generous: carrier NAT shares IPs and emergencies get
 // repeat presses) + API-key gated. Coordinates are strictly validated;
 // free-text fields are sanitized before they reach Telegram and logs.
-router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
+router.post("/alert", sosLimiter, requireUserOrKey, async (req, res) => {
   const { lat, lng } = req.body;
 
   // Reject garbage coordinates (non-numeric, out of range). The app blocks
@@ -101,11 +101,13 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
   // can see who else the user chose to alert. D9: a contact may also
   // carry a pushToken (the app will send it once token collection
   // lands); it is sanitized like any field and never logged.
+  // Run-2 5.1: every SOS contact phone runs through normalizePhone —
+  // an unparseable number is dropped (""), never stored as typed.
   const contacts = (Array.isArray(req.body.contacts) ? req.body.contacts : [])
     .slice(0, 10)
     .map((c) => ({
       name: sanitizeText(c?.name, 60),
-      phone: sanitizeText(c?.phone, 20),
+      phone: normalizePhone(c?.phone),
       pushToken: sanitizeText(c?.pushToken, 1024),
     }))
     .filter((c) => c.name || c.phone || c.pushToken);
@@ -132,7 +134,8 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
     // D9: the record is created BEFORE the message is built, carrying
     // the trigger position, so the message can embed the contacts-side
     // alert-view link for this exact alert.
-    alert = createAlert({ contactsCount: contacts.length, lat: latNum, lng: lngNum });
+    // Run-2 3.1: owner from the verified JWT (null on the shared-key-only compat path).
+    alert = createAlert({ contactsCount: contacts.length, lat: latNum, lng: lngNum, ownerId: req.user?.id || null });
     // H3: bind ACKs to the contacts this SOS actually went to — only
     // their identifiers count toward the 2-ack stop. One-way hashes
     // of the sanitized phones/tokens (the same values the message
@@ -268,7 +271,7 @@ router.post("/alert", sosLimiter, requireApiKey, async (req, res) => {
 // contacts-side page shows the final pin. A final naming an unknown,
 // closed or failed alert is 400 (M5) — it is not a standalone send;
 // a `low` warning names no alert at all.
-router.post("/battery-alert", sosLimiter, requireApiKey, async (req, res) => {
+router.post("/battery-alert", sosLimiter, requireUserOrKey, async (req, res) => {
   const { lat, lng } = req.body;
   if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
     return res.status(400).json({ success: false, error: "Invalid location data" });
@@ -290,11 +293,13 @@ router.post("/battery-alert", sosLimiter, requireApiKey, async (req, res) => {
 
   const name = sanitizeText(req.body.name, 100) || "Unknown User";
   const phone = sanitizeText(req.body.phone, 30) || "Not Provided";
+  // Run-2 5.1: every battery-alert contact phone runs through
+  // normalizePhone — an unparseable number is dropped, never stored.
   const contacts = (Array.isArray(req.body.contacts) ? req.body.contacts : [])
     .slice(0, 10)
     .map((c) => ({
       name: sanitizeText(c?.name, 60),
-      phone: sanitizeText(c?.phone, 20),
+      phone: normalizePhone(c?.phone),
       pushToken: sanitizeText(c?.pushToken, 1024),
     }))
     .filter((c) => c.name || c.phone || c.pushToken);
@@ -311,7 +316,9 @@ router.post("/battery-alert", sosLimiter, requireApiKey, async (req, res) => {
       return res.status(400).json({ success: false, error: "A final battery alert needs a live alertId" });
     }
     liveAlert = await alertStore.get(alertId);
-    if (!liveAlert || (liveAlert.state !== "delivered" && liveAlert.state !== "acked")) {
+    // Run-2 3.1: a foreign alert is treated exactly like an unknown
+    // one — a final burst must not move another user's alert pin.
+    if (!liveAlert || !owns(req, liveAlert.ownerId) || (liveAlert.state !== "delivered" && liveAlert.state !== "acked")) {
       return res.status(400).json({ success: false, error: "final battery alert needs a live (delivered/acked) alert" });
     }
   } else if (alertId) {
@@ -371,10 +378,14 @@ router.post("/battery-alert", sosLimiter, requireApiKey, async (req, res) => {
 // created on another instance is only visible here once Supabase is
 // configured (the shared store); unconfigured, only same-instance
 // memory answers — a miss then is "not found here", reported as 404.
-router.get("/alert/:id", trackingLimiter, requireApiKey, async (req, res) => {
+router.get("/alert/:id", trackingLimiter, requireUserOrKey, async (req, res) => {
   const alert = await alertStore.get(req.params.id);
   if (!alert) {
     return res.status(404).json({ success: false, error: "Alert not found" });
+  }
+  // Run-2 3.1: a JWT user reads only their own alert.
+  if (!owns(req, alert.ownerId)) {
+    return res.status(403).json({ success: false, error: "Forbidden" });
   }
   res.json({ success: true, alert: alertStore.toPublic(alert) });
 });
@@ -399,7 +410,7 @@ router.get("/alert/:id", trackingLimiter, requireApiKey, async (req, res) => {
 const ackAuth = (req, res, next) => {
   const token = typeof req.query.token === "string" ? req.query.token : "";
   if (verifyViewToken(req.params.id, token)) return next();
-  return requireApiKey(req, res, next);
+  return requireUserOrKey(req, res, next);
 };
 
 router.post("/alert/:id/ack", trackingLimiter, ackAuth, async (req, res) => {
@@ -445,9 +456,13 @@ router.post("/alert/:id/ack", trackingLimiter, ackAuth, async (req, res) => {
 // Closing is what makes the 24 h view-token expiry real before its time:
 // the view, location and ack routes all answer 410 for closed alerts, and
 // the escalation callbacks ignore closed alerts. There is no re-open.
-router.post("/alert/:id/close", trackingLimiter, requireApiKey, async (req, res) => {
+router.post("/alert/:id/close", trackingLimiter, requireUserOrKey, async (req, res) => {
   const alert = await alertStore.get(req.params.id);
   if (!alert) return res.status(404).json({ success: false, error: "Alert not found" });
+  // Run-2 3.1: only the alert's owner closes it.
+  if (!owns(req, alert.ownerId)) {
+    return res.status(403).json({ success: false, error: "Forbidden" });
+  }
   if (alert.state !== "delivered" && alert.state !== "acked") {
     return res
       .status(409)
@@ -505,13 +520,26 @@ const loadAlertGuardian = async (req, res) => {
     res.status(404).json({ success: false, error: "This guardian was not notified for this alert" });
     return null;
   }
+  // Run-2 3.1: a JWT caller must be either the alert's owner (the
+  // victim) or the notified guardian themselves — anyone else 403s.
+  // A legacy alert (ownerId null) has no known owner, so the owner
+  // half passes open; the guardian half still binds to the record.
+  // Shared-key-only callers (no req.user) are the compat path.
+  if (
+    req.user &&
+    !(!alert.ownerId || req.user.id === alert.ownerId) &&
+    req.user.id !== guardian.userId
+  ) {
+    res.status(403).json({ success: false, error: "Forbidden" });
+    return null;
+  }
   return { alert, guardian, response };
 };
 
 // ✅ GUARDIAN ACCEPT — "I'm coming". Repeat accept is an idempotent
 // 200 (a client retry must not error); accept after decline, or
 // past the 15-min response window, is a 409.
-router.post("/alert/:id/guardian/:guardianId/accept", trackingLimiter, requireApiKey, async (req, res) => {
+router.post("/alert/:id/guardian/:guardianId/accept", trackingLimiter, requireUserOrKey, async (req, res) => {
   const loaded = await loadAlertGuardian(req, res);
   if (!loaded) return;
   const { alert, guardian } = loaded;
@@ -529,7 +557,7 @@ router.post("/alert/:id/guardian/:guardianId/accept", trackingLimiter, requireAp
 
 // ❌ GUARDIAN DECLINE — "I can't come". Same idempotency/terminal
 // rules as accept, mirrored.
-router.post("/alert/:id/guardian/:guardianId/decline", trackingLimiter, requireApiKey, async (req, res) => {
+router.post("/alert/:id/guardian/:guardianId/decline", trackingLimiter, requireUserOrKey, async (req, res) => {
   const loaded = await loadAlertGuardian(req, res);
   if (!loaded) return;
   const { alert, guardian } = loaded;
@@ -550,7 +578,7 @@ router.post("/alert/:id/guardian/:guardianId/decline", trackingLimiter, requireA
 // notified guardian has not consented to share location yet);
 // the pin NEVER comes back to anyone except the victim's API-key
 // read (GET /alert/:id) — the contacts page gets distance only.
-router.post("/alert/:id/guardian/:guardianId/location", trackingLimiter, requireApiKey, async (req, res) => {
+router.post("/alert/:id/guardian/:guardianId/location", trackingLimiter, requireUserOrKey, async (req, res) => {
   const loaded = await loadAlertGuardian(req, res);
   if (!loaded) return;
   const { alert, guardian } = loaded;
@@ -578,7 +606,7 @@ router.post("/alert/:id/guardian/:guardianId/location", trackingLimiter, require
 // server-rendered from the key (services/guardianAlert.js) — no free
 // text ever reaches a screen. A guardian sender must be a known,
 // accepted responder; an unknown key or sender is a 400.
-router.post("/alert/:id/message", trackingLimiter, requireApiKey, async (req, res) => {
+router.post("/alert/:id/message", trackingLimiter, requireUserOrKey, async (req, res) => {
   const alert = await alertStore.get(req.params.id);
   if (!alert) return res.status(404).json({ success: false, error: "Alert not found" });
   if (alert.state === "closed") return res.status(410).json({ success: false, error: "This alert is closed" });
@@ -594,9 +622,17 @@ router.post("/alert/:id/message", trackingLimiter, requireApiKey, async (req, re
   if (typeof key !== "string" || !key) {
     return res.status(400).json({ success: false, error: "Invalid message" });
   }
+  // Run-2 3.1: a victim sender must own the alert; a guardian
+  // sender must be the guardian record's owner.
+  if (req.user && sender === "victim" && alert.ownerId && alert.ownerId !== req.user.id) {
+    return res.status(403).json({ success: false, error: "Forbidden" });
+  }
   if (sender === "guardian") {
     const guardian = await guardianStore.get(guardianId);
     if (!guardian) return res.status(404).json({ success: false, error: "Guardian not found" });
+    if (req.user && guardian.userId && guardian.userId !== req.user.id) {
+      return res.status(403).json({ success: false, error: "Forbidden" });
+    }
   }
   if (!alert.guardians) {
     return res.status(404).json({ success: false, error: "No guardians were notified for this alert" });
@@ -644,8 +680,9 @@ router.post("/escalate", trackingLimiter, async (req, res) => {
       (jobTokens !== undefined && !Array.isArray(jobTokens))) {
     return res.status(400).json({ success: false, error: "Invalid escalation job" });
   }
+  // Run-2 5.1: callback-body phones run through normalizePhone too.
   const jobContacts = contacts
-    .map((phone, i) => ({ phone, pushToken: pushTokens[i] || "" }))
+    .map((phone, i) => ({ phone: normalizePhone(phone), pushToken: pushTokens[i] || "" }))
     .filter((c) => c.phone || c.pushToken);
   if (!verifyEscalationToken(alertId, step, req.body.token)) {
     audit("escalation.denied", { ip: req.ip, meta: { alertId, step } });
@@ -686,12 +723,15 @@ router.post("/escalate", trackingLimiter, async (req, res) => {
   let run;
   try {
     if (step === 3) {
-      // Voice step: call only contacts who have not ACKed, with the
-      // original SOS message for the agent to speak. No channel
-      // re-fire here — the channels have had two attempts each.
+      // Run-2 11.3: the voice step is SKIPPED, not faked — Vachana
+      // has no telephony leg, so no call is placed. The step is
+      // recorded with its reason (SMS/Telegram already sent), never
+      // as a counted failure or a success.
       const targets = unackedContacts(alert, escContacts);
-      const voice = await sendVoiceAlert({ message, contacts: targets });
-      run = { step, at: now, action, sent: voice.sent, failed: voice.failed, voice };
+      console.log(
+        `⏭️ Escalation voice step skipped for alert ${alert.id}: voice-call not supported (${targets.length} unacked contacts already have SMS/Telegram)`
+      );
+      run = { step, at: now, action, sent: 0, failed: 0, note: "voice-call skipped (not supported — SMS/Telegram already sent)" };
     } else {
       const channels = failedChannels(alert.delivery);
       const fresh = channels.length
@@ -916,8 +956,9 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
       (jobTokens !== undefined && !Array.isArray(jobTokens))) {
     return res.status(400).json({ success: false, error: "Invalid retry job" });
   }
+  // Run-2 5.1: callback-body phones run through normalizePhone too.
   const retryContacts = contacts
-    .map((phone, i) => ({ phone, pushToken: pushTokens[i] || "" }))
+    .map((phone, i) => ({ phone: normalizePhone(phone), pushToken: pushTokens[i] || "" }))
     .filter((c) => c.phone || c.pushToken);
   if (!verifyRetryToken(alertId, attempt, req.body.token)) {
     audit("delivery.retry_denied", { ip: req.ip, meta: { alertId, attempt } });
@@ -992,7 +1033,7 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
 // 📡 LIVE LOCATION UPDATE
 // Rate-limited (60/min per IP — live tracking updates every few seconds)
 // + API-key gated. Coordinates strictly validated like /alert.
-router.post("/location-update", trackingLimiter, requireApiKey, async (req, res) => {
+router.post("/location-update", trackingLimiter, requireUserOrKey, async (req, res) => {
   const { lat, lng } = req.body;
 
   if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
@@ -1011,7 +1052,10 @@ router.post("/location-update", trackingLimiter, requireApiKey, async (req, res)
   if (alertId) {
     try {
       const alert = await alertStore.get(alertId);
-      if (alert && alert.state !== "closed") {
+      // Run-2 3.1: a foreign alert's pin is never moved — the Telegram
+      // leg below still runs, since location broadcast is the update's
+      // original job.
+      if (alert && alert.state !== "closed" && owns(req, alert.ownerId)) {
         setAlertLocation(alert, latNum, lngNum);
         alertStore.save(alert);
       }
@@ -1060,7 +1104,7 @@ const testAlertGate = (req, res, next) => {
   }
   next();
 };
-router.post("/test-alert", testAlertGate, testLimiter, requireApiKey, async (req, res) => {
+router.post("/test-alert", testAlertGate, testLimiter, requireUserOrKey, async (req, res) => {
   const testLat = "28.6139";
   const testLng = "77.2090";
   const message = `🧪 TEST ALERT!

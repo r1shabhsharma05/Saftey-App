@@ -1,8 +1,14 @@
 // 🎙️ Gnani speech routes — the thin HTTP seam over services/voice.js
 // (Timbre TTS + Prisma STT). The voice-trigger SOS (distress-phrase
 // detection) and the spoken SOS message call these; without them the
-// adapter would be dead code. Same gate as every API-key route
-// (requireApiKey + trackingLimiter). No new dependencies.
+// adapter would be dead code.
+//
+// Run-2 2.1/8.1: JWT-or-shared-key auth (requireUserOrKey) + the
+// voice routes' OWN limiter (voiceLimiter, 10/min per IP — no longer
+// the shared 60/min tracking bucket) + a per-account DAILY Gnani
+// counter (50/day, services/voice.js). A Gnani call that reaches the
+// provider counts against the quota, whether it succeeds or is
+// rejected there.
 //
 // POST /voice/synthesize — JSON {text, voice?, language?} -> raw
 //   audio/wav bytes (the SOS message, spoken). The global JSON limit
@@ -13,12 +19,19 @@
 //   -> {success, transcript, languageCode}. Clips are capped at 2 MB
 //   decoded (Prisma takes <= 30 s per request).
 // Reason -> HTTP: channel-not-configured -> 503; empty-content /
-// invalid-audio / unsupported-audio-format / audio-too-large -> 400;
+// invalid-audio / unsupported-audio-format / audio-too-large /
+// unsupported-voice / unsupported-language -> 400;
 // voice-rejected / voice-transport-error / voice-bad-response -> 502.
 const express = require("express");
-const { trackingLimiter } = require("../middleware/rateLimit");
-const requireApiKey = require("../middleware/requireApiKey");
-const { synthesizeSpeech, transcribeAudio } = require("../services/voice");
+const { voiceLimiter } = require("../middleware/rateLimit");
+const { requireUserOrKey } = require("../middleware/requireUser");
+const {
+  synthesizeSpeech,
+  transcribeAudio,
+  gnaniQuotaKey,
+  checkGnaniQuota,
+  recordGnaniCall,
+} = require("../services/voice");
 
 const router = express.Router();
 
@@ -28,11 +41,33 @@ const failureStatus = (reason) =>
     : reason === "empty-content" ||
         reason === "invalid-audio" ||
         reason === "unsupported-audio-format" ||
-        reason === "audio-too-large"
+        reason === "audio-too-large" ||
+        reason === "unsupported-voice" ||
+        reason === "unsupported-language"
       ? 400
       : 502;
 
-router.post("/voice/synthesize", trackingLimiter, requireApiKey, async (req, res) => {
+// 8.1: the per-account daily Gnani counter. Runs BEFORE the provider
+// call; a call that reaches Gnani (success or provider rejection)
+// counts. Validation/config failures do not.
+const checkQuota = (req, res) => {
+  const quota = checkGnaniQuota(gnaniQuotaKey(req));
+  if (quota.allowed) return quota;
+  res.status(429).json({
+    success: false,
+    error: "Daily voice quota reached — please try again tomorrow",
+  });
+  return null;
+};
+
+const countIfSpent = (req, result) => {
+  if (result.ok || result.reason === "voice-rejected") {
+    recordGnaniCall(gnaniQuotaKey(req));
+  }
+};
+
+router.post("/voice/synthesize", voiceLimiter, requireUserOrKey, async (req, res) => {
+  if (!checkQuota(req, res)) return;
   const result = await synthesizeSpeech({
     text: typeof req.body?.text === "string" ? req.body.text : "",
     voice: req.body?.voice,
@@ -47,15 +82,17 @@ router.post("/voice/synthesize", trackingLimiter, requireApiKey, async (req, res
           : result.reason,
     });
   }
+  countIfSpent(req, result);
   return res.set("Content-Type", result.contentType).send(result.audio);
 });
 
 router.post(
   "/voice/transcribe",
-  trackingLimiter,
-  requireApiKey,
+  voiceLimiter,
+  requireUserOrKey,
   express.raw({ limit: "2mb", type: ["audio/*", "application/octet-stream"] }),
   async (req, res) => {
+    if (!checkQuota(req, res)) return;
     const audio = Buffer.isBuffer(req.body) ? req.body : null;
     const result = await transcribeAudio({
       audio: audio || Buffer.alloc(0),
@@ -71,6 +108,7 @@ router.post(
             : result.reason,
       });
     }
+    countIfSpent(req, result);
     return res.json({ success: true, transcript: result.transcript, languageCode: result.languageCode });
   }
 );

@@ -18,7 +18,7 @@
 // no API key (QStash cannot carry one) — same pattern as D10's
 // POST /escalate.
 const express = require("express");
-const requireApiKey = require("../middleware/requireApiKey");
+const { requireUserOrKey, owns } = require("../middleware/requireUser");
 const { trackingLimiter } = require("../middleware/rateLimit");
 const {
   isValidLatitude,
@@ -101,7 +101,7 @@ const ensureWatchFields = (journey) => {
 // label and name are sanitized before they reach the record. The
 // ETA window (future, ≤12 h) is enforced by the service, which
 // throws a safe validation message the route returns as a 400.
-router.post("/journeys", trackingLimiter, requireApiKey, async (req, res) => {
+router.post("/journeys", trackingLimiter, requireUserOrKey, async (req, res) => {
   const { originLat, originLng, destLat, destLng } = req.body;
   if (
     !isValidLatitude(originLat) ||
@@ -144,6 +144,9 @@ router.post("/journeys", trackingLimiter, requireApiKey, async (req, res) => {
       destinationLabel,
       expectedArrivalAt,
       userName,
+      // Run-2 3.1: owner from the verified JWT (null on the
+      // shared-key-only compat path).
+      ownerId: req.user?.id || null,
       contacts,
       route,
     });
@@ -189,16 +192,27 @@ router.post("/journeys", trackingLimiter, requireApiKey, async (req, res) => {
   res.json({ success: true, journey: toJourneyPublic(journey), viewUrl, scheduled: [overdueJob] });
 });
 
+// Run-2 3.1: a JWT user may touch only their own journey. Legacy
+// rows (ownerId null) and shared-key-only callers (no req.user) pass.
+const denyForeignJourney = (req, res, journey) => {
+  if (!owns(req, journey.ownerId)) {
+    res.status(403).json({ success: false, error: "Forbidden" });
+    return true;
+  }
+  return false;
+};
+
 // 🔍 JOURNEY STATUS (owner read — what the app polls while a trip
 // is active). API-key gated + tracking limiter. Same serverless
 // caveat as GET /alert/:id: an id created on another instance is
 // only visible here once Supabase is configured; unconfigured, only
 // same-instance memory answers.
-router.get("/journey/:id", trackingLimiter, requireApiKey, async (req, res) => {
+router.get("/journey/:id", trackingLimiter, requireUserOrKey, async (req, res) => {
   const journey = await journeyStore.get(req.params.id);
   if (!journey) {
     return res.status(404).json({ success: false, error: "Journey not found" });
   }
+  if (denyForeignJourney(req, res, journey)) return;
   res.json({ success: true, journey: toJourneyPublic(journey) });
 });
 
@@ -207,7 +221,7 @@ router.get("/journey/:id", trackingLimiter, requireApiKey, async (req, res) => {
 // live-tracking — the app posts on the same ≥25 m / ≥30 s cadence).
 // A finished journey is 409: its pin is history, and accepting
 // positions after arrival would move a trip that is over.
-router.post("/journey/:id/location", trackingLimiter, requireApiKey, async (req, res) => {
+router.post("/journey/:id/location", trackingLimiter, requireUserOrKey, async (req, res) => {
   const { lat, lng } = req.body;
   if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
     return res.status(400).json({ success: false, error: "Invalid location data" });
@@ -216,6 +230,7 @@ router.post("/journey/:id/location", trackingLimiter, requireApiKey, async (req,
   if (!journey) {
     return res.status(404).json({ success: false, error: "Journey not found" });
   }
+  if (denyForeignJourney(req, res, journey)) return;
   if (journey.state !== "active") {
     return res.status(409).json({ success: false, error: "Journey is not active" });
   }
@@ -252,11 +267,12 @@ router.post("/journey/:id/location", trackingLimiter, requireApiKey, async (req,
 // anything else is 409 (a cancelled trip cannot "arrive", and an
 // arrived trip is done — D17's overdue check reads the same state,
 // so a double-arrive must never re-open the escalation window).
-router.post("/journey/:id/arrived", trackingLimiter, requireApiKey, async (req, res) => {
+router.post("/journey/:id/arrived", trackingLimiter, requireUserOrKey, async (req, res) => {
   const journey = await journeyStore.get(req.params.id);
   if (!journey) {
     return res.status(404).json({ success: false, error: "Journey not found" });
   }
+  if (denyForeignJourney(req, res, journey)) return;
   if (journey.state !== "active") {
     return res.status(409).json({ success: false, error: "Journey is not active" });
   }
@@ -276,11 +292,12 @@ router.post("/journey/:id/arrived", trackingLimiter, requireApiKey, async (req, 
 
 // ❌ CANCEL — the traveller called the trip off. Same guards as
 // arrived: only an active journey can be cancelled.
-router.post("/journey/:id/cancel", trackingLimiter, requireApiKey, async (req, res) => {
+router.post("/journey/:id/cancel", trackingLimiter, requireUserOrKey, async (req, res) => {
   const journey = await journeyStore.get(req.params.id);
   if (!journey) {
     return res.status(404).json({ success: false, error: "Journey not found" });
   }
+  if (denyForeignJourney(req, res, journey)) return;
   if (journey.state !== "active") {
     return res.status(409).json({ success: false, error: "Journey is not active" });
   }
@@ -304,7 +321,7 @@ router.post("/journey/:id/cancel", trackingLimiter, requireApiKey, async (req, r
 // there is no grace window left to wait out. A prompt that was
 // never asked, or already answered, is 409: answering twice must
 // not double-escalate.
-router.post("/journey/:id/checkin", trackingLimiter, requireApiKey, async (req, res) => {
+router.post("/journey/:id/checkin", trackingLimiter, requireUserOrKey, async (req, res) => {
   const ok = req.body.ok;
   if (typeof ok !== "boolean") {
     return res.status(400).json({ success: false, error: "Invalid check-in answer" });
@@ -313,6 +330,7 @@ router.post("/journey/:id/checkin", trackingLimiter, requireApiKey, async (req, 
   if (!journey) {
     return res.status(404).json({ success: false, error: "Journey not found" });
   }
+  if (denyForeignJourney(req, res, journey)) return;
   if (journey.state !== "active") {
     return res.status(409).json({ success: false, error: "Journey is not active" });
   }
@@ -399,7 +417,7 @@ router.post("/journey-escalate", trackingLimiter, async (req, res) => {
   journey.escalation.runs.push(reservation);
   journeyStore.save(journey);
   const jobContacts = contacts
-    .map((phone, i) => ({ phone, pushToken: pushTokens[i] || "" }))
+    .map((phone, i) => ({ phone: normalizePhone(phone), pushToken: pushTokens[i] || "" }))
     .filter((c) => c.phone || c.pushToken);
   const escContacts =
     Array.isArray(journey.contacts) && journey.contacts.length > 0 ? journey.contacts : jobContacts;
