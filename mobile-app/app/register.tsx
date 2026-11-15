@@ -10,17 +10,21 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Linking from 'expo-linking';
 import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../utils/supabase';
 import { showAppDialog } from '../utils/dialog';
 import { ensureProfile, friendlyAuthError } from '../utils/auth';
 import { getBackendUrl } from '../utils/backendUrl';
-import { requestSignupCode, verifySignupCode } from '../utils/phoneAuth';
+import { completeSignup, requestSignupCode, verifySignupCode } from '../utils/phoneAuth';
+import { DEFAULT_COUNTRY, nationalDigitsValid, toE164, type CountryOption } from '../utils/phone';
+import { PRIVACY_URL, TERMS_URL } from '../constants/legal';
 import GlobeWireframe from '../components/GlobeWireframe';
 import OtpCubes, { type OtpPhase } from '../components/OtpCubes';
 import AuthInput from '../components/auth/Input';
 import AuthButton from '../components/auth/Button';
+import CountryPicker from '../components/auth/CountryPicker';
 import SocialButton, { OrDivider } from '../components/auth/SocialButton';
 import { signInWithGoogle } from '../utils/googleAuth';
 import { AuthTheme } from '../constants/auth-theme';
@@ -35,9 +39,12 @@ const BACKEND_URL = getBackendUrl();
  *
  * Signup is phone-OTP verified: the Supabase account is created
  * ONLY after the code sent to the mobile number verifies —
- * request-code → V4 OTP screen → verify → signUp → dashboard.
+ * request-code → V4 OTP screen → verify (proof token) →
+ * signup/complete → signInWithPassword → dashboard. The client
+ * never calls supabase.auth.signUp directly: the proof token binds
+ * the verified phone to the account creation server-side.
  * Email confirmation is OFF (Supabase mailer_autoconfirm), so
- * signUp returns a session immediately; there is no verify-email
+ * signIn returns a session immediately; there is no verify-email
  * step anywhere in this flow.
  */
 export default function RegisterScreen() {
@@ -45,6 +52,7 @@ export default function RegisterScreen() {
   const insets = useSafeAreaInsets();
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
+  const [country, setCountry] = useState<CountryOption>(DEFAULT_COUNTRY);
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -97,8 +105,13 @@ export default function RegisterScreen() {
       showAppDialog('Invalid Name', 'Name can only contain letters and spaces.');
       return;
     }
-    if (cleanPhone.replace(/\D/g, '').length < 10) {
-      showAppDialog('Invalid Phone', 'Please enter a valid phone number (min 10 digits).');
+    if (!nationalDigitsValid(country.dial, cleanPhone)) {
+      showAppDialog(
+        'Invalid Phone',
+        country.dial === '+91'
+          ? 'Please enter a valid 10-digit Indian mobile number.'
+          : 'Please enter a valid phone number for the selected country.'
+      );
       return;
     }
     if (password.length < 6) {
@@ -106,11 +119,12 @@ export default function RegisterScreen() {
       return;
     }
 
-    // Step 1: SMS the code to the mobile number. No Supabase account
-    // is created yet — that waits for the verified code.
+    // Step 1: SMS the code to the mobile number, in E.164 with the
+    // explicitly selected country code. No Supabase account is
+    // created yet — that waits for the verified code + proof token.
     setLoading(true);
     try {
-      const res = await requestSignupCode(BACKEND_URL, cleanPhone);
+      const res = await requestSignupCode(BACKEND_URL, toE164(country.dial, cleanPhone));
       if (!res.reached) {
         showAppDialog(
           'No Connection',
@@ -137,25 +151,41 @@ export default function RegisterScreen() {
     }
   };
 
-  // Step 3: create the Supabase account, only after the OTP verified.
-  // minDelayMs keeps the success animation visible: the account is
-  // created IN PARALLEL with the animation (total wait is the longer
-  // of the two, not their sum — the old code waited 2.2 s and only
-  // then started sign-up).
-  const finishSignUp = async (minDelayMs = 0) => {
+  // Step 3: spend the verify proof at signup/complete (the server
+  // creates the account bound to the verified phone), then sign in
+  // with the password. minDelayMs keeps the success animation
+  // visible: the account is created IN PARALLEL with the animation
+  // (total wait is the longer of the two, not their sum).
+  const finishSignUp = async (proof: string, minDelayMs = 0) => {
     const startedAt = Date.now();
     const cleanEmail = email.trim().toLowerCase();
+    const e164Phone = toE164(country.dial, phone.trim());
     try {
-      const { data, error } = await supabase.auth.signUp({
+      const completed = await completeSignup(BACKEND_URL, {
+        proof,
         email: cleanEmail,
         password,
-        options: {
-          data: {
-            first_name: firstName.trim(),
-            last_name: lastName.trim(),
-            phone: phone.trim(),
-          },
-        },
+        name: `${firstName.trim()} ${lastName.trim()}`.trim(),
+        phone: e164Phone,
+      });
+      if (!completed.reached) {
+        showAppDialog(
+          'No Connection',
+          'Could not reach the SafeLife servers. Check your internet and try again.'
+        );
+        setStage('form');
+        setOtpPhase('idle');
+        return;
+      }
+      if (!completed.success) {
+        showAppDialog('Sign Up Failed', 'Could not create the account. Please try again.');
+        setStage('form');
+        setOtpPhase('idle');
+        return;
+      }
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
       });
       if (error) {
         showAppDialog('Sign Up Failed', friendlyAuthError(error));
@@ -198,7 +228,7 @@ export default function RegisterScreen() {
     setOtpError(null);
     setOtpBusy(true);
     try {
-      const res = await verifySignupCode(BACKEND_URL, phone.trim(), submitted);
+      const res = await verifySignupCode(BACKEND_URL, toE164(country.dial, phone.trim()), submitted);
       if (!res.reached) {
         showAppDialog(
           'No Connection',
@@ -215,8 +245,17 @@ export default function RegisterScreen() {
         setOtpPhase('error');
         return;
       }
+      if (!res.proof) {
+        // Verify passed but no proof came back: the account cannot be
+        // created bound to this phone — never fall back to a direct
+        // signUp without proof.
+        showAppDialog('Sign Up Failed', 'Verification did not return a proof. Please request a new code.');
+        setStage('form');
+        setOtpPhase('idle');
+        return;
+      }
       setOtpPhase('success');
-      void finishSignUp(2200);
+      void finishSignUp(res.proof, 2200);
     } finally {
       setOtpBusy(false);
     }
@@ -233,7 +272,7 @@ export default function RegisterScreen() {
   const handleResend = async () => {
     setOtpBusy(true);
     try {
-      const res = await requestSignupCode(BACKEND_URL, phone.trim());
+      const res = await requestSignupCode(BACKEND_URL, toE164(country.dial, phone.trim()));
       if (!res.reached || !res.success) {
         showAppDialog(
           'Code Not Sent',
@@ -309,14 +348,18 @@ export default function RegisterScreen() {
                   </View>
                 </View>
 
-                <AuthInput
-                  icon="phone-outline"
-                  placeholder="Phone number"
-                  value={phone}
-                  onChangeText={setPhone}
-                  keyboardType="phone-pad"
-                  containerStyle={styles.fieldGap}
-                />
+                <View style={styles.phoneRow}>
+                  <CountryPicker value={country} onChange={setCountry} />
+                  <View style={styles.phoneInput}>
+                    <AuthInput
+                      icon="phone-outline"
+                      placeholder="Phone number"
+                      value={phone}
+                      onChangeText={setPhone}
+                      keyboardType="phone-pad"
+                    />
+                  </View>
+                </View>
                 <AuthInput
                   icon="email-outline"
                   placeholder="Email address"
@@ -356,11 +399,11 @@ export default function RegisterScreen() {
               <>
                 <Text style={styles.otpTitle}>Verify your number</Text>
                 <Text style={styles.otpSub}>
-                  We sent a 6-digit code to {phone.trim()}. Enter it below — it expires in 10
+                  We sent a 6-digit code to {toE164(country.dial, phone.trim())}. Enter it below — it expires in 10
                   minutes.
                 </Text>
                 <OtpCubes
-                  phone={phone.trim()}
+                  phone={toE164(country.dial, phone.trim())}
                   phase={otpPhase}
                   errorMessage={otpError}
                   busy={otpBusy}
@@ -387,7 +430,15 @@ export default function RegisterScreen() {
             )}
           </Animated.View>
 
-          <Text style={styles.terms}>Terms of Service | Privacy Policy</Text>
+          <View style={styles.termsRow}>
+            <Pressable onPress={() => Linking.openURL(TERMS_URL)} hitSlop={8}>
+              <Text style={styles.termsLink}>Terms of Service</Text>
+            </Pressable>
+            <Text style={styles.termsSep}> | </Text>
+            <Pressable onPress={() => Linking.openURL(PRIVACY_URL)} hitSlop={8}>
+              <Text style={styles.termsLink}>Privacy Policy</Text>
+            </Pressable>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </View>
@@ -451,6 +502,8 @@ const styles = StyleSheet.create({
   toggleActiveText: { color: '#000', fontFamily: AuthTheme.fonts.label, fontSize: 14 },
   row: { flexDirection: 'row', gap: 12 },
   half: { flex: 1 },
+  phoneRow: { flexDirection: 'row', gap: 10, marginTop: 14, alignItems: 'flex-start' },
+  phoneInput: { flex: 1 },
   fieldGap: { marginTop: 14 },
   cta: { marginTop: 24, marginBottom: 20 },
   switchRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
@@ -490,12 +543,20 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textDecorationLine: 'underline',
   },
-  terms: {
+  termsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginTop: 28,
+  },
+  termsLink: {
     color: AuthTheme.colors.faint,
     fontFamily: AuthTheme.fonts.body,
     fontSize: 12,
-    textAlign: 'center',
-    marginTop: 28,
     textDecorationLine: 'underline',
+  },
+  termsSep: {
+    color: AuthTheme.colors.faint,
+    fontFamily: AuthTheme.fonts.body,
+    fontSize: 12,
   },
 });

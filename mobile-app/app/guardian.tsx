@@ -22,6 +22,7 @@ import {
   TextInput,
   Switch,
   TouchableOpacity,
+  AppState,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as Location from 'expo-location';
@@ -279,13 +280,14 @@ export default function GuardianScreen() {
   };
 
   // D20 heartbeat: a pin goes stale after 10 min, so re-post every
-  // 5 min while on duty and this screen is open (foreground only —
-  // background location is a D21 live-tracking concern). Cleared the
-  // moment the guardian goes off duty.
+  // 5 min while on duty and this screen is open. Ticks are skipped
+  // while backgrounded (AppState gate, 11.1) — background location
+  // is a D21 live-tracking concern. Cleared the moment the guardian
+  // goes off duty.
   useEffect(() => {
     if (!guardian || guardian.state !== 'verified' || !guardian.available) return;
     const timer = setInterval(() => {
-      void shareLocation();
+      if (AppState.currentState === 'active') void shareLocation();
     }, 5 * 60 * 1000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -309,11 +311,13 @@ export default function GuardianScreen() {
 
   // D21 alert poll: while on duty, check every 30 s for SOS alerts
   // this guardian was notified about, and keep feeding the victim a
-  // live pin for every accepted one (foreground only — same limit as
-  // the D20 matching heartbeat).
+  // live pin for every accepted one. Ticks are skipped while
+  // backgrounded (AppState gate, 11.1 — same limit as the D20
+  // matching heartbeat).
   useEffect(() => {
     if (!guardian || guardian.state !== 'verified' || !guardian.available) return;
     const poll = async () => {
+      if (AppState.currentState !== 'active') return;
       const alerts = await fetchGuardianAlerts(BACKEND_URL, guardian.id);
       if (!alerts) return;
       setIncomingAlerts(alerts);
