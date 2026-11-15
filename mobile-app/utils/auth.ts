@@ -84,7 +84,6 @@ export async function ensureProfile(user: User): Promise<void> {
       last_name: lastName,
       email: user.email || '',
       phone: meta.phone || '',
-      address: meta.address || '',
     };
     // CSPRNG id (4.2): crypto.getRandomValues, never Math.random —
     // the 8 base-36 chars keep the SL-XXXXXXXX display shape, and a

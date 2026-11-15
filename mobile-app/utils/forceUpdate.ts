@@ -9,7 +9,11 @@
 import Constants from 'expo-constants';
 
 export const PLAY_STORE_URL =
-  'https://play.google.com/store/apps/details?id=com.rishabh.safelifeai';
+  // H18: SafeLife is NOT on the Play Store — it ships as an APK from
+  // GitHub Releases. The old Play Store URL was a dead path: APK
+  // users tapping Update landed on a listing that does not exist.
+  // Point the force-update button at the real download instead.
+  'https://github.com/r1shabhsharma05/Saftey-App/releases/latest';
 
 export function getAppVersion(): string {
   return Constants.expoConfig?.version ?? '0.0.0';
