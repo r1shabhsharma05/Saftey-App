@@ -49,7 +49,7 @@ import {
   postJourneyLocation,
   type Journey,
 } from '../../utils/journey';
-import { decideBatteryAlert, BATTERY_LOW_THRESHOLD, BATTERY_FINAL_THRESHOLD, BATTERY_REARM_LEVEL } from '../../utils/batteryAlerts';
+import { decideBatteryAlert, buildQueuedBatteryAlertPayload, BATTERY_LOW_THRESHOLD, BATTERY_FINAL_THRESHOLD, BATTERY_REARM_LEVEL } from '../../utils/batteryAlerts';
 import Card from '../../components/ui/Card';
 import StatusPill from '../../components/ui/StatusPill';
 import SectionHeader from '../../components/ui/SectionHeader';
@@ -700,7 +700,7 @@ export default function TacticalDashboard() {
     batteryAlertInFlightRef.current = true;
     try {
       const contacts = await readEmergencyContacts();
-      const payload: Record<string, unknown> = {
+      const payload = {
         kind,
         lat,
         lng,
@@ -722,15 +722,16 @@ export default function TacticalDashboard() {
           setBatteryFinalStatus('sent');
         }
       } else {
-        // Queued in SecureStore, never plaintext AsyncStorage (13.1):
-        // the payload carries name + phone + live location + the full
-        // contacts list. Caveat: SecureStore caps values at 2048 bytes
-        // on Android — secureSetItem drops (never stores in the clear)
-        // a payload over the cap, so a very large contacts list can
-        // lose the queue; the send failure is still surfaced below.
+        // Queued in SecureStore, never plaintext AsyncStorage (13.1).
+        // Only the SHRUNK copy is queued (F-M1): buildQueuedBatteryAlertPayload
+        // truncates every string to the caps the server applies on receipt,
+        // so a 10-contact worst case serializes well under SecureStore's
+        // 2048-byte Android cap. secureSetItem still swallows a refused
+        // write (unchanged residual) — the shrink makes the drop
+        // practically unreachable for realistic contact lists.
         await secureSetItem(
           'pendingBatteryAlert',
-          JSON.stringify({ payload, queuedAt: Date.now(), nextRetryAt: Date.now() })
+          JSON.stringify({ payload: buildQueuedBatteryAlertPayload(payload), queuedAt: Date.now(), nextRetryAt: Date.now() })
         ).catch(() => {});
         if (kind === 'low') {
           showBanner('error', 'Low-battery alert could not be delivered — it is queued and will retry when the network returns.');
