@@ -32,7 +32,9 @@ import { Theme } from '../constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { checkForceUpdate } from '../utils/forceUpdate';
 import ForceUpdateScreen from '../components/ForceUpdateScreen';
+import { validateDateOfBirth } from '../utils/dob';
 import { getBackendUrl } from '../utils/backendUrl';
+import { isDobBackfillInProgress } from '../utils/dobGate';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
@@ -67,6 +69,11 @@ export default function RootLayout() {
   const [updateRequired, setUpdateRequired] = useState(false);
   const [minVersion, setMinVersion] = useState<string | undefined>(undefined);
   const [latestVersion, setLatestVersion] = useState<string | undefined>(undefined);
+  // H15 age gate: true while a signed-in session was found without a
+  // valid (13+) DOB on record. While set, routing stays on /login
+  // (the DOB prompt lives there) and never bounces to /onboarding
+  // or the tabs — signOut() fires the auth listener, which would
+  // otherwise route a session-less user in tabs to /onboarding.
 
   // H18: check GET /version once on launch. Fail-open — a check
   // that cannot reach the server (or a missing backend URL) never
@@ -189,6 +196,8 @@ export default function RootLayout() {
     })();
   }, [locked]);
 
+  const [dobBlocked, setDobBlocked] = useState(false);
+
   useEffect(() => {
     if (!initialized || (!fontsLoaded && !fontError)) return;
 
@@ -196,6 +205,60 @@ export default function RootLayout() {
     const inAuthGroup = ['login', 'register', 'onboarding', 'reset-password', 'auth-callback'].includes(
       segments[0] as string
     );
+
+    // H15 age gate — runs AFTER the force-update gate: while an
+    // update is required the blocking screen covers the app and
+    // this gate waits (updateRequired is in the dep list, so the
+    // effect re-runs once the gate clears — it cannot clear without
+    // an app update, so in practice the DOB check runs on a build
+    // that is not force-blocked).
+    if (updateRequired) return;
+
+    // A session that was already DOB-blocked: stay on the DOB
+    // prompt (/login) until a fresh, gated sign-in lands. The
+    // signOut() below fires the auth listener (session → null);
+    // without this branch that would bounce the user to /onboarding.
+    // Clears the moment a session WITH a valid DOB appears, so a
+    // user who just completed the prompt is routed to the tabs.
+    if (dobBlocked) {
+      const metaDob = (session?.user?.user_metadata as Record<string, unknown> | undefined)
+        ?.date_of_birth;
+      if (session && typeof metaDob === 'string' && validateDateOfBirth(metaDob).ok) {
+        setDobBlocked(false);
+      } else {
+        if (segments[0] !== 'login') router.replace('/login');
+        return;
+      }
+    }
+
+    if (session && segments[0] !== 'reset-password') {
+      // reset-password is exempt, same as the routing below: a
+      // recovery link creates a session BEFORE the new password is
+      // typed, and signing it out here would make reset impossible.
+      // DOB lives in user_metadata.date_of_birth only — never in
+      // profiles. A missing/invalid value means a pre-gate account
+      // (Google OAuth bypassed signup/complete's DOB check).
+      const metaDob = (session.user?.user_metadata as Record<string, unknown> | undefined)
+        ?.date_of_birth;
+      if (typeof metaDob !== 'string' || !validateDateOfBirth(metaDob).ok) {
+        // H15 race guard (utils/dobGate.ts): login.tsx / register.tsx
+        // is mid-backfill — the DOB POST + session refresh are in
+        // flight and the local JWT is stale, not the account.
+        // Defer: do NOT sign out here, that would kill the session
+        // the POST authenticates with. The refresh re-fires this
+        // effect with the fresh JWT; if the backfill fails,
+        // login.tsx signs out itself, fail-closed.
+        if (isDobBackfillInProgress()) return;
+        // Fail closed: drop the session so no route can carry an
+        // under-gated account into the tabs, and send the user to
+        // the DOB prompt on /login (same field + POST /auth/profile/dob
+        // flow as login.tsx's Google handler).
+        setDobBlocked(true);
+        void supabase.auth.signOut();
+        if (segments[0] !== 'login') router.replace('/login');
+        return;
+      }
+    }
 
     if (!session && inTabsGroup) {
       router.replace('/onboarding');
@@ -207,7 +270,7 @@ export default function RootLayout() {
     } else if (!session && !inTabsGroup && !inAuthGroup) {
       router.replace('/onboarding');
     }
-  }, [session, initialized, segments, fontsLoaded, fontError]);
+  }, [session, initialized, segments, fontsLoaded, fontError, updateRequired, dobBlocked]);
 
   // Animated app-open intro. The native splash is static by platform
   // design, so the moment the app is actually ready this overlay takes

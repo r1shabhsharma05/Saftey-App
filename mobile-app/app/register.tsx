@@ -28,6 +28,7 @@ import AuthButton from '../components/auth/Button';
 import CountryPicker from '../components/auth/CountryPicker';
 import SocialButton, { OrDivider } from '../components/auth/SocialButton';
 import { signInWithGoogle } from '../utils/googleAuth';
+import { setDobBackfillInProgress, refreshSessionWithDob } from '../utils/dobGate';
 import TurnstileWidget from '../components/TurnstileWidget';
 import { AuthTheme } from '../constants/auth-theme';
 
@@ -83,6 +84,13 @@ export default function RegisterScreen() {
     if (googleBusy) return;
     setGoogleBusy(true);
     try {
+      // H15 race guard (utils/dobGate.ts, same pattern as login.tsx):
+      // if the DOB field already holds a valid DOB, this tap is a
+      // backfill attempt — arm the guard BEFORE the OAuth flow
+      // starts, so the root layout's DOB backstop cannot sign the
+      // fresh session out while the POST below is in flight.
+      // Cleared in the finally below on every exit.
+      if (validateDateOfBirth(dateOfBirth).ok) setDobBackfillInProgress(true);
       const { error } = await signInWithGoogle();
       if (error) {
         showAppDialog('Google Sign-Up Unavailable', error);
@@ -130,12 +138,27 @@ export default function RegisterScreen() {
         );
         return;
       }
-      await ensureProfile(user);
+      // DOB saved server-side — pull it into the local JWT before
+      // the layout's DOB backstop re-checks (see
+      // refreshSessionWithDob in utils/dobGate.ts). A failed refresh
+      // fails closed: sign out; the DOB is saved, so the next
+      // sign-in lands with it on record.
+      const refreshed = await refreshSessionWithDob();
+      if (!refreshed) {
+        await supabase.auth.signOut();
+        showAppDialog(
+          'Sign Up Incomplete',
+          'Your date of birth was saved, but the sign-up could not be refreshed. Please sign in again.'
+        );
+        return;
+      }
+      await ensureProfile(refreshed);
       // On success the root layout's auth listener navigates to the tabs.
     } catch (e: any) {
       showAppDialog('Google Sign-Up Unavailable', friendlyAuthError(e));
     } finally {
       setGoogleBusy(false);
+      setDobBackfillInProgress(false);
     }
   };
 

@@ -17,6 +17,7 @@ import { supabase } from '../utils/supabase';
 import { showAppDialog } from '../utils/dialog';
 import { ensureProfile, friendlyAuthError, resendConfirmation } from '../utils/auth';
 import { getBackendUrl } from '../utils/backendUrl';
+import { setDobBackfillInProgress, refreshSessionWithDob } from '../utils/dobGate';
 import { checkLoginPrecheck, requestForgotPassword, requestLoginCode, submitProfileDob, verifyLoginCode } from '../utils/phoneAuth';
 import { validateDateOfBirth } from '../utils/dob';
 import { DEFAULT_COUNTRY, nationalDigitsValid, toE164, type CountryOption } from '../utils/phone';
@@ -166,6 +167,12 @@ export default function LoginScreen() {
         setOtpPhase('idle');
         return;
       }
+      // H15 race guard (utils/dobGate.ts): if the DOB field already
+      // holds a valid DOB, this sign-in is a backfill attempt — arm
+      // the guard BEFORE sign-in so the root layout's DOB backstop
+      // cannot sign the fresh session out while the POST below is
+      // in flight. Cleared in the finally below on every exit.
+      if (validateDateOfBirth(dateOfBirth).ok) setDobBackfillInProgress(true);
       const { data, error } = await supabase.auth.signInWithPassword({
         email: res.email,
         password,
@@ -190,7 +197,60 @@ export default function LoginScreen() {
         return;
       }
       if (data.session && data.user) {
-        await ensureProfile(data.user);
+        let user = data.user;
+        // H15 age gate for password sign-in (mirror of the Google
+        // handler above): pre-gate accounts never passed
+        // signup/complete's DOB check. A missing/invalid DOB fails
+        // closed — sign out, reveal the DOB field, and let the user
+        // enter a DOB and sign in again; on the retry the DOB on
+        // record here is posted to /auth/profile/dob before entry.
+        // (The root layout re-checks every session as a backstop.)
+        const metaDob = (data.user.user_metadata as Record<string, unknown> | undefined)
+          ?.date_of_birth;
+        if (typeof metaDob !== 'string' || !validateDateOfBirth(metaDob).ok) {
+          const dob = validateDateOfBirth(dateOfBirth);
+          if (!dob.ok) {
+            await supabase.auth.signOut();
+            setGoogleDobNeeded(true);
+            showAppDialog(
+              'Date of Birth Required',
+              'This account has no date of birth on record — you must be at least 13 to use SafeLife. Please enter your date of birth in the field below, then sign in again.'
+            );
+            setStage('form');
+            setOtpPhase('idle');
+            return;
+          }
+          const posted = await submitProfileDob(BACKEND_URL, dob.iso);
+          if (!posted.reached || !posted.success) {
+            await supabase.auth.signOut();
+            showAppDialog(
+              'Sign-In Incomplete',
+              posted.reached
+                ? posted.error || 'Your date of birth could not be saved. Please try signing in again.'
+                : 'Could not reach the SafeLife servers. Please check your internet and try signing in again.'
+            );
+            setStage('form');
+            setOtpPhase('idle');
+            return;
+          }
+          // DOB saved server-side — pull it into the local JWT
+          // before the layout's DOB backstop re-checks (see
+          // refreshSessionWithDob). A failed refresh fails closed:
+          // sign out; the next sign-in lands with the DOB on record.
+          const refreshed = await refreshSessionWithDob();
+          if (!refreshed) {
+            await supabase.auth.signOut();
+            showAppDialog(
+              'Sign-In Incomplete',
+              'Your date of birth was saved, but the sign-in could not be refreshed. Please sign in again.'
+            );
+            setStage('form');
+            setOtpPhase('idle');
+            return;
+          }
+          user = refreshed;
+        }
+        await ensureProfile(user);
         router.replace('/(tabs)');
       } else {
         // No error but no session either: never fail silently.
@@ -204,6 +264,7 @@ export default function LoginScreen() {
       setOtpPhase('idle');
     } finally {
       setOtpBusy(false);
+      setDobBackfillInProgress(false);
     }
   };
 
@@ -238,6 +299,14 @@ export default function LoginScreen() {
     if (googleBusy) return;
     setGoogleBusy(true);
     try {
+      // H15 race guard (utils/dobGate.ts): if the DOB field already
+      // holds a valid DOB, this tap is a backfill attempt — arm the
+      // guard BEFORE the OAuth flow starts, so the root layout's
+      // DOB backstop cannot sign the fresh session out while the
+      // POST below is in flight. Covers both landing routes (the
+      // WebBrowser session and the auth-callback deep link).
+      // Cleared in the finally below on every exit.
+      if (validateDateOfBirth(dateOfBirth).ok) setDobBackfillInProgress(true);
       const { error } = await signInWithGoogle();
       if (error) {
         showAppDialog('Google Sign-In Unavailable', error);
@@ -288,12 +357,26 @@ export default function LoginScreen() {
         );
         return;
       }
-      await ensureProfile(user);
+      // DOB saved server-side — pull it into the local JWT before
+      // the layout's DOB backstop re-checks (see
+      // refreshSessionWithDob). A failed refresh fails closed: sign
+      // out; the next sign-in lands with the DOB on record.
+      const refreshed = await refreshSessionWithDob();
+      if (!refreshed) {
+        await supabase.auth.signOut();
+        showAppDialog(
+          'Sign-In Incomplete',
+          'Your date of birth was saved, but the sign-in could not be refreshed. Please sign in again.'
+        );
+        return;
+      }
+      await ensureProfile(refreshed);
       // On success the root layout's auth listener navigates to the tabs.
     } catch (e: any) {
       showAppDialog('Google Sign-In Unavailable', friendlyAuthError(e));
     } finally {
       setGoogleBusy(false);
+      setDobBackfillInProgress(false);
     }
   };
 
