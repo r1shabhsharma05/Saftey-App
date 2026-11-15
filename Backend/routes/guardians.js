@@ -22,8 +22,8 @@
 // and issues NO code — the guardian stays pending. The flow ships,
 // live verification waits on the httpSMS key, same as D7/D9/D10.
 const express = require("express");
-const { requireUserOrKey, owns } = require("../middleware/requireUser");
-const { trackingLimiter, codeLimiter } = require("../middleware/rateLimit");
+const { requireUser, owns } = require("../middleware/requireUser");
+const { trackingLimiter, codeLimiter, phoneCodeLimiter } = require("../middleware/rateLimit");
 const { sanitizeText, isValidLatitude, isValidLongitude, toNumber } = require("../lib/validate");
 const { normalizePhone, smsStatus, sendSms } = require("../services/sms");
 const {
@@ -58,9 +58,9 @@ const loadGuardian = async (req, res) => {
     res.status(404).json({ success: false, error: "Guardian not found" });
     return null;
   }
-  // Run-2 3.1: a JWT user may touch only their own guardian record.
-  // A shared-key-only caller (no req.user) is the compat path.
-  if (req.user && guardian.userId && guardian.userId !== req.user.id) {
+  // Run-3 fix round 2 (3.1): owns() now denies null-owner rows and
+  // any caller without a matching JWT user — no compat path remains.
+  if (!owns(req, guardian.userId)) {
     res.status(403).json({ success: false, error: "Forbidden" });
     return null;
   }
@@ -80,11 +80,11 @@ const clampNumber = (v, fallback, min, max, integer = false) => {
 // Validates name/phone/role; the service normalizes the phone and
 // enforces the role allowlist. A verified record keeps its verified
 // status and availability on re-register — only name/role move.
-router.post("/guardians", trackingLimiter, requireUserOrKey, async (req, res) => {
-  // Run-2 2.1/3.1: the owner id comes from the verified JWT, never
-  // from the body. The body claim survives only for shared-key-only
-  // (APK ≤ #12) callers, which carry no req.user.
-  const userId = req.user?.id || (typeof req.body.userId === "string" ? req.body.userId.trim() : "");
+router.post("/guardians", trackingLimiter, requireUser, async (req, res) => {
+  // Run-3 fix round 2 (3.1): the owner id comes ONLY from the
+  // verified JWT. A body userId is never trusted (and is now ignored
+  // entirely — requireUser guarantees req.user).
+  const userId = req.user.id;
   const name = sanitizeText(req.body.name, 100);
   const phone = normalizePhone(req.body.phone);
   const role = typeof req.body.role === "string" ? req.body.role : "";
@@ -135,7 +135,7 @@ router.post("/guardians", trackingLimiter, requireUserOrKey, async (req, res) =>
 // exist. A verified guardian needs no code (409). The per-hour cap
 // is a 429. The code itself never leaves the server except inside
 // the SMS body.
-router.post("/guardians/:id/request-code", codeLimiter, requireUserOrKey, async (req, res) => {
+router.post("/guardians/:id/request-code", codeLimiter, requireUser, async (req, res) => {
   const guardian = await loadGuardian(req, res);
   if (!guardian) return;
   if (guardian.state === "verified") {
@@ -195,7 +195,7 @@ router.post("/guardians/:id/request-code", codeLimiter, requireUserOrKey, async 
 // 400 — the state, not the input, is wrong. Attempts are persisted
 // (store.save) on every path, so a brute-force cannot reset its
 // counter by hitting a fresh instance.
-router.post("/guardians/:id/verify", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/guardians/:id/verify", phoneCodeLimiter, trackingLimiter, requireUser, async (req, res) => {
   const guardian = await loadGuardian(req, res);
   if (!guardian) return;
   const code = req.body.code;
@@ -257,7 +257,7 @@ router.post("/guardians/:id/verify", trackingLimiter, requireUserOrKey, async (r
 // 🟢 AVAILABILITY — the on/off-duty toggle. Verified-only: an
 // unverified guardian must never receive a D20/D21 alert, so the
 // toggle refuses while pending (409).
-router.post("/guardians/:id/availability", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/guardians/:id/availability", trackingLimiter, requireUser, async (req, res) => {
   const guardian = await loadGuardian(req, res);
   if (!guardian) return;
   const available = req.body.available;
@@ -282,7 +282,7 @@ router.post("/guardians/:id/availability", trackingLimiter, requireUserOrKey, as
 // in any response: the app knows its own location; other callers get
 // distanceKm only (see GET /guardians/nearby). Audit carries the
 // guardianId only — never coordinates.
-router.post("/guardians/:id/location", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/guardians/:id/location", trackingLimiter, requireUser, async (req, res) => {
   const guardian = await loadGuardian(req, res);
   if (!guardian) return;
   const { lat, lng } = req.body;
@@ -302,7 +302,7 @@ router.post("/guardians/:id/location", trackingLimiter, requireUserOrKey, async 
 // best-first. Radius defaults to the plan's 2 km (clamped 0.5–10),
 // limit defaults to 10 (clamped 1–50). Response items carry
 // distanceKm + score — NEVER coordinates.
-router.get("/guardians/nearby", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.get("/guardians/nearby", trackingLimiter, requireUser, async (req, res) => {
   const { lat, lng } = req.query;
   if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
     return res.status(400).json({ success: false, error: "Invalid location data" });
@@ -319,13 +319,14 @@ router.get("/guardians/nearby", trackingLimiter, requireUserOrKey, async (req, r
 // this guardian's response state and the preset messages so far.
 // Same-instance caveat as GET /alert/:id until the Supabase mirror
 // is live; a closed alert leaves the list (its emergency is over).
-router.get("/guardians/:id/alerts", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.get("/guardians/:id/alerts", trackingLimiter, requireUser, async (req, res) => {
   const guardian = await guardianStore.get(req.params.id);
   if (!guardian) {
     return res.status(404).json({ success: false, error: "Guardian not found" });
   }
-  // Run-2 3.1: a JWT user reads only their own guardian's alerts.
-  if (req.user && guardian.userId && guardian.userId !== req.user.id) {
+  // Run-3 fix round 2 (3.1): owns() denies null-owner rows too — a
+  // guardian record with no owner is unreadable, not open.
+  if (!owns(req, guardian.userId)) {
     return res.status(403).json({ success: false, error: "Forbidden" });
   }
   // Run-2 6.4: ?limit=, default 20, max 50.
@@ -355,7 +356,7 @@ router.get("/guardians/:id/alerts", trackingLimiter, requireUserOrKey, async (re
 // serverless caveat as GET /journey/:id: a record created on
 // another instance is only visible here once Supabase is
 // configured; unconfigured, only same-instance memory answers.
-router.get("/guardian/:id", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.get("/guardian/:id", trackingLimiter, requireUser, async (req, res) => {
   const guardian = await loadGuardian(req, res);
   if (!guardian) return;
   res.json({ success: true, guardian: toPublic(guardian) });

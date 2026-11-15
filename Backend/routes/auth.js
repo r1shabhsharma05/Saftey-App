@@ -47,6 +47,11 @@ const {
 } = require("../services/supabaseAuth");
 const { recordStrike } = require("../services/strikes");
 const { audit } = require("../services/audit");
+const { checkLoginPrecheck } = require("../services/loginPrecheck");
+const alertStore = require("../services/alertStore");
+const journeyStore = require("../services/journeyStore");
+const guardianStore = require("../services/guardianStore");
+const loginCodeStore = require("../services/loginCodeStore");
 
 const router = express.Router();
 
@@ -139,7 +144,7 @@ router.post(
 // VERIFY_FAILED (R1i). On success the response carries the proof
 // token (R1c) the complete step must present — the code proves phone
 // ownership only; account creation still needs the proof.
-router.post("/auth/signup/verify-code", trackingLimiter, async (req, res) => {
+router.post("/auth/signup/verify-code", phoneCodeLimiter, trackingLimiter, async (req, res) => {
   const phone = normalizePhone(req.body.phone);
   const code = req.body.code;
   if (!phone) {
@@ -202,6 +207,29 @@ router.post("/auth/signup/complete", trackingLimiter, async (req, res) => {
   }
   audit("signup.completed", { ip: req.ip });
   res.json({ success: true });
+});
+
+// 🔑 LOGIN PRECHECK (2.4) — per-email attempt limiter in front of
+// password login. The app calls this BEFORE Supabase
+// signInWithPassword; each call consumes one attempt for that
+// email (10 / 15 min). Past the cap it answers 429 and the app must
+// not attempt the sign-in. It NEVER reveals whether the email
+// exists: no user lookup happens here, so the answer is identical
+// for registered and unregistered emails. Honest limitation: an
+// attacker calling Supabase Auth directly bypasses this entirely —
+// the real backstop is Supabase's own server-side login limits
+// (dashboard, CAN'T VERIFY from code).
+router.post("/auth/login/precheck", trackingLimiter, async (req, res) => {
+  const email = typeof req.body?.email === "string" ? req.body.email.trim() : "";
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ success: false, error: "Invalid email" });
+  }
+  const { allowed, retryAfterSeconds } = await checkLoginPrecheck(email);
+  if (!allowed) {
+    res.set("Retry-After", String(retryAfterSeconds));
+    return res.status(429).json({ allowed: false, retryAfterSeconds });
+  }
+  return res.json({ allowed: true });
 });
 
 // 📲 LOGIN REQUEST CODE — SMS the 6-digit login code (R1h). The
@@ -293,15 +321,48 @@ router.post("/auth/forgot-password", phoneCodeLimiter, trackingLimiter, async (r
 // 🗑️ DELETE ACCOUNT (12.3) — JWT ONLY, no shared-key fallback.
 // Deletes the auth user via the Admin API, then wipes every row the
 // user owns (profiles, emergency_contacts, guardians, journeys,
-// sos_alerts, signup_codes) plus the avatar object. Third-party
-// copies (Telegram/httpSMS messages already sent, Gnani audio) cannot
-// be recalled — that residue is documented in the privacy policy.
-// Audit rows have no user column, so they are not wiped here; they
-// carry no PII (fingerprints + ids only). In-memory store rows are
-// unreachable after this: the JWT is dead, so requireUser 401s any
-// later read of them.
+// sos_alerts, signup_codes, login_codes, gnani_daily_usage) plus
+// the avatar object AND the in-memory alert/journey/guardian rows
+// (12.3/13.6 — memory-first reads made the DB-only wipe a leak).
+// Third-party copies (Telegram/httpSMS messages already sent, Gnani
+// audio) cannot be recalled — that residue is documented in the
+// privacy policy.
+//
+// Re-auth (12.3): the caller's session must be FRESH — signed in
+// within the last 15 min (Supabase last_sign_in_at, else the JWT
+// iat). Otherwise 401 REAUTH_REQUIRED. No password is invented:
+// Google-only accounts re-auth by a fresh OAuth sign-in and retry.
+// Audit rows are not wiped (they carry no user column) and —
+// deliberately — NO post-delete audit row is written: the old
+// audit("account.deleted", { meta: { userId } }) created a fresh
+// row keyed to the deleted user at the moment of deletion.
+//
+// Honest failure: if ANY wipe fails, the answer is 502
+// { success:false, error:"delete-partial", failed:[tables] }, NOT
+// { success:true }. Note the auth user is already deleted by then,
+// so a partial wipe is a real inconsistent state the user must be
+// told about (and support must be able to finish by hand).
+// Residual gap: login_codes/signup_codes are wiped by the profile
+// phone — if no profile row exists, no phone is known and those
+// code rows cannot be addressed (orphaned codes expire in 10 min
+// and are single-phone-scoped, but they are not wiped).
+const SESSION_FRESH_MS = 15 * 60 * 1000;
+const isSessionFresh = (req) => {
+  const now = Date.now();
+  const s = req.authSession || {};
+  if (typeof s.lastSignInAt === "string") {
+    const t = Date.parse(s.lastSignInAt);
+    if (Number.isFinite(t) && now - t < SESSION_FRESH_MS) return true;
+  }
+  if (typeof s.tokenIat === "number" && now - s.tokenIat * 1000 < SESSION_FRESH_MS) return true;
+  return false;
+};
+
 router.delete("/auth/account", trackingLimiter, requireUser, async (req, res) => {
   const userId = req.user.id;
+  if (!isSessionFresh(req)) {
+    return res.status(401).json({ success: false, error: "REAUTH_REQUIRED" });
+  }
   const profile = await dbSelectOne("profiles", userId);
   const phone = profile.ok && typeof profile.row?.phone === "string" ? profile.row.phone : null;
   const deleted = await adminDeleteUser(userId);
@@ -313,21 +374,35 @@ router.delete("/auth/account", trackingLimiter, requireUser, async (req, res) =>
     return res.status(502).json({ success: false, error: "Could not delete account — please try again" });
   }
   const wipes = [
-    dbDelete("profiles", "id", userId),
-    dbDelete("emergency_contacts", "user_id", userId),
-    dbDelete("guardians", "user_id", userId),
-    dbDelete("journeys", "owner_id", userId),
-    dbDelete("sos_alerts", "owner_id", userId),
-    ...(phone ? [dbDelete("signup_codes", "phone", phone)] : []),
-    deleteAvatarObject(userId),
+    ["profiles", dbDelete("profiles", "id", userId)],
+    ["emergency_contacts", dbDelete("emergency_contacts", "user_id", userId)],
+    ["guardians", dbDelete("guardians", "user_id", userId)],
+    ["journeys", dbDelete("journeys", "owner_id", userId)],
+    ["sos_alerts", dbDelete("sos_alerts", "owner_id", userId)],
+    ["gnani_daily_usage", dbDelete("gnani_daily_usage", "user_key", `user:${userId}`)],
+    ...(phone
+      ? [
+          ["signup_codes", dbDelete("signup_codes", "phone", phone)],
+          ["login_codes", dbDelete("login_codes", "phone", phone)],
+        ]
+      : []),
+    ["avatar", deleteAvatarObject(userId)],
   ];
-  const results = await Promise.all(wipes);
-  results.forEach((r, i) => {
-    if (!r.ok && r.reason !== "not_configured") {
-      console.log(`❌ account wipe ${i} failed:`, r.reason);
-    }
-  });
-  audit("account.deleted", { ip: req.ip, meta: { userId } });
+  const results = await Promise.all(wipes.map(([, p]) => p));
+  const failed = wipes.filter((w, i) => !results[i].ok).map(([name]) => name);
+  // In-memory rows: wiped regardless of the DB outcome — a failed
+  // DB wipe must not leave readable rows behind on this instance.
+  alertStore.deleteByOwner(userId);
+  journeyStore.deleteByOwner(userId);
+  guardianStore.deleteByOwner(userId);
+  if (phone) {
+    loginCodeStore.drop(phone);
+    signupCodeStore.drop(phone);
+  }
+  if (failed.length > 0) {
+    console.log("❌ account wipe partial — failed tables:", failed.join(", "));
+    return res.status(502).json({ success: false, error: "delete-partial", failed });
+  }
   res.json({ success: true });
 });
 

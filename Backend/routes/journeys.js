@@ -15,10 +15,10 @@
 // alert page: contacts have no app and no key, and the token is
 // minted at create time and travels inside the share link only.
 // POST /journey-escalate is the QStash callback: HMAC-token auth,
-// no API key (QStash cannot carry one) — same pattern as D10's
+// no JWT (QStash cannot carry one) — same pattern as D10's
 // POST /escalate.
 const express = require("express");
-const { requireUserOrKey, owns } = require("../middleware/requireUser");
+const { requireUser, owns } = require("../middleware/requireUser");
 const { trackingLimiter } = require("../middleware/rateLimit");
 const {
   isValidLatitude,
@@ -101,7 +101,7 @@ const ensureWatchFields = (journey) => {
 // label and name are sanitized before they reach the record. The
 // ETA window (future, ≤12 h) is enforced by the service, which
 // throws a safe validation message the route returns as a 400.
-router.post("/journeys", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/journeys", trackingLimiter, requireUser, async (req, res) => {
   const { originLat, originLng, destLat, destLng } = req.body;
   if (
     !isValidLatitude(originLat) ||
@@ -144,9 +144,9 @@ router.post("/journeys", trackingLimiter, requireUserOrKey, async (req, res) => 
       destinationLabel,
       expectedArrivalAt,
       userName,
-      // Run-2 3.1: owner from the verified JWT (null on the
-      // shared-key-only compat path).
-      ownerId: req.user?.id || null,
+      // Run-3 fix round 2 (3.1): owner always from the verified JWT —
+      // requireUser guarantees req.user, so ownerId is never null.
+      ownerId: req.user.id,
       contacts,
       route,
     });
@@ -192,8 +192,9 @@ router.post("/journeys", trackingLimiter, requireUserOrKey, async (req, res) => 
   res.json({ success: true, journey: toJourneyPublic(journey), viewUrl, scheduled: [overdueJob] });
 });
 
-// Run-2 3.1: a JWT user may touch only their own journey. Legacy
-// rows (ownerId null) and shared-key-only callers (no req.user) pass.
+// Run-3 fix round 2 (3.1): a JWT user may touch only their own
+// journey. Legacy rows (ownerId null) are now DENIED to everyone
+// (owns() denies null owners) — they cannot be attributed to a user.
 const denyForeignJourney = (req, res, journey) => {
   if (!owns(req, journey.ownerId)) {
     res.status(403).json({ success: false, error: "Forbidden" });
@@ -207,7 +208,7 @@ const denyForeignJourney = (req, res, journey) => {
 // caveat as GET /alert/:id: an id created on another instance is
 // only visible here once Supabase is configured; unconfigured, only
 // same-instance memory answers.
-router.get("/journey/:id", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.get("/journey/:id", trackingLimiter, requireUser, async (req, res) => {
   const journey = await journeyStore.get(req.params.id);
   if (!journey) {
     return res.status(404).json({ success: false, error: "Journey not found" });
@@ -221,7 +222,7 @@ router.get("/journey/:id", trackingLimiter, requireUserOrKey, async (req, res) =
 // live-tracking — the app posts on the same ≥25 m / ≥30 s cadence).
 // A finished journey is 409: its pin is history, and accepting
 // positions after arrival would move a trip that is over.
-router.post("/journey/:id/location", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/journey/:id/location", trackingLimiter, requireUser, async (req, res) => {
   const { lat, lng } = req.body;
   if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
     return res.status(400).json({ success: false, error: "Invalid location data" });
@@ -267,7 +268,7 @@ router.post("/journey/:id/location", trackingLimiter, requireUserOrKey, async (r
 // anything else is 409 (a cancelled trip cannot "arrive", and an
 // arrived trip is done — D17's overdue check reads the same state,
 // so a double-arrive must never re-open the escalation window).
-router.post("/journey/:id/arrived", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/journey/:id/arrived", trackingLimiter, requireUser, async (req, res) => {
   const journey = await journeyStore.get(req.params.id);
   if (!journey) {
     return res.status(404).json({ success: false, error: "Journey not found" });
@@ -292,7 +293,7 @@ router.post("/journey/:id/arrived", trackingLimiter, requireUserOrKey, async (re
 
 // ❌ CANCEL — the traveller called the trip off. Same guards as
 // arrived: only an active journey can be cancelled.
-router.post("/journey/:id/cancel", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/journey/:id/cancel", trackingLimiter, requireUser, async (req, res) => {
   const journey = await journeyStore.get(req.params.id);
   if (!journey) {
     return res.status(404).json({ success: false, error: "Journey not found" });
@@ -321,7 +322,7 @@ router.post("/journey/:id/cancel", trackingLimiter, requireUserOrKey, async (req
 // there is no grace window left to wait out. A prompt that was
 // never asked, or already answered, is 409: answering twice must
 // not double-escalate.
-router.post("/journey/:id/checkin", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/journey/:id/checkin", trackingLimiter, requireUser, async (req, res) => {
   const ok = req.body.ok;
   if (typeof ok !== "boolean") {
     return res.status(400).json({ success: false, error: "Invalid check-in answer" });
@@ -364,7 +365,7 @@ router.post("/journey/:id/checkin", trackingLimiter, requireUserOrKey, async (re
 //
 // Auth is the HMAC token over (journeyId, kind) keyed by API_SECRET
 // (services/journeyEscalation.js), the same pattern as /escalate:
-// QStash cannot carry our x-api-key header. The message is built
+// QStash cannot carry a user JWT. The message is built
 // from the journey RECORD, never from the job body — a forged
 // body cannot rewrite what contacts are told; the body only carries
 // the contacts as a cross-instance fallback (the L5-twin lesson).
@@ -454,7 +455,7 @@ router.post("/journey-escalate", trackingLimiter, async (req, res) => {
 // 🗺️ CONTACTS-SIDE JOURNEY PAGE (plan §6 D16 "trip create/share").
 //
 // Auth is the per-journey view token (services/journeyView.js),
-// NOT the API key: contacts have no app and no key. The token is
+// NOT a user session: contacts have no app and no session. The token is
 // minted at create time and travels inside the share link to the
 // traveller's chosen contacts only. A missing/wrong token is 401,
 // an unknown id 404, a finished journey 410 (its location is stale

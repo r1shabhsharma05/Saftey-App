@@ -1,14 +1,14 @@
 // 🚨 Alert routes — SOS dispatch, live tracking, and the debug test alert.
 //
 // Guard matrix (explicit, in one place): every mutating route here is
-// API-key gated + rate-limited, with two deliberate exceptions:
+// JWT-gated (requireUser) + rate-limited, with two deliberate exceptions:
 // POST /alert/:id/ack also accepts the per-alert view token (contacts
-// have no API key — D10), and POST /escalate / /delivery-retry are
+// have no app session — D10), and POST /escalate / /delivery-retry are
 // QStash callbacks authenticated by HMAC job tokens (D4/D10), since
-// QStash cannot carry our x-api-key header. requireApiKey audits
-// rejected keys, so a brute-force walk leaves a trail.
+// QStash cannot carry a user JWT. The shared x-api-key fallback was
+// removed in run-3 fix round 2 (1.1/2.1/3.1).
 const express = require("express");
-const { requireUserOrKey, owns } = require("../middleware/requireUser");
+const { requireUser, owns } = require("../middleware/requireUser");
 const { sosLimiter, trackingLimiter, testLimiter } = require("../middleware/rateLimit");
 const {
   isValidLatitude,
@@ -77,7 +77,7 @@ const safeNotifyGuardians = async (alert, lat, lng) => {
 // the ceiling is generous: carrier NAT shares IPs and emergencies get
 // repeat presses) + API-key gated. Coordinates are strictly validated;
 // free-text fields are sanitized before they reach Telegram and logs.
-router.post("/alert", sosLimiter, requireUserOrKey, async (req, res) => {
+router.post("/alert", sosLimiter, requireUser, async (req, res) => {
   const { lat, lng } = req.body;
 
   // Reject garbage coordinates (non-numeric, out of range). The app blocks
@@ -134,8 +134,9 @@ router.post("/alert", sosLimiter, requireUserOrKey, async (req, res) => {
     // D9: the record is created BEFORE the message is built, carrying
     // the trigger position, so the message can embed the contacts-side
     // alert-view link for this exact alert.
-    // Run-2 3.1: owner from the verified JWT (null on the shared-key-only compat path).
-    alert = createAlert({ contactsCount: contacts.length, lat: latNum, lng: lngNum, ownerId: req.user?.id || null });
+    // Run-3 fix round 2 (3.1): owner always from the verified JWT —
+    // requireUser guarantees req.user, so ownerId is never null.
+    alert = createAlert({ contactsCount: contacts.length, lat: latNum, lng: lngNum, ownerId: req.user.id });
     // H3: bind ACKs to the contacts this SOS actually went to — only
     // their identifiers count toward the 2-ack stop. One-way hashes
     // of the sanitized phones/tokens (the same values the message
@@ -258,7 +259,7 @@ router.post("/alert", sosLimiter, requireUserOrKey, async (req, res) => {
 // A dying phone warns contacts BEFORE it dies: `low` at 15%
 // (last location, explicitly not an SOS) and `final` at 5% while
 // an alert is active (final location burst). Same guards as SOS
-// (API key + SOS rate-limit bucket: each hit fans out to contacts),
+// (JWT + SOS rate-limit bucket: each hit fans out to contacts),
 // same fan-out and receipt honesty — but deliberately NOT an SOS:
 // no alert record is created, no D10 escalation is scheduled, and
 // no D4 retry is queued. A battery warning must never trigger
@@ -271,7 +272,7 @@ router.post("/alert", sosLimiter, requireUserOrKey, async (req, res) => {
 // contacts-side page shows the final pin. A final naming an unknown,
 // closed or failed alert is 400 (M5) — it is not a standalone send;
 // a `low` warning names no alert at all.
-router.post("/battery-alert", sosLimiter, requireUserOrKey, async (req, res) => {
+router.post("/battery-alert", sosLimiter, requireUser, async (req, res) => {
   const { lat, lng } = req.body;
   if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
     return res.status(400).json({ success: false, error: "Invalid location data" });
@@ -378,7 +379,7 @@ router.post("/battery-alert", sosLimiter, requireUserOrKey, async (req, res) => 
 // created on another instance is only visible here once Supabase is
 // configured (the shared store); unconfigured, only same-instance
 // memory answers — a miss then is "not found here", reported as 404.
-router.get("/alert/:id", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.get("/alert/:id", trackingLimiter, requireUser, async (req, res) => {
   const alert = await alertStore.get(req.params.id);
   if (!alert) {
     return res.status(404).json({ success: false, error: "Alert not found" });
@@ -394,8 +395,8 @@ router.get("/alert/:id", trackingLimiter, requireUserOrKey, async (req, res) => 
 //
 // A contact saying "I got this" is what stops the escalation ladder
 // (2 distinct acks — plan §6 F1). Auth is EITHER the per-alert view
-// token (a contact with only the SOS link, no app, no API key) OR
-// the API key (the victim's app / a future guardian client). The
+// token (a contact with only the SOS link, no app, no session) OR
+// the victim's JWT (the victim's app / a future guardian client). The
 // contact's identifier (phone, or pushToken) is optional: with it,
 // the ack dedupes per contact and the voice step can skip them; the
 // stored record keeps only the one-way hash (services/
@@ -410,7 +411,7 @@ router.get("/alert/:id", trackingLimiter, requireUserOrKey, async (req, res) => 
 const ackAuth = (req, res, next) => {
   const token = typeof req.query.token === "string" ? req.query.token : "";
   if (verifyViewToken(req.params.id, token)) return next();
-  return requireUserOrKey(req, res, next);
+  return requireUser(req, res, next);
 };
 
 router.post("/alert/:id/ack", trackingLimiter, ackAuth, async (req, res) => {
@@ -451,12 +452,12 @@ router.post("/alert/:id/ack", trackingLimiter, ackAuth, async (req, res) => {
   res.json({ success: true, alertId: alert.id, state: alert.state, ackCount, acked: isNew && counts });
 });
 
-// POST /alert/:id/close — end an alert from the responder side (API key
+// POST /alert/:id/close — end an alert from the responder side (JWT owner
 // only). Only a delivered/acked alert can close; anything earlier is 409.
 // Closing is what makes the 24 h view-token expiry real before its time:
 // the view, location and ack routes all answer 410 for closed alerts, and
 // the escalation callbacks ignore closed alerts. There is no re-open.
-router.post("/alert/:id/close", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/alert/:id/close", trackingLimiter, requireUser, async (req, res) => {
   const alert = await alertStore.get(req.params.id);
   if (!alert) return res.status(404).json({ success: false, error: "Alert not found" });
   // Run-2 3.1: only the alert's owner closes it.
@@ -520,16 +521,12 @@ const loadAlertGuardian = async (req, res) => {
     res.status(404).json({ success: false, error: "This guardian was not notified for this alert" });
     return null;
   }
-  // Run-2 3.1: a JWT caller must be either the alert's owner (the
-  // victim) or the notified guardian themselves — anyone else 403s.
-  // A legacy alert (ownerId null) has no known owner, so the owner
-  // half passes open; the guardian half still binds to the record.
-  // Shared-key-only callers (no req.user) are the compat path.
-  if (
-    req.user &&
-    !(!alert.ownerId || req.user.id === alert.ownerId) &&
-    req.user.id !== guardian.userId
-  ) {
+  // Run-3 fix round 2 (3.1): a JWT caller must be either the alert's
+  // owner (the victim) or the notified guardian themselves — anyone
+  // else 403s. A legacy alert (ownerId null) has no known owner, so
+  // the owner half can never pass — only the notified guardian may
+  // respond to it. There is no shared-key compat path anymore.
+  if (req.user.id !== alert.ownerId && req.user.id !== guardian.userId) {
     res.status(403).json({ success: false, error: "Forbidden" });
     return null;
   }
@@ -539,7 +536,7 @@ const loadAlertGuardian = async (req, res) => {
 // ✅ GUARDIAN ACCEPT — "I'm coming". Repeat accept is an idempotent
 // 200 (a client retry must not error); accept after decline, or
 // past the 15-min response window, is a 409.
-router.post("/alert/:id/guardian/:guardianId/accept", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/alert/:id/guardian/:guardianId/accept", trackingLimiter, requireUser, async (req, res) => {
   const loaded = await loadAlertGuardian(req, res);
   if (!loaded) return;
   const { alert, guardian } = loaded;
@@ -557,7 +554,7 @@ router.post("/alert/:id/guardian/:guardianId/accept", trackingLimiter, requireUs
 
 // ❌ GUARDIAN DECLINE — "I can't come". Same idempotency/terminal
 // rules as accept, mirrored.
-router.post("/alert/:id/guardian/:guardianId/decline", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/alert/:id/guardian/:guardianId/decline", trackingLimiter, requireUser, async (req, res) => {
   const loaded = await loadAlertGuardian(req, res);
   if (!loaded) return;
   const { alert, guardian } = loaded;
@@ -578,7 +575,7 @@ router.post("/alert/:id/guardian/:guardianId/decline", trackingLimiter, requireU
 // notified guardian has not consented to share location yet);
 // the pin NEVER comes back to anyone except the victim's API-key
 // read (GET /alert/:id) — the contacts page gets distance only.
-router.post("/alert/:id/guardian/:guardianId/location", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/alert/:id/guardian/:guardianId/location", trackingLimiter, requireUser, async (req, res) => {
   const loaded = await loadAlertGuardian(req, res);
   if (!loaded) return;
   const { alert, guardian } = loaded;
@@ -606,7 +603,7 @@ router.post("/alert/:id/guardian/:guardianId/location", trackingLimiter, require
 // server-rendered from the key (services/guardianAlert.js) — no free
 // text ever reaches a screen. A guardian sender must be a known,
 // accepted responder; an unknown key or sender is a 400.
-router.post("/alert/:id/message", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/alert/:id/message", trackingLimiter, requireUser, async (req, res) => {
   const alert = await alertStore.get(req.params.id);
   if (!alert) return res.status(404).json({ success: false, error: "Alert not found" });
   if (alert.state === "closed") return res.status(410).json({ success: false, error: "This alert is closed" });
@@ -653,7 +650,7 @@ router.post("/alert/:id/message", trackingLimiter, requireUserOrKey, async (req,
 //
 // Auth is the HMAC token over (alertId, step) keyed by API_SECRET
 // (services/escalation.js), the same pattern as /delivery-retry:
-// QStash cannot carry our x-api-key header. The message + contacts
+// QStash cannot carry a user JWT. The message + contacts
 // re-sent here are the STORED originals from SOS time (L5 twin),
 // not the callback body's copy — the body is only a legacy fallback
 // for alerts created before the stored fields existed. Idempotent
@@ -777,8 +774,8 @@ router.post("/escalate", trackingLimiter, async (req, res) => {
 // 📍 CONTACTS-SIDE ALERT PAGE (D9 — plan §6 D9, "contact ko app na
 // ho to browser me live location").
 //
-// Auth is the per-alert view token (services/alertView.js), NOT the
-// API key: contacts have no app and no key. The token is minted at
+// Auth is the per-alert view token (services/alertView.js), NOT a
+// user session: contacts have no app and no session. The token is minted at
 // SOS time and travels inside the SOS message to the victim's chosen
 // contacts only. A missing/wrong token is 401, an unknown id 404, a
 // closed alert 410 (its location is stale history, not a live
@@ -925,7 +922,7 @@ router.get("/alert/:id/location", trackingLimiter, async (req, res) => {
 });
 
 // 🔁 DELIVERY RETRY (QStash callback — D4)
-// Auth is NOT requireApiKey: QStash cannot carry our x-api-key header,
+// Auth is NOT requireUser: QStash cannot carry a user JWT,
 // so the job body carries an HMAC token over (alertId, attempt) keyed
 // by API_SECRET (services/delivery.js). A bad token is a 401 and an
 // audit line; a missing/unknown alert is a 404. Rate-limited like a
@@ -1033,7 +1030,7 @@ router.post("/delivery-retry", trackingLimiter, async (req, res) => {
 // 📡 LIVE LOCATION UPDATE
 // Rate-limited (60/min per IP — live tracking updates every few seconds)
 // + API-key gated. Coordinates strictly validated like /alert.
-router.post("/location-update", trackingLimiter, requireUserOrKey, async (req, res) => {
+router.post("/location-update", trackingLimiter, requireUser, async (req, res) => {
   const { lat, lng } = req.body;
 
   if (!isValidLatitude(lat) || !isValidLongitude(lng)) {
@@ -1048,17 +1045,27 @@ router.post("/location-update", trackingLimiter, requireUserOrKey, async (req, r
   // or a store error must not break the Telegram leg below (the
   // update's original job). No state transition — location is
   // orthogonal to the lifecycle (services/alertLifecycle.js).
+  //
+  // Run-3 fix round 2 (3.1): the Telegram leg is gated on ownership
+  // too, not just the pin move. When an alertId is named, the alert
+  // must exist and belong to the caller — a foreign alertId is 403
+  // and nothing is broadcast. With no alertId there is no record to
+  // own, so the broadcast proceeds as before (the caller is still a
+  // JWT-verified user).
   const alertId = sanitizeText(req.body.alertId, 64);
   if (alertId) {
     try {
       const alert = await alertStore.get(alertId);
-      // Run-2 3.1: a foreign alert's pin is never moved — the Telegram
-      // leg below still runs, since location broadcast is the update's
-      // original job.
-      if (alert && alert.state !== "closed" && owns(req, alert.ownerId)) {
-        setAlertLocation(alert, latNum, lngNum);
-        alertStore.save(alert);
+      // A foreign alert's pin is never moved and its contacts never
+      // broadcast to — the Telegram leg below must not run either.
+      if (!alert || alert.state === "closed" || !owns(req, alert.ownerId)) {
+        return res.status(alert && alert.state === "closed" ? 410 : 403).json({
+          success: false,
+          error: alert && alert.state === "closed" ? "This alert is closed" : "Forbidden",
+        });
       }
+      setAlertLocation(alert, latNum, lngNum);
+      alertStore.save(alert);
     } catch {
       // Telegram leg below still runs.
     }
@@ -1104,7 +1111,7 @@ const testAlertGate = (req, res, next) => {
   }
   next();
 };
-router.post("/test-alert", testAlertGate, testLimiter, requireUserOrKey, async (req, res) => {
+router.post("/test-alert", testAlertGate, testLimiter, requireUser, async (req, res) => {
   const testLat = "28.6139";
   const testLng = "77.2090";
   const message = `🧪 TEST ALERT!

@@ -3,7 +3,7 @@
 // detection) and the spoken SOS message call these; without them the
 // adapter would be dead code.
 //
-// Run-2 2.1/8.1: JWT-or-shared-key auth (requireUserOrKey) + the
+// Run-2 2.1/8.1: JWT-only auth (requireUser) + the
 // voice routes' OWN limiter (voiceLimiter, 10/min per IP — no longer
 // the shared 60/min tracking bucket) + a per-account DAILY Gnani
 // counter (50/day, services/voice.js). A Gnani call that reaches the
@@ -24,7 +24,7 @@
 // voice-rejected / voice-transport-error / voice-bad-response -> 502.
 const express = require("express");
 const { voiceLimiter } = require("../middleware/rateLimit");
-const { requireUserOrKey } = require("../middleware/requireUser");
+const { requireUser } = require("../middleware/requireUser");
 const {
   synthesizeSpeech,
   transcribeAudio,
@@ -47,11 +47,13 @@ const failureStatus = (reason) =>
       ? 400
       : 502;
 
-// 8.1: the per-account daily Gnani counter. Runs BEFORE the provider
-// call; a call that reaches Gnani (success or provider rejection)
-// counts. Validation/config failures do not.
-const checkQuota = (req, res) => {
-  const quota = checkGnaniQuota(gnaniQuotaKey(req));
+// 8.1: the per-account daily Gnani counter (shared Supabase table
+// gnani_daily_usage, services/voice.js — fail-open to memory when
+// the DB is down). Runs BEFORE the provider call; a call that
+// reaches Gnani (success or provider rejection) counts.
+// Validation/config failures do not.
+const checkQuota = async (req, res) => {
+  const quota = await checkGnaniQuota(gnaniQuotaKey(req));
   if (quota.allowed) return quota;
   res.status(429).json({
     success: false,
@@ -60,14 +62,14 @@ const checkQuota = (req, res) => {
   return null;
 };
 
-const countIfSpent = (req, result) => {
+const countIfSpent = async (req, result) => {
   if (result.ok || result.reason === "voice-rejected") {
-    recordGnaniCall(gnaniQuotaKey(req));
+    await recordGnaniCall(gnaniQuotaKey(req));
   }
 };
 
-router.post("/voice/synthesize", voiceLimiter, requireUserOrKey, async (req, res) => {
-  if (!checkQuota(req, res)) return;
+router.post("/voice/synthesize", voiceLimiter, requireUser, async (req, res) => {
+  if (!(await checkQuota(req, res))) return;
   const result = await synthesizeSpeech({
     text: typeof req.body?.text === "string" ? req.body.text : "",
     voice: req.body?.voice,
@@ -82,17 +84,17 @@ router.post("/voice/synthesize", voiceLimiter, requireUserOrKey, async (req, res
           : result.reason,
     });
   }
-  countIfSpent(req, result);
+  await countIfSpent(req, result);
   return res.set("Content-Type", result.contentType).send(result.audio);
 });
 
 router.post(
   "/voice/transcribe",
   voiceLimiter,
-  requireUserOrKey,
+  requireUser,
   express.raw({ limit: "2mb", type: ["audio/*", "application/octet-stream"] }),
   async (req, res) => {
-    if (!checkQuota(req, res)) return;
+    if (!(await checkQuota(req, res))) return;
     const audio = Buffer.isBuffer(req.body) ? req.body : null;
     const result = await transcribeAudio({
       audio: audio || Buffer.alloc(0),
@@ -108,7 +110,7 @@ router.post(
             : result.reason,
       });
     }
-    countIfSpent(req, result);
+    await countIfSpent(req, result);
     return res.json({ success: true, transcript: result.transcript, languageCode: result.languageCode });
   }
 );
