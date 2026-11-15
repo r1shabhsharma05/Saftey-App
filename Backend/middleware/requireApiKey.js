@@ -1,19 +1,20 @@
 // 🔐 API-key auth for the SafeLife backend.
 //
-// The mutating routes (POST /alert, /location-update, /test-alert) require the
-// caller to send a shared secret in the `x-api-key` header. The secret lives
-// in the API_SECRET env var — never in code. Compared with a timing-safe
-// equality check so response time can't leak the key.
+// The shared secret in the API_SECRET env var — never in code.
+// Compared with a timing-safe equality check so response time can't
+// leak the key.
 //
-// Mobile app: set EXPO_PUBLIC_API_SECRET to the same value; the app sends it
-// as the `x-api-key` header on SOS alert requests.
+// Run-2: this is now ONLY the time-boxed compat fallback inside
+// middleware/requireUser.js (requireUserOrKey) for old APKs that
+// cannot send a JWT yet — the app authenticates with its Supabase
+// JWT instead, and the secret is NO LONGER injected into APK builds.
+// shortcut: fallback for APK ≤ #12, REMOVE at Day-30 re-ship.
+// Admin + delete-account routes never use this (JWT only).
 //
-// Fail CLOSED: while API_SECRET is unset the gate refuses every mutating
-// request (503) instead of letting it through — an unset secret must never
-// silently degrade to anonymous access. Set API_SECRET in the hosting
-// dashboard (and EXPO_PUBLIC_API_SECRET in the mobile app) to activate
-// enforcement. Day-30 (2026-11-22) is when the production value lands;
-// until then the backend answers 503 on mutating routes, loudly.
+// Fail CLOSED: while API_SECRET is unset the gate refuses every
+// key-only request (503) instead of letting it through — an unset
+// secret must never silently degrade to anonymous access. A caller
+// with a valid JWT still passes without any key.
 const crypto = require("crypto");
 const { audit } = require("../services/audit");
 
@@ -26,9 +27,9 @@ const requireApiKey = (req, res, next) => {
     if (!warned) {
       warned = true;
       console.warn(
-        "⚠️  API_SECRET is not set — mutating routes refuse requests (503). " +
-          "Set API_SECRET (backend) and EXPO_PUBLIC_API_SECRET (mobile app) " +
-          "to lock down /alert, /location-update and /test-alert."
+        "⚠️  API_SECRET is not set — shared-key requests refuse (503). " +
+          "Set API_SECRET in the hosting dashboard. JWT-authenticated " +
+          "calls are unaffected."
       );
     }
     return res.status(503).json({ success: false, error: "Service not configured" });

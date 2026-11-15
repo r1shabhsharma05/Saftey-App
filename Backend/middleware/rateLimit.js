@@ -27,8 +27,9 @@
 // IMPORTANT: server.js sets `trust proxy` (1 hop) so req.ip is the real
 // client IP behind Vercel's edge. Without it every request would share a
 // single bucket and one bad actor could lock out all users.
-const { rateLimit } = require("express-rate-limit");
+const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 const { redisStatus, createUpstashStore } = require("../services/redis");
+const { normalizePhone } = require("../services/sms");
 
 // The API speaks JSON everywhere, so 429s are JSON too (with Retry-After).
 const jsonHandler = (req, res) => {
@@ -136,4 +137,32 @@ const systemLimiter = rateLimit({
   ...upstashStore("system"),
 });
 
-module.exports = { sosLimiter, trackingLimiter, testLimiter, codeLimiter, safePlacesLimiter, routeLimiter, systemLimiter };
+// 📲 Per-phone code limiter (2.4): 5/min per NORMALIZED phone on the
+// login/signup code paths. The per-IP codeLimiter above cannot see
+// that one phone is being hammered from many IPs; this one can. An
+// invalid/missing phone falls back to a per-IP bucket (via the
+// library's ipKeyGenerator helper — a raw req.ip in a custom
+// keyGenerator is rejected by express-rate-limit's IPv6 check).
+const phoneCodeLimiter = rateLimit({
+  ...baseOptions,
+  windowMs: 60 * 1000,
+  limit: 5,
+  keyGenerator: (req) => {
+    const phone = normalizePhone(req.body?.phone);
+    return phone ? `phone:${phone}` : `phone:invalid:${ipKeyGenerator(req)}`;
+  },
+  ...upstashStore("phone-code"),
+});
+
+// 🎙️ Voice routes get their OWN bucket (8.1): 10/min per IP, separate
+// from the shared 60/min tracking bucket — a TTS/STT flood must not
+// eat the live-location budget, and vice versa. The per-account daily
+// Gnani counter lives in services/voice.js.
+const voiceLimiter = rateLimit({
+  ...baseOptions,
+  windowMs: 60 * 1000,
+  limit: 10,
+  ...upstashStore("voice"),
+});
+
+module.exports = { sosLimiter, trackingLimiter, testLimiter, codeLimiter, safePlacesLimiter, routeLimiter, systemLimiter, phoneCodeLimiter, voiceLimiter };
