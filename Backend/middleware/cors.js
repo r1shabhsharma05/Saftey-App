@@ -5,7 +5,10 @@
 // client. A wildcard `Access-Control-Allow-Origin: *` would let *any*
 // website in a browser call the mutating POST routes — every /alert hit
 // spams the user's Telegram emergency contacts, so this is a real abuse
-// vector, especially while API_SECRET is still unset (warn-and-allow).
+// vector. There is no shared-key (x-api-key) fallback any more — it
+// was removed in run-3 fix round 2 — so an unset API_SECRET changes
+// nothing about CORS: cross-site browser calls stay blocked unless
+// their origin is allowlisted.
 //
 // Set CORS_ALLOWED_ORIGINS to a comma-separated allowlist, e.g.
 //   CORS_ALLOWED_ORIGINS=https://app.example.com,http://localhost:8081

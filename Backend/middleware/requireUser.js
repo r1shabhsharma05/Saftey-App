@@ -31,14 +31,18 @@ const requireUser = async (req, res, next) => {
   if (!token) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
-  const { ok, user, lastSignInAt, tokenIat } = await verifyUserToken(token);
+  const { ok, user, phone, dateOfBirth, lastSignInAt, tokenIat } = await verifyUserToken(token);
   if (!ok) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
   }
   req.user = user;
   // Session-freshness signals for re-auth-gated actions (DELETE
   // /auth/account, 12.3). req.user stays exactly { id, email }.
-  req.authSession = { lastSignInAt: lastSignInAt || null, tokenIat: tokenIat || null };
+  // phone is the signup phone from user_metadata (F-12.3R fallback
+  // when no profiles row exists) — never a client claim.
+  // dateOfBirth is the H15 age-gate value from user_metadata, when
+  // set — POST /auth/profile/dob reads it to enforce immutability.
+  req.authSession = { lastSignInAt: lastSignInAt || null, tokenIat: tokenIat || null, phone: phone || null, dateOfBirth: dateOfBirth || null };
   return next();
 };
 
