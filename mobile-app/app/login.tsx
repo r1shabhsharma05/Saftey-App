@@ -257,7 +257,11 @@ export default function LoginScreen() {
               showAppDialog('Invalid Phone', 'Please enter a valid mobile number first.');
               return;
             }
-            const res = await requestForgotPassword(BACKEND_URL, toE164(country.dial, phone.trim()));
+            const res = await requestForgotPassword(
+              BACKEND_URL,
+              toE164(country.dial, phone.trim()),
+              turnstileToken ?? undefined
+            );
             showAppDialog(
               res.reached ? 'Email Sent' : 'No Connection',
               res.reached
