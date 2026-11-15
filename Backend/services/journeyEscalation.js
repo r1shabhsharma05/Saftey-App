@@ -27,20 +27,32 @@ const { journeyToken } = require("./journeyView");
 
 const JOURNEY_ESCALATION_KINDS = ["overdue-escalate", "checkin-escalate"];
 
-const journeyEscalationToken = (journeyId, kind) => {
+// Run-2 2.5: journey-escalation tokens expire 1 h after minting, in
+// the same expiry.HMAC format as the alert-view token. The timer jobs
+// fire within minutes of minting, so an hour is generous and a leaked
+// token still dies soon.
+const JOURNEY_ESCALATION_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+const journeyEscalationToken = (journeyId, kind, expiresAtMs = Date.now() + JOURNEY_ESCALATION_TOKEN_TTL_MS) => {
   const secret = process.env.API_SECRET || "";
-  if (!secret || typeof journeyId !== "string" || !journeyId || !JOURNEY_ESCALATION_KINDS.includes(kind)) {
+  if (!secret || typeof journeyId !== "string" || !journeyId || !JOURNEY_ESCALATION_KINDS.includes(kind) || !Number.isFinite(expiresAtMs)) {
     return null;
   }
-  return crypto
+  const mac = crypto
     .createHmac("sha256", secret)
-    .update(`journey-escalation:${journeyId}:${kind}`)
+    .update(`journey-escalation:${journeyId}:${kind}:${expiresAtMs}`)
     .digest("hex");
+  return `${expiresAtMs}.${mac}`;
 };
 
 const verifyJourneyEscalationToken = (journeyId, kind, token) => {
-  const expected = journeyEscalationToken(journeyId, kind);
-  if (!expected || typeof token !== "string") return false;
+  if (typeof token !== "string") return false;
+  const dot = token.indexOf(".");
+  if (dot <= 0) return false;
+  const expiresAtMs = Number(token.slice(0, dot));
+  if (!Number.isFinite(expiresAtMs) || Date.now() > expiresAtMs) return false;
+  const expected = journeyEscalationToken(journeyId, kind, expiresAtMs);
+  if (!expected) return false;
   const a = Buffer.from(token);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
@@ -140,6 +152,7 @@ module.exports = {
   CHECKIN_GRACE_MS,
   journeyEscalationToken,
   verifyJourneyEscalationToken,
+  JOURNEY_ESCALATION_TOKEN_TTL_MS,
   escalationMessage,
   scheduleJourneyEscalation,
   shouldEscalateJourney,

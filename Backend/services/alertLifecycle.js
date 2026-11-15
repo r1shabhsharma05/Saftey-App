@@ -21,10 +21,12 @@ const ALLOWED_TRANSITIONS = {
   closed: [],
 };
 
-const createAlert = ({ contactsCount = 0, lat, lng } = {}) => {
+const createAlert = ({ contactsCount = 0, lat, lng, ownerId = null } = {}) => {
   const now = new Date().toISOString();
   const alert = {
     id: crypto.randomUUID(),
+    // Run-2 3.1: the owner's Supabase user id (req.user.id at create).
+    ownerId: typeof ownerId === "string" ? ownerId : null,
     state: "created",
     sent: 0,
     failed: 0,

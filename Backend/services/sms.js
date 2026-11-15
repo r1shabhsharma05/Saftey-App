@@ -25,22 +25,20 @@
 // Phones are validated, deduplicated, and never logged in full.
 const HTTPSMS_URL = "https://api.httpsms.com/v1/messages/send";
 
-// Strip spaces, dashes, parens; keep an optional leading +. A bare
-// 10-digit number is an INDIAN number and is returned E.164 (+91):
-// httpSMS accepts a bare 10-digit recipient but the gateway/carrier
-// may not route it — a signup OTP sent that way was accepted (2xx)
-// and never delivered. Same for the 0-trunk (09876543210) and the
-// 91-prefixed (919876543210) forms. Numbers already in +E.164, and
-// non-Indian numbers, pass through unchanged. Valid = 10–15 digits.
+// Strip spaces, dashes, parens; keep an optional leading +. A number
+// is valid ONLY with an explicit country code: +E.164 passes through,
+// and the 91-prefixed form (919876543210) is accepted as +91. Run-2
+// R1a: a bare 10-digit number or a 0-trunk (09876543210) has NO
+// explicit country code, so it is REJECTED (""), never silently
+// assumed Indian — the old +91 default SMSed live codes to strangers.
+// Valid = 10–15 digits with a leading + (or the 91 prefix).
 const normalizePhone = (phone) => {
   if (typeof phone !== "string") return "";
   const cleaned = phone.replace(/[\s\-()]/g, "");
   if (!/^\+?\d{10,15}$/.test(cleaned)) return "";
   if (cleaned.startsWith("+")) return cleaned;
-  if (/^\d{10}$/.test(cleaned)) return `+91${cleaned}`;
-  if (/^0\d{10}$/.test(cleaned)) return `+91${cleaned.slice(1)}`;
   if (/^91\d{10}$/.test(cleaned)) return `+${cleaned}`;
-  return cleaned;
+  return "";
 };
 
 const smsConfig = () => ({

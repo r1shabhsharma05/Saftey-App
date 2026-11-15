@@ -72,6 +72,7 @@ const createJourney = ({
   destinationLabel,
   expectedArrivalAt,
   userName,
+  ownerId = null,
   contacts = [],
   route = [],
 } = {}) => {
@@ -90,6 +91,8 @@ const createJourney = ({
   const journey = {
     id: crypto.randomUUID(),
     state: "active",
+    // Run-2 3.1: the owner's Supabase user id (req.user.id at create).
+    ownerId: typeof ownerId === "string" ? ownerId : null,
     userName: typeof userName === "string" ? userName : "",
     origin: { lat: originLat, lng: originLng },
     destination: { lat: destLat, lng: destLng, label },

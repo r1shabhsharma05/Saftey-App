@@ -40,6 +40,9 @@ const memory = new Map();
 const toRow = (journey) => ({
   id: journey.id,
   state: journey.state,
+  // Run-2 3.1: the owner's Supabase user id, set from req.user.id at
+  // create. Null for legacy rows and shared-key-only creates.
+  owner_id: journey.ownerId ?? null,
   user_name: journey.userName || "",
   origin_lat: journey.origin.lat,
   origin_lng: journey.origin.lng,
@@ -66,6 +69,7 @@ const toRow = (journey) => ({
 const fromRow = (row) => ({
   id: row.id,
   state: row.state,
+  ownerId: row.owner_id ?? null,
   userName: row.user_name || "",
   origin: { lat: row.origin_lat, lng: row.origin_lng },
   destination: { lat: row.dest_lat, lng: row.dest_lng, label: row.destination_label },

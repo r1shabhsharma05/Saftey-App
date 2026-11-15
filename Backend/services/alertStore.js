@@ -20,6 +20,9 @@ const memory = new Map();
 const toRow = (alert) => ({
   id: alert.id,
   state: alert.state,
+  // Run-2 3.1: the owner's Supabase user id, set from req.user.id at
+  // create. Null for legacy rows and shared-key-only creates.
+  owner_id: alert.ownerId ?? null,
   sent: alert.sent,
   failed: alert.failed,
   contacts_count: alert.contacts,
@@ -57,6 +60,7 @@ const toRow = (alert) => ({
 const fromRow = (row) => ({
   id: row.id,
   state: row.state,
+  ownerId: row.owner_id ?? null,
   sent: row.sent,
   failed: row.failed,
   contacts: row.contacts_count,

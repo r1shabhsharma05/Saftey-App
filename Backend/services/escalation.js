@@ -12,7 +12,9 @@
 //
 //   Step 1 (+30s): re-fire only the channels that failed/partialled.
 //   Step 2 (+60s): re-fire the still-failed channels once more.
-//   Step 3 (+120s): Bolna voice call to contacts who have not ACKed.
+//   Step 3 (+120s): voice call — NOT SUPPORTED (Vachana has no
+//     telephony leg). The callback logs the step as skipped and
+//     records it, never a fake call; SMS/Telegram already fired.
 //
 // Timers are QStash delayed callbacks to POST /escalate (amendment
 // A2 — no in-process timers on serverless). Scheduling happens at
@@ -40,18 +42,29 @@ const ESCALATION_STEPS = [
   { step: 3, delaySeconds: 120, action: "voice-call" },
 ];
 
-const escalationToken = (alertId, step) => {
+// Run-2 2.5: escalation tokens expire 1 h after minting, in the same
+// expiry.HMAC format as the alert-view token (24 h) and the retry
+// token (1 h). A leaked or replayed token dies on its own.
+const ESCALATION_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+const escalationToken = (alertId, step, expiresAtMs = Date.now() + ESCALATION_TOKEN_TTL_MS) => {
   const secret = process.env.API_SECRET || "";
-  if (!secret || typeof alertId !== "string" || !alertId || !Number.isInteger(step)) return null;
-  return crypto
+  if (!secret || typeof alertId !== "string" || !alertId || !Number.isInteger(step) || !Number.isFinite(expiresAtMs)) return null;
+  const mac = crypto
     .createHmac("sha256", secret)
-    .update(`escalation:${alertId}:${step}`)
+    .update(`escalation:${alertId}:${step}:${expiresAtMs}`)
     .digest("hex");
+  return `${expiresAtMs}.${mac}`;
 };
 
 const verifyEscalationToken = (alertId, step, token) => {
-  const expected = escalationToken(alertId, step);
-  if (!expected || typeof token !== "string") return false;
+  if (typeof token !== "string") return false;
+  const dot = token.indexOf(".");
+  if (dot <= 0) return false;
+  const expiresAtMs = Number(token.slice(0, dot));
+  if (!Number.isFinite(expiresAtMs) || Date.now() > expiresAtMs) return false;
+  const expected = escalationToken(alertId, step, expiresAtMs);
+  if (!expected) return false;
   const a = Buffer.from(token);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
@@ -154,6 +167,7 @@ module.exports = {
   ESCALATION_STEPS,
   escalationToken,
   verifyEscalationToken,
+  ESCALATION_TOKEN_TTL_MS,
   shouldEscalate,
   failedChannels,
   unackedContacts,

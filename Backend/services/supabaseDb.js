@@ -162,6 +162,61 @@ const dbListRecent = async (table, { limit = 50 } = {}) => {
   }
 };
 
+// Run-2 R1j / 12.3: delete rows by an allowlisted column (verify-path
+// cleanup when the mirror save fails, account deletion). Table/column
+// are bare identifiers, the value is URL-encoded. Never throws.
+const dbDelete = async (table, column, value) => {
+  if (!/^[a-z_]+$/.test(table || "") || !/^[a-z_]+$/.test(column || "")) {
+    return { ok: false, reason: "invalid-table-or-column" };
+  }
+  if (!dbStatus().configured) return { ok: false, reason: "not_configured" };
+  const { url } = getConfig();
+  try {
+    await transport({
+      method: "DELETE",
+      url: `${url}/rest/v1/${table}?${column}=eq.${encodeURIComponent(value)}`,
+      headers: { ...authHeaders(), Prefer: "return=minimal" },
+    });
+    return { ok: true };
+  } catch (err) {
+    console.log(`❌ Supabase delete ${table} failed:`, err.message);
+    return { ok: false, reason: err.message };
+  }
+};
+
+// Run-2 R1e: one atomic conditional update — a single PATCH whose
+// WHERE is the claim (phone + code hash + attempts < 5). PostgREST
+// returns the matched rows, so zero rows means "already consumed by
+// another instance". Filters are {column, op, value} with allowlisted
+// columns and ops; the patch is a plain JSON object. Never throws.
+const CONDITIONAL_OPS = new Set(["eq", "neq", "lt", "lte", "gt", "gte"]);
+const dbConditionalUpdate = async (table, filters, patch) => {
+  if (!/^[a-z_]+$/.test(table || "")) return { ok: false, reason: "invalid-table" };
+  if (!Array.isArray(filters) || filters.length === 0) return { ok: false, reason: "invalid-filters" };
+  for (const f of filters) {
+    if (!/^[a-z_]+$/.test(f?.column || "") || !CONDITIONAL_OPS.has(f?.op)) {
+      return { ok: false, reason: "invalid-filter" };
+    }
+  }
+  if (!dbStatus().configured) return { ok: false, reason: "not_configured" };
+  const { url } = getConfig();
+  const where = filters
+    .map((f) => `${f.column}=${f.op}.${encodeURIComponent(String(f.value))}`)
+    .join("&");
+  try {
+    const { data } = await transport({
+      method: "PATCH",
+      url: `${url}/rest/v1/${table}?${where}`,
+      headers: { ...authHeaders(), Prefer: "return=representation" },
+      body: patch,
+    });
+    return { ok: true, rows: Array.isArray(data) ? data : [] };
+  } catch (err) {
+    console.log(`❌ Supabase conditional update ${table} failed:`, err.message);
+    return { ok: false, reason: err.message };
+  }
+};
+
 module.exports = {
   dbStatus,
   dbUpsert,
@@ -169,6 +224,8 @@ module.exports = {
   dbSelectBy,
   dbSelectBySuffix,
   dbListRecent,
+  dbDelete,
+  dbConditionalUpdate,
   // Test seam only — lets tests drive the writer without network.
   // Pass null to restore the production transport.
   _setDbTransport: (fn) => {

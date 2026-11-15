@@ -161,9 +161,9 @@ const sendPush = async ({ to, title, body, accessToken, fetchImpl = fetch } = {}
 
 // Fan-out over the alert's emergency contacts: one push per distinct
 // valid pushToken. Counts are per device, like SMS/WhatsApp per
-// contact. The notification body is the SOS message truncated to
-// 500 chars — a push is a ping; the full text + live page travel on
-// SMS/Telegram and in the alert-view link inside the message.
+// contact. The notification is a generic ping only (13.7) — the full
+// SOS text + live page travel on SMS/Telegram and in the alert-view
+// link inside the message.
 const sendPushAlert = async ({ message, contacts = [], fetchImpl = fetch } = {}) => {
   if (!pushStatus().configured) {
     return { sent: 0, failed: 1, reason: "channel-not-configured" };
@@ -191,7 +191,10 @@ const sendPushAlert = async ({ message, contacts = [], fetchImpl = fetch } = {})
       sendPush({
         to,
         title: "🚨 SafeLife SOS Alert",
-        body: message.slice(0, 500),
+        // Run-2 13.7: generic body only — no name, phone, or location.
+        // The full SOS text travels on SMS/Telegram and behind the
+        // signed alert-view link, never in a push notification.
+        body: "SafeLife SOS — open the app for details",
         accessToken,
         fetchImpl,
       })

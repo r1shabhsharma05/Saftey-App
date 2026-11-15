@@ -66,6 +66,40 @@ const STT_MIME = {
   ".aac": "audio/aac",
 };
 
+// Run-2 5.1: server-side allowlist for voice/language — ONLY the
+// voices/languages this code already uses. Anything else is rejected
+// before any Gnani call, so a caller cannot steer synthesis at an
+// arbitrary voice or language.
+const TTS_VOICES = new Set([TTS_VOICE]);
+const TTS_LANGUAGES = new Set([TTS_LANGUAGE]);
+const STT_LANGUAGES = new Set([STT_LANGUAGE]);
+
+// Run-2 8.1: per-account DAILY Gnani counter. Keyed by the caller's
+// user id when a JWT is present, else by IP (shared-key compat path).
+// In-memory, date-keyed — a serverless instance holds only its own
+// counts, so this bounds a single instance's spend, not global
+// spend; the hard cap lives in the Gnani console (his dashboard step).
+// Cap: 50 Gnani calls per account per day.
+const GNANI_DAILY_CAP = 50;
+const gnaniDailyCounts = new Map(); // `${key}:${YYYY-MM-DD}` -> calls
+const gnaniQuotaKey = (req) =>
+  req?.user?.id ? `user:${req.user.id}` : `ip:${req?.ip || "unknown"}`;
+const gnaniDayKey = (key) => `${key}:${new Date().toISOString().slice(0, 10)}`;
+const checkGnaniQuota = (key) => {
+  if (gnaniDailyCounts.size > 5000) {
+    const today = new Date().toISOString().slice(0, 10);
+    for (const k of [...gnaniDailyCounts.keys()]) {
+      if (!k.endsWith(today)) gnaniDailyCounts.delete(k);
+    }
+  }
+  const used = gnaniDailyCounts.get(gnaniDayKey(key)) || 0;
+  return { allowed: used < GNANI_DAILY_CAP, used, remaining: Math.max(0, GNANI_DAILY_CAP - used) };
+};
+const recordGnaniCall = (key) => {
+  const k = gnaniDayKey(key);
+  gnaniDailyCounts.set(k, (gnaniDailyCounts.get(k) || 0) + 1);
+};
+
 const voiceConfig = () => ({
   apiKey: process.env.GNANI_API_KEY || "",
 });
@@ -95,6 +129,12 @@ const synthesizeSpeech = async ({ text, voice, language, fetchImpl = fetch } = {
   }
   if (typeof text !== "string" || text.length === 0) {
     return { ok: false, reason: "empty-content" };
+  }
+  if (typeof voice === "string" && voice.trim() && !TTS_VOICES.has(voice.trim())) {
+    return { ok: false, reason: "unsupported-voice" };
+  }
+  if (typeof language === "string" && language.trim() && !TTS_LANGUAGES.has(language.trim())) {
+    return { ok: false, reason: "unsupported-language" };
   }
   try {
     const res = await fetchImpl(TTS_URL, {
@@ -149,11 +189,12 @@ const transcribeAudio = async ({ audio, filename, languageCode, fetchImpl = fetc
   if (!STT_EXTENSIONS.has(ext)) {
     return { ok: false, reason: "unsupported-audio-format" };
   }
+  const language = typeof languageCode === "string" && languageCode.trim() ? languageCode.trim() : STT_LANGUAGE;
+  if (!STT_LANGUAGES.has(language)) {
+    return { ok: false, reason: "unsupported-language" };
+  }
   const form = new FormData();
-  form.append(
-    "language_code",
-    typeof languageCode === "string" && languageCode.trim() ? languageCode.trim() : STT_LANGUAGE
-  );
+  form.append("language_code", language);
   form.append("format", "verbatim");
   form.append("model", STT_MODEL);
   // No manual Content-Type: fetch sets the multipart boundary itself.
@@ -185,60 +226,32 @@ const transcribeAudio = async ({ audio, filename, languageCode, fetchImpl = fetc
   }
 };
 
-// One voice call to one recipient — KEPT for interface parity with the
-// Bolna adapter (alerts.js / escalation.js call it through
-// sendVoiceAlert and already handle a failed voice step as a counted
-// failure). Vachana provides speech synthesis and recognition, NOT
-// telephony, so no HTTP call is made and the honest reason is
-// voice-call-not-supported. `name` and `fetchImpl` stay in the
-// signature so callers don't change; neither is used.
-const sendVoiceCall = async ({ to, name, message, fetchImpl = fetch } = {}) => {
-  void name;
-  void fetchImpl;
-  if (!voiceStatus().configured) {
-    return { sent: 0, failed: 1, reason: "channel-not-configured" };
-  }
-  const recipient = normalizePhone(to);
-  if (!recipient) {
-    return { sent: 0, failed: 1, reason: "invalid-phone" };
-  }
-  if (typeof message !== "string" || message.length === 0) {
-    return { sent: 0, failed: 1, reason: "empty-content" };
-  }
-  return { sent: 0, failed: 1, reason: "voice-call-not-supported" };
-};
-
-// Voice fan-out over the alert's emergency contacts: one call per
-// distinct valid phone. Counts are per contact. No full phone number
+// Voice fan-out over the alert's emergency contacts — run-2 11.3:
+// the per-contact sendVoiceCall stub is DELETED (Vachana has no
+// telephony leg, so there is no call to make). This function keeps
+// the counted shape callers expect but reports every target as a
+// failed call with the honest reason — the escalation ladder records
+// the step as skipped, never as a fake call. No full phone number
 // ever leaves this module — logs carry counts only.
-const sendVoiceAlert = async ({ message, contacts = [], fetchImpl = fetch } = {}) => {
+const sendVoiceAlert = async ({ message, contacts = [] } = {}) => {
   if (!voiceStatus().configured) {
     return { sent: 0, failed: 1, reason: "channel-not-configured" };
   }
   if (typeof message !== "string" || message.length === 0) {
     return { sent: 0, failed: 1, reason: "empty-content" };
   }
-  const seen = new Set();
-  const targets = [];
-  for (const c of (Array.isArray(contacts) ? contacts : []).slice(0, 10)) {
-    const phone = normalizePhone(c?.phone);
-    if (!phone || seen.has(phone)) continue;
-    seen.add(phone);
-    targets.push({ phone, name: typeof c?.name === "string" ? c.name : "" });
-  }
+  const targets = [
+    ...new Set(
+      (Array.isArray(contacts) ? contacts : [])
+        .slice(0, 10)
+        .map((c) => normalizePhone(c?.phone))
+        .filter(Boolean)
+    ),
+  ];
   if (targets.length === 0) {
     return { sent: 0, failed: 1, reason: "no-voice-recipients" };
   }
-  const results = await Promise.all(
-    targets.map((t) => sendVoiceCall({ to: t.phone, name: t.name, message, fetchImpl }))
-  );
-  const sent = results.reduce((n, r) => n + r.sent, 0);
-  const failed = results.reduce((n, r) => n + r.failed, 0);
-  const out = { sent, failed };
-  if (sent === 0) {
-    out.reason = results[0].reason || "voice-failed";
-  }
-  return out;
+  return { sent: 0, failed: targets.length, reason: "voice-call-not-supported" };
 };
 
 module.exports = {
@@ -246,6 +259,11 @@ module.exports = {
   voiceStatus,
   synthesizeSpeech,
   transcribeAudio,
-  sendVoiceCall,
   sendVoiceAlert,
+  GNANI_DAILY_CAP,
+  gnaniQuotaKey,
+  checkGnaniQuota,
+  recordGnaniCall,
+  // Test seam only.
+  _clearGnaniQuota: () => gnaniDailyCounts.clear(),
 };

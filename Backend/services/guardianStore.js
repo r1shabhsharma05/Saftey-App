@@ -22,17 +22,17 @@
 // attempts): a verify landing on a different instance must still
 // succeed — the 5-attempt limit is enforced by the store, not by
 // hash secrecy, and the hash lives in a service_role-only table
-// (migration 20261111080000, RLS lockdown). The per-hour request
-// ledger (codeRequests) is NOT mirrored — it is a soft anti-abuse
-// counter, and mirroring it would buy nothing. A row written before
-// D19 has no code columns: fromRow reads verification: null, exactly
-// as if no code were pending.
+// (migration 20261111080000, RLS lockdown). Run-2 R1d: the per-hour
+// request ledger (codeRequests, timestamps only) IS mirrored too
+// (code_requests jsonb), so the 3/hr cap survives a cross-instance
+// load. A row written before D19 has no code columns: fromRow reads
+// verification: null, exactly as if no code were pending.
 //
 // Row shape (see supabase/migrations/20261111080000_guardians.sql):
 // id, user_id, name, phone (unique), role, state, available,
 // verified_at, code_hash, code_salt, code_expires_at, code_attempts,
 // created_at, updated_at.
-const { dbStatus, dbUpsert, dbSelectOne, dbSelectBy } = require("./supabaseDb");
+const { dbStatus, dbUpsert, dbSelectOne, dbSelectBy, dbConditionalUpdate } = require("./supabaseDb");
 const { normalizePhone } = require("./sms");
 
 const MAX_GUARDIANS = 1000;
@@ -53,6 +53,9 @@ const toRow = (guardian) => ({
   code_salt: guardian.verification?.salt ?? null,
   code_expires_at: guardian.verification?.expiresAt ?? null,
   code_attempts: guardian.verification?.attempts ?? 0,
+  // Run-2 R1d: the per-hour request ledger (timestamps only) is
+  // mirrored, so the 3/hr cap survives a cross-instance load.
+  code_requests: Array.isArray(guardian.codeRequests) ? guardian.codeRequests : [],
   created_at: guardian.createdAt,
   updated_at: guardian.updatedAt,
 });
@@ -78,7 +81,9 @@ const fromRow = (row) => ({
         attempts: row.code_attempts ?? 0,
       }
     : null,
-  codeRequests: [],
+  // Run-2 R1d: the ledger comes back from the mirror instead of
+  // restarting empty on every cross-instance load.
+  codeRequests: Array.isArray(row.code_requests) ? row.code_requests : [],
 });
 
 const save = (guardian) => {
@@ -128,10 +133,30 @@ const getByPhone = async (phone) => {
   return guardian;
 };
 
+// Run-2 R1e: atomic cross-instance consume of a guardian's pending
+// code — one conditional PATCH (WHERE id AND code_hash AND
+// code_attempts < 5). Zero matched rows means another instance
+// already consumed it.
+const consumeCode = async (guardianId, expectedHash, attempts = 0) => {
+  if (!dbStatus().configured) return { ok: false, reason: "not_configured" };
+  const res = await dbConditionalUpdate(
+    "guardians",
+    [
+      { column: "id", op: "eq", value: guardianId },
+      { column: "code_hash", op: "eq", value: expectedHash },
+      { column: "code_attempts", op: "lt", value: 5 },
+    ],
+    { code_hash: null, code_expires_at: null, code_attempts: attempts }
+  );
+  if (!res.ok) return { ok: false, reason: res.reason };
+  return { ok: true, consumed: res.rows.length > 0 };
+};
+
 module.exports = {
   save,
   get,
   getByPhone,
+  consumeCode,
   MAX_GUARDIANS,
   // Test seams only.
   _clearMemory: () => {

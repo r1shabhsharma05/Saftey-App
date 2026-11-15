@@ -43,12 +43,6 @@ const MAX_RETRIES = RETRY_DELAYS.length;
 // Seconds to wait before retry attempt N (1-based); null past the last.
 const nextRetryDelay = (attempt) => RETRY_DELAYS[attempt - 1] ?? null;
 
-// Honest stub: a channel whose day has not landed reports failure with
-// a reason, never fake success. All four channels are wired now
-// (D7 SMS, D8 WhatsApp, D9 push); this stub survives only as the
-// fallback shape for an injected-sender gap in tests.
-const notConfigured = async () => ({ sent: 0, failed: 1, reason: "channel-not-configured" });
-
 const defaultSenders = {
   telegram: ({ message }) => dispatchSos(message),
   sms: ({ message, contacts }) => sendSmsAlert({ message, contacts }),

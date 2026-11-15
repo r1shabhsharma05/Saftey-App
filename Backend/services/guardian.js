@@ -6,14 +6,14 @@
 // own trusted people (family/friends) first — the public crowd network
 // only works once users exist, so D19 onboards the trusted circle.
 //
-// Identity (honest limitation): the guardian is keyed by the Supabase
-// user id the app sends plus a phone it proves it owns. The backend
-// cannot verify "this caller is Supabase user X" — there is no per-user
-// JWT verification in this backend, only the shared x-api-key — so
-// `userId` here is a caller claim, exactly like journey `userName`
-// (D16). The real binding is the PHONE: the SMS code proves the
-// registrant controls the number. Per-user JWT verification is a
-// D23/D24 security-review item, not D19 scope.
+// Identity: the guardian is keyed by the Supabase user id the
+// server verified plus a phone it proves it owns. Run-2: the JWT
+// is verified server-side (middleware/requireUser.js) and the
+// route takes userId from req.user.id — the body claim is only a
+// compat fallback for shared-key-only callers (APK ≤ #12), and
+// ownership is enforced on every read/write. The real binding is
+// still the PHONE: the SMS code proves the registrant controls the
+// number.
 //
 // "ID-lite" (plan F2) is therefore: a Google-verified app account
 // (Google sign-in verifies the email identity) + phone ownership via
@@ -68,8 +68,8 @@ const createGuardian = ({ userId, name, phone, role } = {}) => {
     createdAt,
     updatedAt: createdAt,
     // Verification state: null until a code is issued. codeRequests
-    // is the per-hour cap ledger (pruned on issue) — in-memory only,
-    // never mirrored (see guardianStore.js toRow).
+    // is the per-hour cap ledger (pruned on issue) — mirrored to
+    // Postgres alongside the code hash (run-2 R1d), timestamps only.
     verification: null,
     codeRequests: [],
   };

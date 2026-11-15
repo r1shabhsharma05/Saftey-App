@@ -18,23 +18,35 @@
 // there is no signing key, so no token can be minted or verified —
 // the page then answers 401 for every request instead of serving
 // location unauthenticated.
+//
+// Run-2 2.5: journey-view links lapse 24 h after minting, in the
+// same expiry.HMAC format as the alert-view token — a journey that
+// is never closed must not stay viewable indefinitely.
 const crypto = require("crypto");
 
-const journeyToken = (journeyId) => {
+const JOURNEY_VIEW_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+
+const journeyToken = (journeyId, expiresAtMs = Date.now() + JOURNEY_VIEW_TOKEN_TTL_MS) => {
   const secret = process.env.API_SECRET || "";
-  if (!secret || typeof journeyId !== "string" || !journeyId) return null;
-  return crypto
+  if (!secret || typeof journeyId !== "string" || !journeyId || !Number.isFinite(expiresAtMs)) return null;
+  const mac = crypto
     .createHmac("sha256", secret)
-    .update(`journey-view:${journeyId}`)
+    .update(`journey-view:${journeyId}:${expiresAtMs}`)
     .digest("hex");
+  return `${expiresAtMs}.${mac}`;
 };
 
 const verifyJourneyToken = (journeyId, token) => {
-  const expected = journeyToken(journeyId);
-  if (!expected || typeof token !== "string") return false;
+  if (typeof token !== "string") return false;
+  const dot = token.indexOf(".");
+  if (dot <= 0) return false;
+  const expiresAtMs = Number(token.slice(0, dot));
+  if (!Number.isFinite(expiresAtMs) || Date.now() > expiresAtMs) return false;
+  const expected = journeyToken(journeyId, expiresAtMs);
+  if (!expected) return false;
   const a = Buffer.from(token);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 };
 
-module.exports = { journeyToken, verifyJourneyToken };
+module.exports = { journeyToken, verifyJourneyToken, JOURNEY_VIEW_TOKEN_TTL_MS };
