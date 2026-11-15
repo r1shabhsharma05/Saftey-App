@@ -6,14 +6,22 @@
 // re-checks the kind/level band on receipt; this copy only decides
 // when the app attempts a send.
 //
+// The numbers live in constants/batteryThresholds.ts (single source
+// of truth, mirrored by Backend/services/batteryThresholds.js) —
+// this file re-exports them so existing import sites keep working.
+//
 // Rules (same as the server): charging never warns; while an alert
 // is active only the 5% final burst fires (a "NOT an SOS" low
 // warning mid-emergency would confuse contacts); otherwise 15%
 // warns once per discharge cycle until the level climbs above
 // REARM_LEVEL (a recharge), which re-arms the warning.
-export const BATTERY_LOW_THRESHOLD = 15;
-export const BATTERY_FINAL_THRESHOLD = 5;
-export const BATTERY_REARM_LEVEL = 20;
+import {
+  BATTERY_LOW_THRESHOLD,
+  BATTERY_FINAL_THRESHOLD,
+  BATTERY_REARM_LEVEL,
+} from '../constants/batteryThresholds';
+
+export { BATTERY_LOW_THRESHOLD, BATTERY_FINAL_THRESHOLD, BATTERY_REARM_LEVEL };
 
 export type BatteryAlertKind = 'low' | 'final';
 

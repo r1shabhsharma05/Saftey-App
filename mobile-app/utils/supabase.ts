@@ -11,8 +11,20 @@ import { secureGetItem, secureSetItem, secureRemoveItem } from './secureStorage'
 // is migrated once on first read — no user is logged out by the move.
 
 // 🚀 SUPABASE CONFIGURATION
+// The anon key is publishable, but it is NOT inlined here: the single
+// source is eas.json (preview + production env blocks) / the
+// EXPO_PUBLIC_SUPABASE_ANON_KEY env var (see mobile-app/.env.example).
+// A missing key fails fast with a clear message instead of silently
+// falling back to a stale literal baked into the bundle (run-3 F-11.3:
+// the old fallback literal drifted from eas.json). Never paste a key
+// value into this file.
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://xkfrsjtfbylhhrvibmxk.supabase.co';
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhrZnJzanRmYnlsaGhydmlibXhrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzODcwNDksImV4cCI6MjEwNzk2MzA0OX0.ypd-j8LROeCjqcTloC2qhUw73gJZA_Hd7fn6KtJSYPE';
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+if (!supabaseAnonKey) {
+  throw new Error(
+    'EXPO_PUBLIC_SUPABASE_ANON_KEY is not set — set it in eas.json (EAS builds) or .env (local dev, see mobile-app/.env.example).'
+  );
+}
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {

@@ -55,7 +55,57 @@ export interface SimpleResult {
   success: boolean;
   error?: string;
   failure?: PostFailure;
+  /** DELETE /auth/account answered 401 REAUTH_REQUIRED: the session
+   * is older than 15 min — re-authenticate, then retry once. */
+  reauthRequired?: boolean;
 }
+
+export interface LoginPrecheckResult {
+  /** false only when the server answered 429 (too many attempts). */
+  allowed: boolean;
+  /** Seconds to wait before retrying (429 only). */
+  retryAfterSeconds?: number;
+  /** false = the precheck never reached the server — fail OPEN. */
+  reached: boolean;
+}
+
+/** Login-attempt precheck (2.4): POST /auth/login/precheck {email}
+ * answers 200 {allowed:true} or 429 {allowed:false,
+ * retryAfterSeconds}. Call BEFORE supabase signInWithPassword; on
+ * 429 do NOT attempt sign-in. On network error (reached:false) the
+ * caller proceeds with sign-in — fail-open for availability, since
+ * Supabase still enforces its own server-side limits. */
+export const checkLoginPrecheck = async (
+  backendUrl: string,
+  email: string
+): Promise<LoginPrecheckResult> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(`${backendUrl}/auth/login/precheck`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => null);
+    if (response.status === 429) {
+      const retryAfter =
+        data && typeof data === 'object' && typeof (data as { retryAfterSeconds?: unknown }).retryAfterSeconds === 'number'
+          ? (data as { retryAfterSeconds: number }).retryAfterSeconds
+          : undefined;
+      return { allowed: false, retryAfterSeconds: retryAfter, reached: true };
+    }
+    if (!response.ok) return { allowed: true, reached: true };
+    const allowed =
+      !data || typeof data !== 'object' || (data as { allowed?: unknown }).allowed !== false;
+    return { allowed, reached: true };
+  } catch {
+    return { allowed: true, reached: false };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
 
 const phoneAuthHeaders = async (): Promise<Record<string, string>> => ({
   'Content-Type': 'application/json',
@@ -112,10 +162,11 @@ const toCodeRequestResult = (data: unknown, reached: boolean, failure?: PostFail
   };
 };
 
-/** Step 1 of phone-OTP signup: SMS the 6-digit code to the phone. */
-// shortcut: turnstileToken is plumbed but no widget exists yet — the
-// app has no WebView, so the token is sent only when one is supplied;
-// a Turnstile widget + keys decision is still pending with Rishabh.
+/** Step 1 of phone-OTP signup: SMS the 6-digit code to the phone.
+ * turnstileToken comes from the Turnstile widget
+ * (components/TurnstileWidget.tsx) — omitted when the widget is not
+ * configured, in which case the server decides (fail-open until
+ * TURNSTILE_SECRET_KEY is set in Vercel; see the widget). */
 export const requestSignupCode = async (
   backendUrl: string,
   phone: string,
@@ -166,12 +217,18 @@ export const completeSignup = async (
   };
 };
 
-/** Step 1 of phone-OTP login: SMS the 6-digit code to the phone. */
+/** Step 1 of phone-OTP login: SMS the 6-digit code to the phone.
+ * turnstileToken comes from the Turnstile widget, same as signup. */
 export const requestLoginCode = async (
   backendUrl: string,
-  phone: string
+  phone: string,
+  turnstileToken?: string
 ): Promise<CodeRequestResult> => {
-  const { reached, data, failure } = await postJson(`${backendUrl}/auth/login/request-code`, { phone }, true);
+  const { reached, data, failure } = await postJson(
+    `${backendUrl}/auth/login/request-code`,
+    { phone, ...(turnstileToken ? { turnstileToken } : {}) },
+    true
+  );
   return toCodeRequestResult(data, reached, failure);
 };
 
@@ -211,7 +268,11 @@ export const requestForgotPassword = async (
   };
 };
 
-/** Delete the signed-in account server-side (JWT auth); caller signs out after. */
+/** Delete the signed-in account server-side (JWT auth); caller signs out after.
+ * The backend requires a FRESH session (last sign-in within 15 min):
+ * a stale session answers 401 REAUTH_REQUIRED — surfaced here as
+ * reauthRequired so the caller can re-authenticate and retry once
+ * instead of reporting a generic failure. */
 export const deleteAccount = async (backendUrl: string): Promise<SimpleResult> => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30000);
@@ -222,13 +283,15 @@ export const deleteAccount = async (backendUrl: string): Promise<SimpleResult> =
       signal: controller.signal,
     });
     const data = await response.json().catch(() => null);
+    const error =
+      data && typeof data === 'object' && typeof (data as { error?: unknown }).error === 'string'
+        ? ((data as { error: string }).error as string)
+        : undefined;
     return {
       reached: true,
       success: response.ok && !!data && typeof data === 'object' && (data as { success?: boolean }).success === true,
-      error:
-        data && typeof data === 'object' && typeof (data as { error?: unknown }).error === 'string'
-          ? ((data as { error: string }).error as string)
-          : undefined,
+      error,
+      reauthRequired: response.status === 401 || error === 'REAUTH_REQUIRED',
     };
   } catch (err) {
     return { reached: false, success: false, failure: err instanceof Error && err.name === 'AbortError' ? 'timeout' : 'network' };

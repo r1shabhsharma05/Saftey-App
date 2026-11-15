@@ -3,17 +3,27 @@
 // The complaint was "location fetch is too slow": every caller used
 // to await a fresh GPS fix before showing anything. The fix is
 // ordering, not accuracy: return the cached last-known position
-// FIRST (memory → AsyncStorage 'lastCoords' → the OS last-known
+// FIRST (memory → SecureStore 'lastCoords' → the OS last-known
 // fix — all instant), then refine with a fresh fix in the background
 // (Balanced accuracy, short timeout) and cache it. The final fix is
 // exactly as accurate as before; only the time-to-first-fix changes.
 //
-// Guardian pins are the exception: a pin is only ever sent as LIVE
-// when it is fresh (<= 2 min old). getLivePinFix() returns null
-// rather than a stale pin, and the caller reports the pin as
-// unsent instead of implying it can be found.
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// The cache lives in SecureStore (via utils/secureStorage.ts), NOT
+// plaintext AsyncStorage: a last-known fix is precise PII — a rooted
+// device / backup read must not find the user's coordinates in the
+// clear (run-3 F-13.1). A pre-fix plaintext copy is migrated once by
+// secureGetItem (copied to SecureStore, deleted from AsyncStorage).
+//
+// Throttle (why): cacheFix is called on every GPS fix, and
+// SecureStore is a keychain/keystore round-trip, not a free file
+// write — persisting every fix would hammer it. So the in-memory
+// cache updates on every fix, but the SecureStore write happens
+// only when the fix moved materially (> ~50 m) or at least 60 s
+// have passed since the last persist. A restart within that window
+// seeds from a fix at most 60 s / 50 m stale — fine for a "last
+// known" seed; live pins always use getLivePinFix()/getFreshFix().
 import * as Location from 'expo-location';
+import { secureGetItem, secureSetItem } from './secureStorage';
 
 export interface LatLng {
   latitude: number;
@@ -27,17 +37,29 @@ export interface CachedFix extends LatLng {
 const CACHE_KEY = 'lastCoords';
 const FRESH_TIMEOUT_MS = 8000;
 const PIN_MAX_AGE_MS = 2 * 60 * 1000;
+// Persist at most once a minute, or sooner if the fix moved > ~50 m
+// (0.00045° ≈ 50 m at the equator — cheap box check, no haversine).
+const PERSIST_MIN_INTERVAL_MS = 60 * 1000;
+const PERSIST_MIN_MOVE_DEG = 0.00045;
 
 let memoryCache: CachedFix | null = null;
+let lastPersistedFix: CachedFix | null = null;
+let lastPersistAtMs = 0;
 
-/** One writer for the cache (memory + AsyncStorage, same shape the
- * dashboard seed already reads: {latitude, longitude, speed, timestamp}). */
+/** One writer for the cache (memory always; SecureStore throttled —
+ * see the header note — same shape the dashboard seed already
+ * reads: {latitude, longitude, speed, timestamp}). */
 export const cacheFix = async (fix: CachedFix): Promise<void> => {
   memoryCache = fix;
-  await AsyncStorage.setItem(
-    CACHE_KEY,
-    JSON.stringify({ ...fix, speed: null })
-  ).catch(() => {});
+  const now = Date.now();
+  const moved =
+    !lastPersistedFix ||
+    Math.abs(fix.latitude - lastPersistedFix.latitude) > PERSIST_MIN_MOVE_DEG ||
+    Math.abs(fix.longitude - lastPersistedFix.longitude) > PERSIST_MIN_MOVE_DEG;
+  if (!moved && now - lastPersistAtMs < PERSIST_MIN_INTERVAL_MS) return;
+  lastPersistedFix = fix;
+  lastPersistAtMs = now;
+  await secureSetItem(CACHE_KEY, JSON.stringify({ ...fix, speed: null })).catch(() => {});
 };
 
 /** Memory-only note (for callers that already persist the fix). */
@@ -48,7 +70,7 @@ export const noteFix = (fix: CachedFix): void => {
 export const readCachedFix = async (): Promise<CachedFix | null> => {
   if (memoryCache) return memoryCache;
   try {
-    const raw = await AsyncStorage.getItem(CACHE_KEY);
+    const raw = await secureGetItem(CACHE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (typeof parsed?.latitude !== 'number' || typeof parsed?.longitude !== 'number') {
