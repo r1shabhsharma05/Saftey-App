@@ -325,7 +325,7 @@ export default function RootLayout() {
 
 const styles = StyleSheet.create({
   intro: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: '#0c0c1d',
     zIndex: 50,
   },
