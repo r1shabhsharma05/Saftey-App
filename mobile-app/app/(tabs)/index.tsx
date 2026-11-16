@@ -1869,7 +1869,7 @@ const styles = StyleSheet.create({
   scanningText: { ...Theme.type.caption1, color: Theme.colors.onSurfaceVariant, fontSize: 12 },
   retryText: { ...Theme.type.caption1, fontWeight: '600', color: Theme.colors.primaryText, fontSize: 13 },
   loader: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.85)',
     alignItems: 'center',
     justifyContent: 'center',

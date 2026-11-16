@@ -32,7 +32,7 @@ export default function TabLayout() {
             <Ionicons
               name={focused ? 'shield-checkmark' : 'shield-checkmark-outline'}
               size={22}
-              color={color}
+              color={typeof color === 'string' ? color : focused ? Theme.colors.primaryText : Theme.colors.onSurfaceVariant}
             />
           ),
         }}
@@ -45,7 +45,7 @@ export default function TabLayout() {
             <Ionicons
               name={focused ? 'people' : 'people-outline'}
               size={22}
-              color={color}
+              color={typeof color === 'string' ? color : focused ? Theme.colors.primaryText : Theme.colors.onSurfaceVariant}
             />
           ),
         }}
@@ -58,7 +58,7 @@ export default function TabLayout() {
             <Ionicons
               name={focused ? 'person' : 'person-outline'}
               size={22}
-              color={color}
+              color={typeof color === 'string' ? color : focused ? Theme.colors.primaryText : Theme.colors.onSurfaceVariant}
             />
           ),
         }}
