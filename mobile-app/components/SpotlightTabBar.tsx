@@ -10,7 +10,7 @@ import React from 'react';
 import { Pressable, StyleSheet, Text, View, useColorScheme, useWindowDimensions } from 'react-native';
 import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { BlurView } from 'expo-blur';
-import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
+import type { BottomTabBarProps } from 'expo-router/tabs';
 import { Theme } from '@/constants/theme';
 
 interface Sizes {
@@ -67,7 +67,7 @@ function SpotlightTab({ focused, label, icon, onPress, onLongPress, accessibilit
   );
 }
 
-export default function SpotlightTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
+export default function SpotlightTabBar({ state, descriptors, emitter, navigateToTab }: BottomTabBarProps) {
   const { width } = useWindowDimensions();
   const scheme = useColorScheme();
   const sizes = sizesFor(width <= 480);
@@ -99,15 +99,14 @@ export default function SpotlightTabBar({ state, descriptors, navigation }: Bott
               icon={icon}
               accessibilityLabel={descriptor.options.tabBarAccessibilityLabel}
               onPress={() => {
-                const event = navigation.emit({
+                const event = emitter.emit({
                   type: 'tabPress',
                   target: route.key,
                   canPreventDefault: true,
                 });
-                if (focused) return;
-                if (!event.defaultPrevented) navigation.navigate(route.name, route.params);
+                if (!focused && !event.defaultPrevented) navigateToTab(route.key);
               }}
-              onLongPress={() => navigation.emit({ type: 'tabLongPress', target: route.key })}
+              onLongPress={() => emitter.emit({ type: 'tabLongPress', target: route.key })}
             />
           );
         })}

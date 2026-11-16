@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, InteractionManager } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Mapbox, { Camera, LineLayer, MapView, PointAnnotation, ShapeSource } from '@rnmapbox/maps';
 import { Theme } from '../constants/theme';
@@ -83,10 +83,21 @@ export default function RouteMap({
   // until after the dashboard's first paint so the tab opens instantly
   // and the map fills in a beat later — a safety app must never make
   // the user wait on the map to see SOS and location.
+  // InteractionManager was removed from react-native core in 0.88, so
+  // defer with a double requestAnimationFrame instead: the map mounts
+  // after the dashboard's first paint.
   const [mapReady, setMapReady] = useState(false);
   useEffect(() => {
-    const task = InteractionManager.runAfterInteractions(() => setMapReady(true));
-    return () => task.cancel();
+    let mounted = true;
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (mounted) setMapReady(true);
+      });
+    });
+    return () => {
+      mounted = false;
+      cancelAnimationFrame(id);
+    };
   }, []);
 
   return (

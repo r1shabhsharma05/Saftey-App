@@ -56,7 +56,7 @@ export default function ForceUpdateScreen({ minSupportedVersion, latestVersion }
 
 const styles = StyleSheet.create({
   root: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: '#0c0c1d',
     zIndex: 100,
     alignItems: 'center',

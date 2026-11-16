@@ -21,6 +21,7 @@
 // compares digits locally, and the demo's correct code never appears.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import type { TextInputInstance } from 'react-native';
 import Reanimated, {
   Easing,
   type SharedValue,
@@ -261,7 +262,7 @@ function DigitBox({
   focused: boolean;
   phase: OtpPhase;
   editable: boolean;
-  inputRef: (el: TextInput | null) => void;
+  inputRef: (el: TextInputInstance | null) => void;
   onChange: (index: number, text: string) => void;
   onKeyPress: (index: number, key: string) => void;
   onFocus: (index: number) => void;
@@ -324,7 +325,7 @@ export default function OtpCubes({
   const [burstNonce, setBurstNonce] = useState(0);
   const [stageW, setStageW] = useState(320);
 
-  const inputRefs = useRef<(TextInput | null)[]>([]);
+  const inputRefs = useRef<(TextInputInstance | null)[]>([]);
   const submittedRef = useRef(false);
   const lockedRef = useRef(false);
   const verdictRef = useRef<'ok' | 'err' | null>(null);
@@ -664,7 +665,7 @@ export default function OtpCubes({
         style={styles.stageWrap}
         onLayout={(e) => setStageW(Math.max(280, e.nativeEvent.layout.width))}
       >
-        <Reanimated.View style={[StyleSheet.absoluteFillObject, driftStyle]} pointerEvents="none">
+        <Reanimated.View style={[StyleSheet.absoluteFill, driftStyle]} pointerEvents="none">
           <Svg width="100%" height="100%">
             <Defs>
               <RadialGradient id="blobV" cx="50%" cy="50%" r="50%">
@@ -682,7 +683,7 @@ export default function OtpCubes({
         </Reanimated.View>
 
         <Reanimated.View style={[styles.stage, stageShakeStyle]}>
-          <Svg width="100%" height="100%" style={StyleSheet.absoluteFillObject}>
+          <Svg width="100%" height="100%" style={StyleSheet.absoluteFill}>
             <Defs>
               <RadialGradient id="okGlow" cx="50%" cy="50%" r="50%">
                 <Stop offset="0" stopColor={OK} stopOpacity="0.5" />
