@@ -18,7 +18,7 @@ export default function ScreenBackground({ children, accent = Theme.colors.prima
     <View style={styles.container}>
       <LinearGradient
         colors={[Theme.colors.surfaceDim, Theme.colors.surface]}
-        style={StyleSheet.absoluteFillObject}
+        style={StyleSheet.absoluteFill}
       />
       <View style={[styles.orb, styles.orbTop, { backgroundColor: accent + '1f' }]} />
       <View style={[styles.orb, styles.orbBottom, { backgroundColor: Theme.colors.secondary + '12' }]} />
