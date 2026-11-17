@@ -89,11 +89,14 @@ test("toPublic strips history and internal fields", () => {
     "retry",
     "sent",
     "state",
+    "triggerSource",
     "updatedAt",
   ]);
   assert.ok(!("history" in pub));
   assert.equal(pub.lat, null);
   assert.equal(pub.locationAt, null);
+  // D25/D28: alerts created before the field existed read as button.
+  assert.equal(pub.triggerSource, "button");
 });
 
 test("toPublic carries the live position once set", async () => {

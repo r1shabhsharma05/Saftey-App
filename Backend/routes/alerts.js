@@ -112,6 +112,14 @@ router.post("/alert", sosLimiter, requireUser, async (req, res) => {
     }))
     .filter((c) => c.name || c.phone || c.pushToken);
 
+  // D25/D28 trigger source: which input fired this SOS — button,
+  // voice ("help help"), shake, or duress PIN. Allowlisted, never
+  // trusted blindly: an unknown value defaults to button, never 400s
+  // an SOS. Recorded on the alert + audit meta (D29 ML feature
+  // logging reads it); a bad label must never block a real emergency.
+  const TRIGGER_SOURCES = new Set(["button", "voice", "shake", "duress"]);
+  const triggerSource = TRIGGER_SOURCES.has(req.body.triggerSource) ? req.body.triggerSource : "button";
+
   // D23 strikes: an IP with 3 abuse strikes in 24 h is blocked from
   // new SOS for 1 h — refused loudly (403 + audit line), never
   // silently dropped. No alert record is created for a blocked
@@ -137,6 +145,8 @@ router.post("/alert", sosLimiter, requireUser, async (req, res) => {
     // Run-3 fix round 2 (3.1): owner always from the verified JWT —
     // requireUser guarantees req.user, so ownerId is never null.
     alert = createAlert({ contactsCount: contacts.length, lat: latNum, lng: lngNum, ownerId: req.user.id });
+    // D25/D28: which input fired this SOS (see the allowlist above).
+    alert.triggerSource = triggerSource;
     // H3: bind ACKs to the contacts this SOS actually went to — only
     // their identifiers count toward the 2-ack stop. One-way hashes
     // of the sanitized phones/tokens (the same values the message
@@ -145,7 +155,7 @@ router.post("/alert", sosLimiter, requireUser, async (req, res) => {
     audit("alert.created", {
       actorKey: req.header("x-api-key"),
       ip: req.ip,
-      meta: { alertId: alert.id, contacts: contacts.length },
+      meta: { alertId: alert.id, contacts: contacts.length, trigger: triggerSource },
     });
     transition(alert, "dispatching", "telegram fan-out started");
     alertStore.save(alert);

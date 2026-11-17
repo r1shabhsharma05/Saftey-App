@@ -16,6 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
+import { Accelerometer } from 'expo-sensors';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { supabase } from '../../utils/supabase';
 import { ensureProfile } from '../../utils/auth';
@@ -50,6 +51,8 @@ import {
   type Journey,
 } from '../../utils/journey';
 import { decideBatteryAlert, buildQueuedBatteryAlertPayload, BATTERY_LOW_THRESHOLD, BATTERY_FINAL_THRESHOLD, BATTERY_REARM_LEVEL } from '../../utils/batteryAlerts';
+import { createShakeDetector } from '../../utils/shakeTrigger';
+import type { SosTriggerSource } from '../../utils/voiceTrigger';
 import Card from '../../components/ui/Card';
 import StatusPill from '../../components/ui/StatusPill';
 import SectionHeader from '../../components/ui/SectionHeader';
@@ -114,6 +117,10 @@ export default function TacticalDashboard() {
   };
   // Double-tap guard for SOS (see sendSOSAlert).
   const sosInFlightRef = useRef(false);
+  // D28 shake detector: kept in a ref so re-subscribing the
+  // accelerometer (on every location fix, see below) never resets
+  // the peaks counted so far mid-shake.
+  const shakeDetectorRef = useRef(createShakeDetector());
   // Last live-tracking update sent to the backend (F2): position +
   // timestamp, so updates go out on movement, not on every GPS tick.
   const lastTrackRef = useRef<{ lat: number; lng: number; at: number } | null>(null);
@@ -1222,7 +1229,7 @@ export default function TacticalDashboard() {
     Linking.openURL(`sms:?&body=${encodeURIComponent(text)}`).catch(() => {});
   };
 
-  const sendSOSAlert = async () => {
+  const sendSOSAlert = async (triggerSource: SosTriggerSource = 'button') => {
     // In-flight guard: a double-tap (or a tap during the press
     // animation) used to launch concurrent POSTs — the duplicate could
     // hit the backend rate limiter and report failure for an SOS that
@@ -1256,6 +1263,9 @@ export default function TacticalDashboard() {
       status: isMoving ? 'Moving' : 'Stationary',
       nearestStation,
       contacts: sosContacts,
+      // D25/D28: which input fired this SOS — the server allowlists
+      // it and records it on the alert (audit + D29 feature logging).
+      triggerSource,
     };
 
     try {
@@ -1314,6 +1324,34 @@ export default function TacticalDashboard() {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     sendSOSAlert();
   };
+
+  // D28 shake trigger (swapped into D25 per A7): three sharp shakes
+  // while this tab is mounted fire the same SOS path as the button.
+  // The listener re-subscribes on every location fix so its closure
+  // always carries the latest coordinates; an SOS already live (or
+  // in flight, inside sendSOSAlert) never double-fires. No
+  // accelerometer on the device → the SOS button is unaffected.
+  useEffect(() => {
+    let subscription: { remove: () => void } | null = null;
+    let cancelled = false;
+    Accelerometer.isAvailableAsync()
+      .then((available) => {
+        if (!available || cancelled) return;
+        Accelerometer.setUpdateInterval(100);
+        subscription = Accelerometer.addListener(({ x, y, z }) => {
+          if (activeAlertId) return;
+          if (shakeDetectorRef.current.feed(x, y, z)) void sendSOSAlert('shake');
+        });
+      })
+      .catch(() => {
+        /* no accelerometer — button SOS unaffected */
+      });
+    return () => {
+      cancelled = true;
+      subscription?.remove();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAlertId, lat, lng]);
 
   const handleShareLocation = async () => {
     if (lat === 'Loading...') {

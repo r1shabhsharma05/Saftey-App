@@ -90,6 +90,9 @@ const fromRow = (row) => ({
 const toPublic = (alert) => ({
   id: alert.id,
   state: alert.state,
+  // D25/D28: which input fired this SOS (button by default — alerts
+  // created before this field existed carry no value).
+  triggerSource: alert.triggerSource ?? "button",
   sent: alert.sent,
   failed: alert.failed,
   contacts: alert.contacts,
