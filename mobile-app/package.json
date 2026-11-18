@@ -8,7 +8,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "node scripts/check-battery-queue-size.mjs && node scripts/check-voice-trigger.mjs && node scripts/check-shake-trigger.mjs",
+    "test": "node scripts/check-battery-queue-size.mjs && node scripts/check-voice-trigger.mjs && node scripts/check-shake-trigger.mjs && node scripts/check-evidence-chunks.mjs",
     "postinstall": "patch-package"
   },
   "dependencies": {
@@ -24,8 +24,10 @@
     "@supabase/supabase-js": "^2.101.1",
     "d3-geo": "^3.1.2",
     "expo": "~58.0.25",
+    "expo-audio": "~58.0.12",
     "expo-battery": "~58.0.4",
     "expo-blur": "~58.0.6",
+    "expo-camera": "~58.0.14",
     "expo-constants": "~58.0.16",
     "expo-contacts": "~58.0.11",
     "expo-font": "~58.0.12",

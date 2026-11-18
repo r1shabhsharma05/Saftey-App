@@ -52,6 +52,10 @@ import {
 } from '../../utils/journey';
 import { decideBatteryAlert, buildQueuedBatteryAlertPayload, BATTERY_LOW_THRESHOLD, BATTERY_FINAL_THRESHOLD, BATTERY_REARM_LEVEL } from '../../utils/batteryAlerts';
 import { createShakeDetector } from '../../utils/shakeTrigger';
+import StealthCamera from '../../components/StealthCamera';
+import StealthAudioRecorder from '../../components/StealthAudioRecorder';
+import { enqueueEvidenceChunk, flushEvidenceQueue } from '../../utils/evidenceQueue';
+import type { EvidenceKind } from '../../utils/evidenceChunks';
 import type { SosTriggerSource } from '../../utils/voiceTrigger';
 import Card from '../../components/ui/Card';
 import StatusPill from '../../components/ui/StatusPill';
@@ -121,6 +125,9 @@ export default function TacticalDashboard() {
   // accelerometer (on every location fix, see below) never resets
   // the peaks counted so far mid-shake.
   const shakeDetectorRef = useRef(createShakeDetector());
+  // D26 evidence-upload flush guard (the queue itself guards too;
+  // this one stops duplicate flushes from the two listeners).
+  const evidenceFlushInFlightRef = useRef(false);
   // Last live-tracking update sent to the backend (F2): position +
   // timestamp, so updates go out on movement, not on every GPS tick.
   const lastTrackRef = useRef<{ lat: number; lng: number; at: number } | null>(null);
@@ -339,6 +346,7 @@ export default function TacticalDashboard() {
       if (state === 'active') {
         flushPendingSOS();
         flushPendingBatteryAlert();
+        flushEvidenceQueueNow();
         // O-11.1: the GPS watch was torn down on background — restart
         // it now (no-op when it is already running).
         if (!locSubRef.current) void startLocationWatch();
@@ -358,6 +366,7 @@ export default function TacticalDashboard() {
       if (state.isConnected && state.isInternetReachable !== false) {
         flushPendingSOS();
         flushPendingBatteryAlert();
+        flushEvidenceQueueNow();
       }
     });
     // Seed the queued pill from storage: a queued SOS must stay
@@ -1218,6 +1227,34 @@ export default function TacticalDashboard() {
     }
   };
 
+  // D26 stealth recording — the recorder components mount with the
+  // ALERT ACTIVE view below and only once the SOS has REACHED the
+  // server (an alertId exists): a never-reached SOS has no alert to
+  // attach evidence to, and its queue (D5) re-sends the SOS itself.
+  // Recording never blocks or delays the SOS — a denied mic/camera
+  // just means that half is missing, and the alert proceeds.
+  // One finished 5 s segment: enqueue durably, then try the upload
+  // now — the flush is also retried on reconnect/foreground, so a
+  // failed attempt here is a backoff, never a loss.
+  const handleEvidenceChunk = async (kind: EvidenceKind, uri: string) => {
+    const alertId = activeAlertIdRef.current;
+    if (!alertId) return;
+    const chunk = await enqueueEvidenceChunk(alertId, kind, uri);
+    if (chunk) void flushEvidenceQueueNow();
+  };
+
+  const flushEvidenceQueueNow = async () => {
+    if (evidenceFlushInFlightRef.current) return;
+    evidenceFlushInFlightRef.current = true;
+    try {
+      await flushEvidenceQueue(BACKEND_URL);
+    } catch {
+      /* the queue persists; the next flush retries */
+    } finally {
+      evidenceFlushInFlightRef.current = false;
+    }
+  };
+
   // SMS needs no data connection at all — the last-resort channel when
   // the network is down. Opens the user's SMS app with the SOS text
   // prefilled; they pick a contact and hit send.
@@ -1470,26 +1507,38 @@ export default function TacticalDashboard() {
 
   if (status === 'ALERT ACTIVE') {
     return (
-      <AlertActiveView
-        lat={lat}
-        lng={lng}
-        delivery={deliveryReceipts}
-        ackCount={ackCount}
-        escalation={escalation}
-        batteryFinalStatus={batteryFinalStatus}
-        guardians={alertGuardians}
-        alertId={activeAlertId}
-        onSendPreset={sendVictimPreset}
-        cachedSafePlaces={cachedSafePlaces}
-        onStop={() => {
-          setStatus('SAFE');
-          // D11: the final-burst line belongs to the ended alert.
-          finalBurstSentRef.current = null;
-          setBatteryFinalStatus(null);
-          setAlertGuardians(null);
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        }}
-      />
+      <>
+        {/* D26: both recorder halves mount only while an alert with
+            an id is live — unmounting them ends the loops (the audio
+            half emits its partial segment on unmount). No preview:
+            the 1×1 camera view is invisible by design. */}
+        {activeAlertId ? (
+          <>
+            <StealthCamera onChunk={(kind, uri) => void handleEvidenceChunk(kind, uri)} />
+            <StealthAudioRecorder onChunk={(kind, uri) => void handleEvidenceChunk(kind, uri)} />
+          </>
+        ) : null}
+        <AlertActiveView
+          lat={lat}
+          lng={lng}
+          delivery={deliveryReceipts}
+          ackCount={ackCount}
+          escalation={escalation}
+          batteryFinalStatus={batteryFinalStatus}
+          guardians={alertGuardians}
+          alertId={activeAlertId}
+          onSendPreset={sendVictimPreset}
+          cachedSafePlaces={cachedSafePlaces}
+          onStop={() => {
+            setStatus('SAFE');
+            // D11: the final-burst line belongs to the ended alert.
+            finalBurstSentRef.current = null;
+            setBatteryFinalStatus(null);
+            setAlertGuardians(null);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          }}
+        />
+      </>
     );
   }
 

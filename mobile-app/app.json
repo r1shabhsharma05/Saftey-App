@@ -59,7 +59,20 @@
         }
       ],
       "expo-secure-store",
-      "@rnmapbox/maps"
+      "@rnmapbox/maps",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "SafeLife records audio evidence during an active SOS alert."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "SafeLife records video evidence during an active SOS alert.",
+          "recordAudioAndroid": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
