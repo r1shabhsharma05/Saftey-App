@@ -23,6 +23,7 @@ import StatusPill from './ui/StatusPill';
 import SectionHeader from './ui/SectionHeader';
 import SafeHubCard from './ui/SafeHubCard';
 import PoliceStationCard from './ui/PoliceStationCard';
+import EvidenceVault from './EvidenceVault';
 
 interface Props {
   onStop: () => void;
@@ -367,6 +368,12 @@ export default function AlertActiveView({ onStop, lat, lng, cachedSafePlaces = [
             />
           </Card>
         </View>
+
+        {/* D27 Evidence Vault — server-verified hash chain for this
+            alert's recorded evidence + exportable integrity proof.
+            Renders only when the alert has an id (same gate as the
+            D26 recorders). */}
+        {alertId ? <EvidenceVault alertId={alertId} /> : null}
 
         {/* Stop */}
         <View style={styles.stopWrap}>

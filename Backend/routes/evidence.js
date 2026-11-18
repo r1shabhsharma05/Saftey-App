@@ -20,6 +20,7 @@ const { isFiniteNumber, toNumber, sanitizeText } = require("../lib/validate");
 const { audit } = require("../services/audit");
 const alertStore = require("../services/alertStore");
 const evidenceStore = require("../services/evidenceStore");
+const evidenceVault = require("../services/evidenceVault");
 
 const router = express.Router();
 
@@ -94,7 +95,34 @@ router.post("/alert/:id/evidence/chunks", trackingLimiter, requireUser, async (r
 router.get("/alert/:id/evidence/chunks", trackingLimiter, requireUser, async (req, res) => {
   const alert = await loadOwnedAlert(req, res);
   if (!alert) return;
-  return res.status(200).json({ success: true, chunks: evidenceStore.list(alert.id) });
+  return res.status(200).json({ success: true, chunks: await evidenceStore.list(alert.id) });
+});
+
+// 📼 Evidence Vault — SafeLife 2.0 Day 27 (plan §6 D27, §3 F5).
+//
+// GET /alert/:id/evidence/vault — verify every registered chunk:
+// the server downloads each chunk's bytes from the private `evidence`
+// bucket, SHA-256s them, and hash-chains them in vault order. The
+// response carries the per-chunk hashes, the chain, and the root
+// hash; a chunk whose bytes are missing fails the vault (ok:false)
+// instead of being skipped. Same guard matrix as the registry
+// (JWT + owner-only + trackingLimiter).
+router.get("/alert/:id/evidence/vault", trackingLimiter, requireUser, async (req, res) => {
+  const alert = await loadOwnedAlert(req, res);
+  if (!alert) return;
+  const vault = await evidenceVault.verifyAlert(alert.id);
+  return res.status(200).json({ success: true, vault });
+});
+
+// GET /alert/:id/evidence/vault/export — the shareable integrity
+// proof: everything a third party needs to re-verify the evidence
+// independently (re-download each chunk by path, re-hash, re-chain,
+// compare rootHash). JSON, so it can be shared as a file or text.
+router.get("/alert/:id/evidence/vault/export", trackingLimiter, requireUser, async (req, res) => {
+  const alert = await loadOwnedAlert(req, res);
+  if (!alert) return;
+  const vault = await evidenceVault.verifyAlert(alert.id);
+  return res.status(200).json({ success: true, proof: evidenceVault.buildProof(vault) });
 });
 
 module.exports = router;

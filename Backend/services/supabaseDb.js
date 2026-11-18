@@ -217,6 +217,40 @@ const dbConditionalUpdate = async (table, filters, patch) => {
   }
 };
 
+// D27: list every row matching one column, in a caller-chosen order
+// (evidenceStore's DB fallback: all chunks for one alert, vault
+// order). Table/column/order are bare identifiers — same injection
+// rule as dbSelectBy. The order value is "col.asc|desc" pairs joined
+// by commas; each column is allowlisted, each direction is asc/desc.
+// Never throws.
+const dbSelectMany = async (table, column, value, order = "") => {
+  if (!/^[a-z_]+$/.test(table || "") || !/^[a-z_]+$/.test(column || "")) {
+    return { ok: false, reason: "invalid-table-or-column" };
+  }
+  const orderParts = order
+    ? order.split(",").map((p) => {
+        const [col, dir] = p.split(".");
+        return /^[a-z_]+$/.test(col || "") && (dir === "asc" || dir === "desc") ? `${col}.${dir}` : null;
+      })
+    : [];
+  if (orderParts.includes(null)) return { ok: false, reason: "invalid-order" };
+  if (!dbStatus().configured) return { ok: false, reason: "not_configured" };
+  const { url } = getConfig();
+  const orderQuery = orderParts.length ? `&order=${orderParts.join(",")}` : "";
+  try {
+    const { data } = await transport({
+      method: "GET",
+      url: `${url}/rest/v1/${table}?${column}=eq.${encodeURIComponent(value)}&select=*${orderQuery}`,
+      headers: authHeaders(),
+    });
+    if (!Array.isArray(data)) return { ok: false, reason: "unexpected-response" };
+    return { ok: true, rows: data };
+  } catch (err) {
+    console.log(`❌ Supabase select ${table} failed:`, err.message);
+    return { ok: false, reason: err.message };
+  }
+};
+
 module.exports = {
   dbStatus,
   dbUpsert,
@@ -226,6 +260,7 @@ module.exports = {
   dbListRecent,
   dbDelete,
   dbConditionalUpdate,
+  dbSelectMany,
   // Test seam only — lets tests drive the writer without network.
   // Pass null to restore the production transport.
   _setDbTransport: (fn) => {
