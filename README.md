@@ -102,6 +102,7 @@ tests, then pushes.
 | 12 | Nov 4 | Phase 2 chaos test — all four channels end-to-end, one disabled | `97a87cc` |
 | 13 | Nov 5 | Upstash safe-places cache tier + open-now filter + scoring annotations — **154/154 tests** | `32a183b` |
 | 14 | Nov 6 | OSRM walking-route proxy + in-app route map to nearest-best safe place — **162/162 tests** | `93db487` |
+| 28 | Nov 20 | Wake-word listener — `expo-speech-recognition` + config plugin, "help help" detector wired to SOS (runs in the release build; Expo Go reports unavailable honestly) | `cfd8e06` |
 | **30** | **Nov 22** | **Release APK + phone test + API-secret activation** | — |
 
 Days 15–29 continue the plan (safety scoring, journey live-tracking, hardening), then one
