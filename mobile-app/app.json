@@ -72,6 +72,13 @@
           "cameraPermission": "SafeLife records video evidence during an active SOS alert.",
           "recordAudioAndroid": false
         }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "SafeLife listens for \"help help\" to trigger an SOS hands-free.",
+          "speechRecognitionPermission": "SafeLife uses speech recognition to detect the \"help help\" SOS trigger."
+        }
       ]
     ],
     "experiments": {

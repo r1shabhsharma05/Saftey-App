@@ -57,6 +57,7 @@ import StealthAudioRecorder from '../../components/StealthAudioRecorder';
 import { enqueueEvidenceChunk, flushEvidenceQueue } from '../../utils/evidenceQueue';
 import type { EvidenceKind } from '../../utils/evidenceChunks';
 import type { SosTriggerSource } from '../../utils/voiceTrigger';
+import { startVoiceListener, type VoiceListenerStatus } from '../../utils/voiceListener';
 import Card from '../../components/ui/Card';
 import StatusPill from '../../components/ui/StatusPill';
 import SectionHeader from '../../components/ui/SectionHeader';
@@ -1362,6 +1363,31 @@ export default function TacticalDashboard() {
     sendSOSAlert();
   };
 
+  // D28 voice trigger: latest sendSOSAlert in a ref so the speech
+  // listener subscribes once (not per location fix) yet always
+  // fires with fresh coordinates. Status is shown honestly — in
+  // Expo Go the native recognizer is absent ('unavailable').
+  const sendSOSRef = useRef(sendSOSAlert);
+  sendSOSRef.current = sendSOSAlert;
+  const [voiceStatus, setVoiceStatus] = useState<VoiceListenerStatus>('stopped');
+
+  // D28 wake-word listener: "help help" while this tab is mounted
+  // fires the same SOS path as the button (triggerSource 'voice').
+  // Stops while an alert is live (evidence recording owns the mic;
+  // sendSOSAlert's in-flight guard is the second lock). No native
+  // recognizer (Expo Go) → status 'unavailable', button unaffected.
+  useEffect(() => {
+    if (activeAlertId) {
+      setVoiceStatus('stopped');
+      return;
+    }
+    const stop = startVoiceListener({
+      onFired: () => void sendSOSRef.current('voice'),
+      onStatus: setVoiceStatus,
+    });
+    return stop;
+  }, [activeAlertId]);
+
   // D28 shake trigger (swapped into D25 per A7): three sharp shakes
   // while this tab is mounted fire the same SOS path as the button.
   // The listener re-subscribes on every location fix so its closure
@@ -1637,6 +1663,19 @@ export default function TacticalDashboard() {
             </TouchableOpacity>
           </Reanimated.View>
           <Text style={styles.sosButtonSub}>Tap for SOS</Text>
+          {/* D28 voice trigger status — honest states only: the
+              native recognizer exists in the release build, not
+              in Expo Go, and the line says so instead of faking
+              a listening state. */}
+          <Text style={styles.voiceStatusText}>
+            {voiceStatus === 'listening'
+              ? 'Voice trigger on — say "help help"'
+              : voiceStatus === 'denied'
+                ? 'Voice trigger off — microphone permission needed'
+                : voiceStatus === 'unavailable'
+                  ? 'Voice trigger needs the installed app build'
+                  : 'Voice trigger paused'}
+          </Text>
         </View>
 
         {/* Live location card */}
@@ -1899,6 +1938,7 @@ const styles = StyleSheet.create({
   sosTouch: { flex: 1, width: '100%', alignItems: 'center', justifyContent: 'center', borderRadius: 110 },
   sosButtonText: { fontSize: 44, fontWeight: '800', color: '#FFFFFF' },
   sosButtonSub: { ...Theme.type.footnote, color: Theme.colors.onSurfaceVariant },
+  voiceStatusText: { ...Theme.type.footnote, color: Theme.colors.onSurfaceVariant, marginTop: 2 },
   locationCard: { padding: 18, marginBottom: 18 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, gap: 12 },
   cardTitleBox: { flex: 1 },

@@ -15,13 +15,11 @@
 //   outburst (the 10-second cancel window + D23 strikes are the
 //   backstop for anything that still slips through).
 //
-// shortcut: no live listener ships yet — every on-device speech
-// recognizer for managed Expo (expo-speech-recognition,
-// @react-native-voice/voice) needs a development build (custom native
-// code, does not run in Expo Go), and an intermediate build is frozen
-// until the Day-30 release (A5). The detector + trigger plumbing are
-// real and tested; the listener lands with the D30 build (A7 swap:
-// D28, 2026-11-20, becomes the wake-word retry day).
+// D28: the live listener now ships (utils/voiceListener.ts,
+// expo-speech-recognition + config plugin). It still only *runs*
+// in a development/release build — in Expo Go the native module is
+// absent and the listener reports 'unavailable' honestly. The
+// Day-30 release build is the first build that can hear "help help".
 export type SosTriggerSource = 'button' | 'voice' | 'shake' | 'duress';
 
 // Two "help"s must land inside this window to fire.
