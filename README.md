@@ -103,6 +103,7 @@ tests, then pushes.
 | 13 | Nov 5 | Upstash safe-places cache tier + open-now filter + scoring annotations — **154/154 tests** | `32a183b` |
 | 14 | Nov 6 | OSRM walking-route proxy + in-app route map to nearest-best safe place — **162/162 tests** | `93db487` |
 | 28 | Nov 20 | Wake-word listener — `expo-speech-recognition` + config plugin, "help help" detector wired to SOS (runs in the release build; Expo Go reports unavailable honestly) | `cfd8e06` |
+| 29 | Nov 21 | ML v1 risk scoring (`POST /risk-score`, rules-v1 over a fixed-order feature vector — model-ready, incident-density honestly unknown until a real source exists) + anonymised feature logging (SOS/journey/risk events, ~1.1 km cell only, no user/alert ids) + full security re-audit (85-check re-score, OSV dependency scan clean, local load test) — **526/526 tests** | `4ac76d7` |
 | **30** | **Nov 22** | **Release APK + phone test + API-secret activation** | — |
 
 Days 15–29 continue the plan (safety scoring, journey live-tracking, hardening), then one
