@@ -19,6 +19,7 @@ const authRoutes = require("./routes/auth");
 const adminRoutes = require("./routes/admin");
 const voiceRoutes = require("./routes/voice");
 const evidenceRoutes = require("./routes/evidence");
+const riskRoutes = require("./routes/risk");
 
 const app = express();
 
@@ -76,6 +77,7 @@ app.use(authRoutes);
 app.use(adminRoutes);
 app.use(voiceRoutes);
 app.use(evidenceRoutes);
+app.use(riskRoutes);
 
 // 🚫 404 — every response from this API is JSON. Express's default 404
 // is an HTML page ("Cannot POST /…"), which leaks framework details

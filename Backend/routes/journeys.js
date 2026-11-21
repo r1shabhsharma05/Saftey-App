@@ -52,6 +52,7 @@ const {
 const journeyStore = require("../services/journeyStore");
 const { journeyToken, verifyJourneyToken } = require("../services/journeyView");
 const { audit } = require("../services/audit");
+const { logFeatureEvent } = require("../services/featureLog");
 
 const router = express.Router();
 
@@ -162,6 +163,19 @@ router.post("/journeys", trackingLimiter, requireUser, async (req, res) => {
     actorKey: req.header("x-api-key"),
     ip: req.ip,
     meta: { journeyId: journey.id },
+  });
+  // D29 ML v1: anonymised feature row for this journey (plan F7).
+  // Fire-and-forget; route shape enters only as a point COUNT, never
+  // as geometry, and no user/journey id is stored.
+  logFeatureEvent({
+    kind: "journey",
+    lat: toNumber(originLat),
+    lng: toNumber(originLng),
+    input: { localHour: req.body.localHour, tz: req.body.tz },
+    extra: {
+      contactsCount: contacts.length,
+      routePoints: Array.isArray(route) ? route.length : 0,
+    },
   });
   // D17: the overdue timer — one QStash job, firing at ETA + 5 min
   // grace. The job body carries the contacts; the callback re-checks

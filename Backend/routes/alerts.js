@@ -41,6 +41,7 @@ const {
   scheduleEscalation,
 } = require("../services/escalation");
 const { audit } = require("../services/audit");
+const { logFeatureEvent } = require("../services/featureLog");
 const { createAlert, transition, setAlertLocation, recordAck, countingAcks, ackKeyFor } = require("../services/alertLifecycle");
 const { viewToken, verifyViewToken } = require("../services/alertView");
 const alertStore = require("../services/alertStore");
@@ -131,6 +132,17 @@ router.post("/alert", sosLimiter, requireUser, async (req, res) => {
       error: "SOS temporarily blocked — too many abuse strikes. Try again later.",
     });
   }
+
+  // D29 ML v1: anonymised feature row for this SOS (plan F7).
+  // Fire-and-forget, never awaited, carries no user/alert id — a
+  // logging failure must never delay or fail an emergency.
+  logFeatureEvent({
+    kind: "sos",
+    lat: latNum,
+    lng: lngNum,
+    input: { localHour: req.body.localHour, tz: req.body.tz },
+    extra: { triggerSource, contactsCount: contacts.length },
+  });
 
   // Declared outside try so the catch path can mark the alert failed
   // instead of leaving it stuck in "dispatching" when dispatch throws.
