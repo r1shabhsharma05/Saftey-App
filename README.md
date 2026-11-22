@@ -83,7 +83,9 @@ Every number below was verified live against this repo (see
 ## 🚀 SafeLife 2.0 — What Shipped (30-Day Program)
 
 SafeLife is being rebuilt in a 30-day program (Day 1 = 2026-10-24, Day 30 = **2026-11-22** —
-release APK + phone test). Days 1–14 are done; every day ships one unit end-to-end with
+release APK + phone test). Days 1–29 are done and verified; Day 30's final verification
+(full suite + live probes + security re-check) is done — the release APK, phone test and
+API-secret activation are the owner's final steps. Every day ships one unit end-to-end with
 tests, then pushes.
 
 | Day | Date | What shipped | Commit |
@@ -104,10 +106,10 @@ tests, then pushes.
 | 14 | Nov 6 | OSRM walking-route proxy + in-app route map to nearest-best safe place — **162/162 tests** | `93db487` |
 | 28 | Nov 20 | Wake-word listener — `expo-speech-recognition` + config plugin, "help help" detector wired to SOS (runs in the release build; Expo Go reports unavailable honestly) | `cfd8e06` |
 | 29 | Nov 21 | ML v1 risk scoring (`POST /risk-score`, rules-v1 over a fixed-order feature vector — model-ready, incident-density honestly unknown until a real source exists) + anonymised feature logging (SOS/journey/risk events, ~1.1 km cell only, no user/alert ids) + full security re-audit (85-check re-score, OSV dependency scan clean, local load test) — **526/526 tests** | `4ac76d7` |
-| **30** | **Nov 22** | **Release APK + phone test + API-secret activation** | — |
+| **30** | **Nov 22** | **Final verification — full suite 526/526, mobile `tsc` + expo export clean, live probes (health, `/risk-score`, `/alert` 401-no-auth), security re-check. Release APK + phone test + API-secret activation pending owner dispatch** | — |
 
-Days 15–29 continue the plan (safety scoring, journey live-tracking, hardening), then one
-final release APK — **no interim APKs**.
+Days 15–29 shipped as planned (safety scoring, journey live-tracking, guardian network,
+evidence vault, wake-word listener, ML v1). One final release APK — **no interim APKs**.
 
 ---
 
@@ -449,15 +451,16 @@ This section is deliberately honest — a safety app must not oversell itself.
   D10 migration. `/health` reports `qstash: false`, `voice: false`.
 - **SMS / WhatsApp / push** — adapters shipped and test-covered; keys, business
   verification and Firebase setup are still pending. `/health` reports all three `false`.
-- **Supabase Postgres mirror** — project paused 2026-11-01; migrations + env vars pending.
-  Until they land, alert records live in instance memory and audit stays stdout-only.
+- **Supabase Postgres mirror** — all migrations applied and verified 2026-11-19 (columns +
+  RLS on 6 tables; `feature_events` applied 2026-11-21). Vercel `SUPABASE_URL` /
+  `SUPABASE_SERVICE_ROLE_KEY` presence still to be confirmed by the owner.
 - **Upstash shared cache tier** — dormant until the Upstash vars land in Vercel; the
   in-memory cache tier is active.
 - **API-key enforcement** — currently fail-open in production (`apiKeyEnforced: false`);
   activates on Day 30 with the coordinated app release.
 - **Safe places, live** — `GET /safe-places` currently returns the honest
   `502 {"error": "Safe places lookup failed"}` from Vercel: all four Overpass mirrors
-  are failing from Vercel (3rd day running, not a code regression — neither the query
+  are failing from Vercel (still failing on the 2026-11-22 probe, not a code regression — neither the query
   nor the mirrors changed). The app falls back to querying Overpass directly from the
   phone. The cache header (`X-SafePlaces-Cache`) and `distanceKm`/`openNow` annotations
   will be re-probed once the mirrors answer.
@@ -469,8 +472,10 @@ This section is deliberately honest — a safety app must not oversell itself.
 
 ## 🗺️ Roadmap
 
-- **Days 15–29** — Safety scoring v1, journey live-tracking, hardening, final polish
-- **Day 30 (2026-11-22)** — Release APK + phone test + `API_SECRET` activation
+- **Days 15–29** — Safety scoring v1, journey live-tracking, guardian network, evidence
+  vault, wake-word listener, ML v1 — done
+- **Day 30 (2026-11-22)** — Final verification done; release APK + phone test +
+  `API_SECRET` activation pending owner dispatch
 - After release — SMS key, WhatsApp verification, Firebase push, Bolna voice, Supabase
   unpause + migrations, in that order of owner action
 
@@ -494,7 +499,7 @@ APK, package `com.rishabh.safelifeai`).
 ## 🤝 Contributing
 
 Issues and PRs are welcome. If you're changing the alert flow, please test against
-`POST /test-alert` first, run `npm test` in `Backend/` (162 tests — keep them green),
+`POST /test-alert` first, run `npm test` in `Backend/` (526 tests — keep them green),
 and never commit real secrets — use the `.env.example` templates.
 
 ---
