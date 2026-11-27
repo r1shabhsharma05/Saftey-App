@@ -107,6 +107,7 @@ tests, then pushes.
 | 28 | Nov 20 | Wake-word listener — `expo-speech-recognition` + config plugin, "help help" detector wired to SOS (runs in the release build; Expo Go reports unavailable honestly) | `cfd8e06` |
 | 29 | Nov 21 | ML v1 risk scoring (`POST /risk-score`, rules-v1 over a fixed-order feature vector — model-ready, incident-density honestly unknown until a real source exists) + anonymised feature logging (SOS/journey/risk events, ~1.1 km cell only, no user/alert ids) + full security re-audit (85-check re-score, OSV dependency scan clean, local load test) — **526/526 tests** | `4ac76d7` |
 | **30** | **Nov 22** | **Final verification — full suite 526/526, mobile `tsc` + expo export clean, live probes (health, `/risk-score`, `/alert` 401-no-auth), security re-check. Release APK + phone test + API-secret activation pending owner dispatch** | — |
+| — | Nov 27 | H5 two-account test follow-up: account deletion fixed — Supabase Storage returns 400 (not 404) for a missing avatar object, so `DELETE /auth/account` answered 502 `delete-partial` for any user who never uploaded an avatar; 400 now counts as "already gone" — **527/527 tests** | — |
 
 Days 15–29 shipped as planned (safety scoring, journey live-tracking, guardian network,
 evidence vault, wake-word listener, ML v1). One final release APK — **no interim APKs**.
@@ -499,7 +500,7 @@ APK, package `com.rishabh.safelifeai`).
 ## 🤝 Contributing
 
 Issues and PRs are welcome. If you're changing the alert flow, please test against
-`POST /test-alert` first, run `npm test` in `Backend/` (526 tests — keep them green),
+`POST /test-alert` first, run `npm test` in `Backend/` (527 tests — keep them green),
 and never commit real secrets — use the `.env.example` templates.
 
 ---

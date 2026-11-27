@@ -206,7 +206,10 @@ const recoverPassword = async (email) => {
 };
 
 // Removes the avatar object from the private avatars bucket
-// (account deletion, 12.3). A missing object is still a success.
+// (account deletion, 12.3). A missing object is still a success —
+// Supabase Storage answers 400 (not 404) for a nonexistent object,
+// so 400 must count as "already gone" or no user without an avatar
+// can ever delete their account (H5 follow-up, 27 Nov).
 const deleteAvatarObject = async (userId) => {
   const { url, serviceKey } = getConfig();
   if (!url || !serviceKey) return { ok: false, reason: "not_configured" };
@@ -217,7 +220,7 @@ const deleteAvatarObject = async (userId) => {
       url: `${url}/storage/v1/object/avatars/${encodeURIComponent(userId)}/avatar.jpg`,
       headers: authHeaders(serviceKey, serviceKey),
     });
-    return status === 200 || status === 204 || status === 404
+    return status === 200 || status === 204 || status === 404 || status === 400
       ? { ok: true }
       : { ok: false, reason: `avatar-delete-${status}` };
   } catch (err) {

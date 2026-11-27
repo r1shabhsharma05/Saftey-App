@@ -318,6 +318,29 @@ test("DELETE /auth/account: JWT → deletes auth user + wipes rows + avatar", as
   assert.ok(authCalls.some((c) => c.url.includes("/storage/v1/object/avatars/user-1/avatar.jpg")));
 });
 
+// H5 follow-up (27 Nov): Supabase Storage answers 400 — not 404 —
+// when the avatar object does not exist, so a user who never
+// uploaded an avatar must still delete their account.
+test("DELETE /auth/account: avatar DELETE 400 (no avatar) → still 200", async () => {
+  profileRows = [{ ...ROW, phone: "+919876543210" }];
+  _setAuthTransport(async (call) => {
+    authCalls.push(call);
+    if (call.url.includes("/auth/v1/user")) {
+      return { status: 200, data: { id: "user-1", email: "ramesh@example.com", last_sign_in_at: new Date().toISOString() } };
+    }
+    if (call.url.includes("/auth/v1/admin/users/user-1")) {
+      return { status: 204, data: null };
+    }
+    if (call.url.includes("/storage/v1/object/avatars/user-1/avatar.jpg")) {
+      return { status: 400, data: null };
+    }
+    return { status: 200, data: {} };
+  });
+  const res = await del("/auth/account", { ...PLAIN, Authorization: "Bearer good-jwt" });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.success, true);
+});
+
 // Run-3 fix round 2 (12.3): session freshness — a stale session
 // (signed in > 15 min ago) must 401 REAUTH_REQUIRED, and a session
 // with no freshness signal at all fails closed the same way.
